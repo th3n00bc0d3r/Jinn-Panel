@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="140" viewBox="0 0 560 140" fill="none">
+  <defs>
+    <linearGradient id="jinnpanel-wordmark-grad" x1="0" y1="0" x2="140" y2="140" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6366f1"/>
+      <stop offset="1" stop-color="#7c3aed"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Mark -->
+  <rect x="0" y="0" width="140" height="140" rx="30" fill="url(#jinnpanel-wordmark-grad)"/>
+  <path d="M86 35v57c0 17.5-11 28.5-29.5 28.5-12 0-20.8-5-26.3-14.2l12-11c3.3 5.5 7.7 8.8 13.7 8.8 8.2 0 12.6-4.9 12.6-16.4V35H86Z" fill="white"/>
+  <rect x="96" y="31" width="13" height="13" rx="3" fill="white" fill-opacity="0.55"/>
+
+  <!-- Wordmark -->
+  <text x="172" y="90" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="58" font-weight="600" fill="#0f172a">Jinn<tspan fill="#6366f1">Panel</tspan></text>
+</svg>

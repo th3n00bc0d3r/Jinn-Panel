@@ -1,0 +1,393 @@
+<?php
+declare(strict_types=1);
+
+/**
+ * Runs every 5s via hostpanel-worker.timer (as root, via systemd - NOT as a
+ * child of FrankenPHP). Two jobs each cycle:
+ *  1) Drains storage/config-queue/*.json job files dropped by the panel
+ *     app: rewriting php.ini/my.cnf/sftpgo.json, restarting services,
+ *     registering Knot DNS zones, and installing/removing alt PHP version
+ *     instances.
+ *  2) Snapshots each service's recent journal into storage/logs/live-*.log
+ *     so the WHM dashboard can show/"pull" logs without needing journal
+ *     access itself.
+ *
+ * Two things push privileged work out of FrankenPHP's own process tree on
+ * purpose:
+ *  1) FrankenPHP is intentionally sandboxed (ProtectSystem=full, can't
+ *     write to /etc) and can't query systemd/journald over D-Bus (SELinux
+ *     denies it - by design, not a bug to route around).
+ *  2) A verified FrankenPHP-specific quirk: forking a child from it that
+ *     connect()s to a Unix domain socket (Knot's control socket) fails with
+ *     EPERM - reproducible only in that exact combination. A worker spawned
+ *     by systemd sidesteps both issues at once.
+ */
+
+const QUEUE_DIR = '/var/www/hostpanel/storage/config-queue';
+const LOG_DIR = '/var/www/hostpanel/storage/logs';
+const KNOT_ZONE_DIR = '/var/lib/knot';
+const PHP_VERSIONS_DIR = '/opt/php-versions';
+const APP_CONFIG = '/var/www/hostpanel/src/Config.php';
+
+snapshotLogs();
+
+if (is_dir(QUEUE_DIR)) {
+    foreach (glob(QUEUE_DIR . '/*.json') ?: [] as $jobFile) {
+        $job = json_decode((string) file_get_contents($jobFile), true);
+        $label = basename($jobFile, '.json');
+        $log = fn(string $msg) => file_put_contents(LOG_DIR . "/worker-{$label}.log", '[' . date('c') . "] $msg\n", FILE_APPEND);
+
+        try {
+            if (!is_array($job) || !isset($job['type'])) {
+                throw new RuntimeException('Malformed job file');
+            }
+
+            switch ($job['type']) {
+                case 'dns_create':
+                    dnsApply($job['domain'], true, $log);
+                    break;
+                case 'dns_remove':
+                    dnsApply($job['domain'], false, $log);
+                    break;
+                case 'set_ini':
+                    setIniValues($job['file'], $job['settings'], $log);
+                    break;
+                case 'set_mycnf':
+                    writeMycnfDropin($job['settings'], $log);
+                    break;
+                case 'set_sftpgo_json':
+                    setJsonPaths('/etc/sftpgo/sftpgo.json', $job['settings'], $log);
+                    break;
+                case 'restart':
+                    restartService($job['service'], $log);
+                    break;
+                case 'install_php_version':
+                    installPhpVersion($job['version'], (int) $job['port'], (int) $job['admin_port'], $log);
+                    break;
+                case 'remove_php_version':
+                    removePhpVersion($job['version'], $log);
+                    break;
+                case 'pull_log':
+                    pullLog($job['service'], (int) ($job['lines'] ?? 1000), $log);
+                    break;
+                default:
+                    throw new RuntimeException('Unknown job type: ' . $job['type']);
+            }
+            $log('OK');
+        } catch (Throwable $e) {
+            $log('FAILED: ' . $e->getMessage());
+            if ($job['type'] === 'install_php_version' && isset($job['version'])) {
+                setPhpVersionStatus($job['version'], 'failed', $log);
+            }
+        }
+
+        unlink($jobFile);
+    }
+}
+
+function dnsApply(string $domain, bool $create, callable $log): void
+{
+    if (!preg_match('/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/i', $domain)) {
+        throw new RuntimeException('Invalid domain');
+    }
+    run('knotc conf-begin');
+    if ($create) {
+        run('knotc conf-set ' . escapeshellarg("zone[$domain]"));
+        run('knotc conf-set ' . escapeshellarg("zone[$domain].file") . ' ' . escapeshellarg("$domain.zone"));
+    } else {
+        run('knotc conf-unset ' . escapeshellarg("zone[$domain]"));
+    }
+    run('knotc conf-commit');
+    if ($create) {
+        run('knotc zone-reload ' . escapeshellarg($domain));
+    }
+    $log('dns ' . ($create ? 'create' : 'remove') . " $domain done");
+}
+
+/** @param array<string,string> $settings */
+function setIniValues(string $file, array $settings, callable $log): void
+{
+    $allowed = [
+        '/etc/php-zts/php.ini',
+        '/etc/php-zts/conf.d/opcache.ini',
+    ];
+    if (!in_array($file, $allowed, true)) {
+        throw new RuntimeException('File not allowed: ' . $file);
+    }
+    $content = file_get_contents($file);
+    if ($content === false) {
+        throw new RuntimeException('Cannot read ' . $file);
+    }
+    foreach ($settings as $key => $value) {
+        if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/', $key)) {
+            continue;
+        }
+        $escapedKey = preg_quote($key, '/');
+        $line = "$key = $value";
+        $pattern = '/^;?\s*' . $escapedKey . '\s*=.*$/m';
+        if (preg_match($pattern, $content)) {
+            $content = preg_replace($pattern, $line, $content, 1);
+        } else {
+            $content .= "\n$line\n";
+        }
+    }
+    file_put_contents($file, $content);
+    $log("wrote " . count($settings) . " setting(s) to $file");
+}
+
+/** @param array<string,string> $settings */
+function writeMycnfDropin(array $settings, callable $log): void
+{
+    $lines = ["# Managed by JinnPanel Server Tweaks - do not edit by hand.", "[mysqld]"];
+    foreach ($settings as $key => $value) {
+        if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_-]*$/', $key)) {
+            continue;
+        }
+        $lines[] = "$key = $value";
+    }
+    file_put_contents('/etc/my.cnf.d/99-hostpanel-tuning.cnf', implode("\n", $lines) . "\n");
+    $log('wrote my.cnf.d/99-hostpanel-tuning.cnf with ' . count($settings) . ' setting(s)');
+}
+
+/** @param array<string,mixed> $settings dot.path.keys => value */
+function setJsonPaths(string $file, array $settings, callable $log): void
+{
+    $data = json_decode((string) file_get_contents($file), true);
+    if (!is_array($data)) {
+        throw new RuntimeException('Cannot parse ' . $file);
+    }
+    foreach ($settings as $path => $value) {
+        $parts = explode('.', $path);
+        $ref = &$data;
+        foreach ($parts as $i => $part) {
+            if ($i === count($parts) - 1) {
+                $ref[$part] = $value;
+            } else {
+                if (!isset($ref[$part]) || !is_array($ref[$part])) {
+                    $ref[$part] = [];
+                }
+                $ref = &$ref[$part];
+            }
+        }
+        unset($ref);
+    }
+    file_put_contents($file, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+    $log("wrote " . count($settings) . " setting(s) to $file");
+}
+
+function restartService(string $service, callable $log): void
+{
+    $fixed = ['mariadb', 'frankenphp', 'stalwart', 'sftpgo', 'knot'];
+    $isAltPhp = (bool) preg_match('/^frankenphp-php\d+$/', $service);
+    if (!in_array($service, $fixed, true) && !$isAltPhp) {
+        throw new RuntimeException('Service not allowed: ' . $service);
+    }
+    run('systemctl restart ' . escapeshellarg($service));
+    $log("restarted $service");
+}
+
+/**
+ * Installs an additional PHP version as its own isolated FrankenPHP
+ * instance, loopback-only, reverse-proxied to by the main instance for
+ * domains that select it. Each PHP version's shared lib has a
+ * version-specific SONAME (libphp-zts-XX.so), so multiple versions can
+ * coexist without touching the default (main) installation at all -
+ * extracted directly from the upstream RPMs rather than `dnf install`,
+ * which would try to switch the exclusive dnf module stream and clobber
+ * the default version's packages.
+ */
+function installPhpVersion(string $version, int $port, int $adminPort, callable $log): void
+{
+    if (!preg_match('/^8\.\d$/', $version)) {
+        throw new RuntimeException('Unsupported version: ' . $version);
+    }
+    $suffix = str_replace('.', '', $version); // "8.2" -> "82"
+    $dir = PHP_VERSIONS_DIR . "/$version";
+    $tmp = sys_get_temp_dir() . '/phpver-' . $suffix;
+
+    run("rm -rf " . escapeshellarg($tmp) . " && mkdir -p " . escapeshellarg($tmp));
+
+    $frankenphpUrl = trim(shell_exec(
+        "dnf repoquery --disable-modular-filtering --repo=static-php --location --latest-limit=1 " . escapeshellarg("frankenphp-*_{$suffix}-*") . " 2>/dev/null"
+    ) ?? '');
+    $embedUrl = trim(shell_exec(
+        "dnf repoquery --disable-modular-filtering --repo=static-php --location --latest-limit=1 " . escapeshellarg("php-zts-embed-{$version}*") . " 2>/dev/null"
+    ) ?? '');
+    if (!$frankenphpUrl || !$embedUrl) {
+        throw new RuntimeException("No package found for PHP $version in the static-php repo");
+    }
+    $log("found $frankenphpUrl");
+    $log("found $embedUrl");
+
+    run("curl -fsSL " . escapeshellarg($frankenphpUrl) . " -o " . escapeshellarg("$tmp/frankenphp.rpm"));
+    run("curl -fsSL " . escapeshellarg($embedUrl) . " -o " . escapeshellarg("$tmp/embed.rpm"));
+
+    run("cd " . escapeshellarg($tmp) . " && rpm2cpio frankenphp.rpm | cpio -idm --quiet");
+    run("cd " . escapeshellarg($tmp) . " && rpm2cpio embed.rpm | cpio -idm --quiet");
+
+    $soFile = glob("$tmp/usr/lib64/libphp-zts-{$suffix}.so")[0] ?? null;
+    $binFile = "$tmp/usr/bin/frankenphp";
+    if (!$soFile || !is_file($soFile) || !is_file($binFile)) {
+        throw new RuntimeException('Extracted RPM did not contain the expected files');
+    }
+
+    run("mkdir -p " . escapeshellarg("$dir/sites-enabled") . " " . escapeshellarg("$dir/public"));
+    run("cp " . escapeshellarg($soFile) . " /usr/lib64/");
+    run("cp " . escapeshellarg($binFile) . " " . escapeshellarg("$dir/frankenphp"));
+    run("chmod 755 " . escapeshellarg("$dir/frankenphp"));
+    run("ldconfig");
+
+    // SELinux: the extracted binary needs the executable type (content
+    // types like httpd_sys_rw_content_t, which the rest of this directory
+    // correctly uses, deliberately can't be exec'd), and httpd_t may only
+    // bind ports explicitly registered as http_port_t. Both are idempotent
+    // - already-registered entries are silently ignored.
+    run("semanage fcontext -a -t httpd_exec_t " . escapeshellarg('/opt/php-versions/[^/]+/frankenphp') . " 2>/dev/null; true");
+    run("semanage port -a -t http_port_t -p tcp {$adminPort} 2>/dev/null; true");
+    run("semanage port -a -t http_port_t -p tcp {$port} 2>/dev/null; true");
+    run("semanage port -a -t http_port_t -p udp {$port} 2>/dev/null; true"); // HTTP/3 (QUIC)
+
+    file_put_contents("$dir/Caddyfile", <<<CADDY
+    {
+    	frankenphp
+    	admin 127.0.0.1:{$adminPort}
+    }
+
+    import {$dir}/sites-enabled/*.caddyfile
+    CADDY);
+
+    file_put_contents("$dir/public/index.php", "<?php\necho 'PHP $version instance is alive: ' . phpversion();\n");
+
+    run("chown -R frankenphp:webusers " . escapeshellarg($dir));
+    run("chmod 2775 " . escapeshellarg("$dir/sites-enabled") . " " . escapeshellarg("$dir/public"));
+    run("semanage fcontext -a -t httpd_sys_rw_content_t " . escapeshellarg("$dir(/.*)?") . " 2>/dev/null; restorecon -R " . escapeshellarg($dir));
+
+    $unit = <<<UNIT
+    [Unit]
+    Description=FrankenPHP (PHP {$version}) - JinnPanel alt version instance
+    After=network.target
+
+    [Service]
+    Type=notify
+    User=frankenphp
+    Group=frankenphp
+    ExecStartPre={$dir}/frankenphp validate --config {$dir}/Caddyfile
+    ExecStart={$dir}/frankenphp run --config {$dir}/Caddyfile
+    ExecReload={$dir}/frankenphp reload --config {$dir}/Caddyfile --address 127.0.0.1:{$adminPort} --force
+    WorkingDirectory={$dir}
+    Restart=on-failure
+    RestartSec=3s
+    PrivateTmp=true
+    ProtectHome=true
+    AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+    [Install]
+    WantedBy=multi-user.target
+    UNIT;
+    file_put_contents("/etc/systemd/system/frankenphp-php{$suffix}.service", $unit);
+
+    run('systemctl daemon-reload');
+    run("systemctl enable --now frankenphp-php{$suffix}.service");
+    run("rm -rf " . escapeshellarg($tmp));
+
+    setPhpVersionStatus($version, 'active', $log);
+    $log("PHP $version installed and running on 127.0.0.1:$port");
+}
+
+function removePhpVersion(string $version, callable $log): void
+{
+    if (!preg_match('/^8\.\d$/', $version)) {
+        throw new RuntimeException('Unsupported version: ' . $version);
+    }
+    $suffix = str_replace('.', '', $version);
+    $dir = PHP_VERSIONS_DIR . "/$version";
+
+    run("systemctl stop frankenphp-php{$suffix}.service 2>/dev/null || true");
+    run("systemctl disable frankenphp-php{$suffix}.service 2>/dev/null || true");
+    run("rm -f /etc/systemd/system/frankenphp-php{$suffix}.service");
+    run('systemctl daemon-reload');
+    run("rm -rf " . escapeshellarg($dir));
+    run("rm -f /usr/lib64/libphp-zts-{$suffix}.so");
+    run('ldconfig');
+
+    deletePhpVersionRow($version, $log);
+    $log("PHP $version removed");
+}
+
+function pullLog(string $service, int $lines, callable $log): void
+{
+    $fixed = ['mariadb', 'frankenphp', 'stalwart', 'sftpgo', 'knot'];
+    $isAltPhp = (bool) preg_match('/^frankenphp-php\d+$/', $service);
+    if (!in_array($service, $fixed, true) && !$isAltPhp) {
+        throw new RuntimeException('Service not allowed: ' . $service);
+    }
+    $lines = max(50, min(5000, $lines));
+    exec('journalctl -u ' . escapeshellarg($service) . " -n $lines --no-pager --output=short-iso 2>&1", $out);
+    file_put_contents(LOG_DIR . "/live-{$service}.log", implode("\n", $out));
+    $log("pulled $lines lines for $service");
+}
+
+/** Refreshes the rolling log snapshots the WHM dashboard reads - runs every cycle, not job-driven. */
+function snapshotLogs(): void
+{
+    $services = ['mariadb', 'frankenphp', 'stalwart', 'sftpgo', 'knot'];
+
+    exec('systemctl list-units --type=service --all --no-legend "frankenphp-php*.service" 2>/dev/null', $altOut);
+    foreach ($altOut as $line) {
+        if (preg_match('/(frankenphp-php\d+)\.service/', $line, $m)) {
+            $services[] = $m[1];
+        }
+    }
+
+    foreach ($services as $svc) {
+        exec('journalctl -u ' . escapeshellarg($svc) . ' -n 200 --no-pager --output=short-iso 2>&1', $lines);
+        @file_put_contents(LOG_DIR . "/live-{$svc}.log", implode("\n", $lines));
+        $lines = [];
+    }
+}
+
+function setPhpVersionStatus(string $version, string $status, callable $log): void
+{
+    try {
+        $pdo = appDb();
+        $stmt = $pdo->prepare('UPDATE php_versions SET status = ? WHERE version = ?');
+        $stmt->execute([$status, $version]);
+    } catch (Throwable $e) {
+        $log('warning: could not update php_versions status: ' . $e->getMessage());
+    }
+}
+
+function deletePhpVersionRow(string $version, callable $log): void
+{
+    try {
+        $pdo = appDb();
+        $stmt = $pdo->prepare('DELETE FROM php_versions WHERE version = ?');
+        $stmt->execute([$version]);
+    } catch (Throwable $e) {
+        $log('warning: could not delete php_versions row: ' . $e->getMessage());
+    }
+}
+
+function appDb(): PDO
+{
+    static $pdo = null;
+    if ($pdo !== null) {
+        return $pdo;
+    }
+    require_once APP_CONFIG;
+    $pdo = new PDO(
+        'mysql:host=' . Config::DB_HOST . ';dbname=' . Config::DB_NAME . ';charset=utf8mb4',
+        Config::DB_USER,
+        Config::DB_PASS,
+        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+    );
+    return $pdo;
+}
+
+function run(string $cmd): void
+{
+    exec($cmd . ' 2>&1', $output, $code);
+    if ($code !== 0) {
+        throw new RuntimeException("$cmd failed: " . implode(' | ', $output));
+    }
+}

@@ -1,0 +1,22 @@
+# Force LF regardless of platform/local autocrlf settings - install.sh must
+# stay LF or it breaks (bad interpreter / stray \r) when run on Linux, which
+# is the only place it's ever meant to run.
+*.sh text eol=lf
+installer/install.sh text eol=lf
+
+# Keep everything else text-normalized but let git pick the checkout ending
+# per-platform (fine for PHP, docs, SQL, JS, CSS, SVG - none of them care).
+*.php text
+*.sql text
+*.md text
+*.js text
+*.css text
+*.svg text
+*.json text
+
+# Never diff binary blobs as text.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary

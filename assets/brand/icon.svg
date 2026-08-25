@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" fill="none">
+  <defs>
+    <linearGradient id="jinnpanel-grad" x1="0" y1="0" x2="256" y2="256" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6366f1"/>
+      <stop offset="1" stop-color="#7c3aed"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="url(#jinnpanel-grad)"/>
+  <!-- Stylized "J" -->
+  <path d="M158 64v104c0 32-20 52-54 52-22 0-38-9-48-26l22-20c6 10 14 16 25 16 15 0 23-9 23-30V64h32Z" fill="white"/>
+  <!-- Small panel/grid accent, top-right - echoes the app's own dashboard icon -->
+  <rect x="176" y="56" width="24" height="24" rx="5" fill="white" fill-opacity="0.55"/>
+</svg>

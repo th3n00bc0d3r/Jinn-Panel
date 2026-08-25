@@ -1,0 +1,25 @@
+# Generated config - contains real secrets once install.sh runs.
+# Only the template (Config.php.template) ships in the repo.
+app/src/Config.php
+
+# Runtime data - directory structure is tracked via .gitkeep, contents aren't.
+app/storage/logs/*
+!app/storage/logs/.gitkeep
+app/storage/config-queue/*
+!app/storage/config-queue/.gitkeep
+
+# Compiled Tailwind output - built by install.sh from tailwind.config.js +
+# input.css, not meant to be hand-edited or committed.
+app/public/assets/css/app.css
+
+# Installer local state / logs (root-only on the target server, never meant
+# to leave it).
+installer/.jinnpanel/
+*.log
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+.idea/
