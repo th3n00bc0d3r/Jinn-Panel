@@ -30,6 +30,19 @@ $router->get('/whm/packages/create', ['PackageController', 'create']);
 $router->post('/whm/packages', ['PackageController', 'store']);
 $router->post('/whm/packages/{id}/delete', ['PackageController', 'destroy']);
 
+// cPanel/WHM migrations (admin + reseller). /create must stay above /{id}.
+$router->get('/whm/migrations', ['MigrationController', 'index']);
+$router->get('/whm/migrations/create', ['MigrationController', 'create']);
+$router->post('/whm/migrations/connect', ['MigrationController', 'connect']);
+$router->get('/whm/migrations/{id}', ['MigrationController', 'show']);
+$router->get('/whm/migrations/{id}/select', ['MigrationController', 'select']);
+$router->get('/whm/migrations/{id}/status', ['MigrationController', 'status']);
+$router->post('/whm/migrations/{id}/start', ['MigrationController', 'start']);
+$router->post('/whm/migrations/{id}/cancel', ['MigrationController', 'cancel']);
+$router->post('/whm/migrations/{id}/retry', ['MigrationController', 'retry']);
+$router->post('/whm/migrations/{id}/delete', ['MigrationController', 'destroy']);
+$router->post('/whm/migrations/{id}/discard-secret', ['MigrationController', 'discardSecret']);
+
 // Server Config (admin only)
 $router->get('/whm/server-config/mail', ['ServerConfigController', 'mailIndex']);
 $router->get('/whm/server-config/mail/{object}', ['ServerConfigController', 'mailEdit']);

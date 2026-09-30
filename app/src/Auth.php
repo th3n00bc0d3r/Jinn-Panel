@@ -33,6 +33,18 @@ final class Auth
             return false;
         }
 
+        // Accounts migrated from cPanel keep their original crypt() hash
+        // ($6$ SHA-512) so the old password works on day one; upgrade it to
+        // the panel's normal bcrypt hash the first time it's used.
+        if (password_needs_rehash($row['password_hash'], PASSWORD_BCRYPT)) {
+            try {
+                Database::app()->prepare('UPDATE users SET password_hash = ? WHERE id = ?')
+                    ->execute([password_hash($password, PASSWORD_BCRYPT), $row['id']]);
+            } catch (Throwable $e) {
+                error_log('password rehash failed: ' . $e->getMessage());
+            }
+        }
+
         session_regenerate_id(true);
         $_SESSION['uid'] = (int) $row['id'];
         $_SESSION['role'] = $row['role'];

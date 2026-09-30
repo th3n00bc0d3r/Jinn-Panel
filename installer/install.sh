@@ -95,7 +95,8 @@ fi
 
 log "Installing base packages"
 dnf -y makecache
-dnf -y install tar unzip dnf-plugins-core epel-release curl firewalld
+# rsync + gzip: used by WHM > cPanel Migration to unpack and copy site files.
+dnf -y install tar gzip rsync unzip dnf-plugins-core epel-release curl firewalld
 ok "Base packages installed"
 
 if ! systemctl is-active --quiet firewalld; then
@@ -359,7 +360,18 @@ mkdir -p "$APP_ROOT"
 cp -r "$APP_SRC"/. "$APP_ROOT"/
 
 MAIL_ADMIN_USER_ESC=$(printf '%s' "$MAIL_ADMIN_USER" | sed 's/[&/\]/\\&/g')
+
+# APP_KEY encrypts secrets stored by the panel (cPanel migration source
+# credentials). Generated once and persisted: unlike the DB passwords above
+# it must NOT change on re-run, or anything encrypted with it is lost.
+if [ ! -s "$STATE_DIR/app_key" ]; then
+    python3 -c "import secrets; print(secrets.token_hex(32))" > "$STATE_DIR/app_key"
+    chmod 600 "$STATE_DIR/app_key"
+fi
+APP_KEY=$(cat "$STATE_DIR/app_key")
+
 sed \
+    -e "s/__APP_KEY__/$APP_KEY/" \
     -e "s/__DB_APP_PASS__/$DB_APP_PASS/" \
     -e "s/__DB_PROV_PASS__/$DB_PROV_PASS/" \
     -e "s/__MAIL_ADMIN_USER__/$MAIL_ADMIN_USER_ESC/" \
@@ -420,6 +432,40 @@ chown frankenphp:webusers /opt/php-versions
 chmod 2775 /opt/php-versions
 semanage fcontext -a -t httpd_sys_rw_content_t '/opt/php-versions(/.*)?' 2>/dev/null || true
 restorecon -R /opt/php-versions
+
+# Scratch space for WHM > cPanel Migration: backups are received/downloaded
+# and unpacked here by the migration runner (frankenphp:webusers), and in
+# push mode SFTPGo (also in webusers) writes incoming backups into it.
+mkdir -p /var/lib/jinnpanel/migrations
+chown frankenphp:webusers /var/lib/jinnpanel /var/lib/jinnpanel/migrations
+chmod 2770 /var/lib/jinnpanel/migrations
+semanage fcontext -a -t httpd_sys_rw_content_t '/var/lib/jinnpanel(/.*)?' 2>/dev/null || true
+restorecon -R /var/lib/jinnpanel
+chmod 755 "$APP_ROOT/worker/migration-runner.php" 2>/dev/null || true
+
+# The migration runner is a PHP CLI script: make sure the CLI has what it needs.
+php_cli_missing() {
+    # Written to a file first: `php -m | grep -q` under pipefail can report
+    # a false failure when grep exits early and php gets SIGPIPE.
+    local mods missing=""
+    mods=$(mktemp)
+    /usr/bin/php -m > "$mods" 2>/dev/null || true
+    for ext in curl openssl pdo_mysql mbstring; do
+        grep -qix "$ext" "$mods" || missing="$missing $ext"
+    done
+    rm -f "$mods"
+    printf '%s' "$missing"
+}
+MISSING_EXT=$(php_cli_missing)
+if [ -n "$MISSING_EXT" ]; then
+    for ext in $MISSING_EXT; do dnf -y install "php-zts-$ext" >/dev/null 2>&1 || true; done
+    MISSING_EXT=$(php_cli_missing)
+fi
+if [ -n "$MISSING_EXT" ]; then
+    warn "PHP CLI is missing:$MISSING_EXT - WHM > cPanel Migration won't run until these extensions are installed for /usr/bin/php."
+else
+    ok "PHP CLI has everything the cPanel migration runner needs"
+fi
 
 cat > /etc/systemd/system/hostpanel-worker.service <<'UNIT'
 [Unit]

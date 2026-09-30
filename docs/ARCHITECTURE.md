@@ -119,6 +119,33 @@ hand-building forms for each. Simple field types (string/number/
 boolean/enum) get real inputs; structural types (object/list/set/map) fall
 back to a raw-JSON textarea, still fully editable.
 
+## cPanel migrations
+
+WHM > cPanel Migration (full guide: `docs/MIGRATION.md`) follows the same
+"privileged or long-running work never happens inside a FrankenPHP
+request" rule as everything else, one step further. `MigrationController`
+only validates input and records a `migrations` row plus one
+`migration_items` row per account; `MigrationService` queues a
+`migration_start` job; `hostpanel-worker.php` turns that into a transient
+systemd unit (`jinnpanel-migration-<id>`) running
+`app/worker/migration-runner.php` as **frankenphp:webusers** - not root,
+because everything it unpacks came from another server, and not a
+FrankenPHP child, because a single account can take hours.
+
+`MigrationRunner` then, per account: asks the source for a full backup
+through `CpanelApiClient` (WHM API 1 / UAPI, with `uapi_cpanel` proxying
+UAPI calls for reseller and root logins), receives it by download (pull)
+or via a single-use SFTPGo user (push), extracts it, and restores it
+through `CpanelBackupReader` (which validates every name and path in the
+backup) using the same services the panel already uses - `VhostService`,
+`DnsService`, `ProvisioningService`, `MailService` - plus
+`MailImportService` for stored mail over JMAP. Progress is written to the
+item rows and a per-migration log, a heartbeat detects a dead runner, and
+`AccountCleanupService` (shared with WHM > Accounts > Delete) rolls back a
+half-restored account. Source credentials are encrypted with
+`Crypto` (AES-256-GCM, key `Config::APP_KEY`) and wiped when no longer
+needed.
+
 ## Data model
 
 MariaDB `hostpanel` database: `users` (role: admin/reseller/user, with
@@ -126,7 +153,11 @@ MariaDB `hostpanel` database: `users` (role: admin/reseller/user, with
 (quotas; `owner_id` NULL = global, else a reseller's own custom package),
 `domains` (+ `php_version`, `php_port`, `ssl_mode`), `db_instances`,
 `email_accounts`, `ftp_accounts`, `php_versions` (installed alt PHP
-versions and their ports), `activity_log`.
+versions and their ports), `activity_log`, plus `migrations` /
+`migration_items` (cPanel migrations and their per-account progress and
+reports) and `db_user_accounts` (extra MySQL users an account owns - a
+migrated cPanel account can have several users per database and several
+databases per user, so `db_instances.db_user` isn't unique).
 
 Two separate MariaDB accounts back the app: `hostpanel_app` (least
 privilege, scoped only to the `hostpanel` database itself) and

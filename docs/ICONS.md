@@ -34,6 +34,7 @@ The panel's interface uses a small hand-authored set of stroke icons (24x24, `st
 | play | `play.svg` | Unsuspend account |
 | download | `download.svg` | File Manager download |
 | check | `check.svg` | Success flash messages |
+| transfer | `transfer.svg` | cPanel Migration nav / "New migration" |
 | alert | `alert.svg` | Error flash messages |
 | sliders | `sliders.svg` | Server Tweaks nav |
 | settings | `settings.svg` | PHP Settings nav |

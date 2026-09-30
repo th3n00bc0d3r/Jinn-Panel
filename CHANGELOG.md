@@ -7,6 +7,30 @@ have been cut) - entries are grouped by development milestone instead.
 
 ## [Unreleased]
 
+### cPanel Migration (WHM)
+- One-click migration from cPanel & WHM: a single cPanel account, all
+  accounts of a WHM reseller, or (admin only) any accounts on a server via
+  WHM root. Migrates domains + site files, MySQL databases and users (with
+  their password hashes), email accounts (with their password hashes) and
+  stored mail (Maildir -> JMAP, folders and flags kept). Optionally
+  recreates cPanel resellers as JinnPanel resellers that own their
+  customers. Live progress, per-account reports, rollback + retry. See
+  `docs/MIGRATION.md`.
+- Runs as a background systemd unit (`jinnpanel-migration-<id>`, as
+  frankenphp:webusers) launched by the config worker; new
+  `migration_start` / `migration_stop` worker jobs.
+- New tables `migrations`, `migration_items`, `db_user_accounts`;
+  `db_instances.db_user` is no longer unique (one MySQL user can serve
+  several databases). Upgrade script: `app/migrations/003_cpanel_migration.sql`.
+- `Config::APP_KEY` (generated once by `install.sh`, persisted in
+  `/root/.jinnpanel/app_key`) encrypts stored source credentials.
+- Deleting an account now also drops every extra MySQL user it owns;
+  deleting a database keeps a MySQL user that other databases still use.
+- Password hashes carried over from cPanel are upgraded to bcrypt on the
+  user's first login.
+- `install.sh` installs `rsync`, creates `/var/lib/jinnpanel/migrations`,
+  and checks the PHP CLI extensions the migration runner needs.
+
 ### Added
 - Initial public release preparation: MIT license, `.gitignore`, full
   `docs/` set (`ARCHITECTURE`, `FEATURES`, `TROUBLESHOOTING`, `ICONS`,

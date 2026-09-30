@@ -3,6 +3,7 @@ $navItems = [
     ['href' => '/whm', 'label' => 'Dashboard', 'icon' => 'grid'],
     ['href' => '/whm/accounts', 'label' => 'Accounts', 'icon' => 'users'],
     ['href' => '/whm/packages', 'label' => 'Packages', 'icon' => 'box'],
+    ['href' => '/whm/migrations', 'label' => 'cPanel Migration', 'icon' => 'transfer'],
 ];
 if (Auth::isAdmin()) {
     $navItems[] = ['section' => 'Server Config'];

@@ -138,39 +138,10 @@ final class AccountController
             exit;
         }
 
-        $pdo = Database::app();
-
-        // Best-effort external cleanup before the cascading DB delete removes our records of it.
-        $domains = $pdo->prepare('SELECT * FROM domains WHERE user_id = ?');
-        $domains->execute([$target['id']]);
-        foreach ($domains->fetchAll() as $d) {
-            try { VhostService::remove($d['domain_name']); } catch (Throwable $e) { error_log($e->getMessage()); }
-            try { DnsService::removeZone($d['domain_name']); } catch (Throwable $e) { error_log($e->getMessage()); }
-        }
-
-        $dbs = $pdo->prepare('SELECT * FROM db_instances WHERE user_id = ?');
-        $dbs->execute([$target['id']]);
-        foreach ($dbs->fetchAll() as $row) {
-            try { ProvisioningService::dropDatabase($row['db_name']); } catch (Throwable $e) { error_log($e->getMessage()); }
-            try { ProvisioningService::dropDbUser($row['db_user']); } catch (Throwable $e) { error_log($e->getMessage()); }
-        }
-
-        $emails = $pdo->prepare('SELECT * FROM email_accounts WHERE user_id = ?');
-        $emails->execute([$target['id']]);
-        foreach ($emails->fetchAll() as $row) {
-            if ($row['mail_account_id']) {
-                try { MailService::deleteMailbox($row['mail_account_id']); } catch (Throwable $e) { error_log($e->getMessage()); }
-            }
-        }
-
-        $ftps = $pdo->prepare('SELECT * FROM ftp_accounts WHERE user_id = ?');
-        $ftps->execute([$target['id']]);
-        foreach ($ftps->fetchAll() as $row) {
-            try { SftpService::deleteUser($row['username']); } catch (Throwable $e) { error_log($e->getMessage()); }
-        }
-
-        $del = $pdo->prepare('DELETE FROM users WHERE id = ?');
-        $del->execute([$target['id']]);
+        // Best-effort external cleanup (vhosts, DNS, databases + every MySQL
+        // user the account owns, mailboxes, SFTP users), then the cascading
+        // DB delete. Shared with the cPanel migration rollback.
+        AccountCleanupService::purge((int) $target['id']);
 
         Flash::ok("Account \"{$target['username']}\" and its resources have been removed.");
         header('Location: /whm/accounts');

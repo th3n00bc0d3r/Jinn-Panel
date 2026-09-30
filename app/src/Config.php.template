@@ -41,6 +41,14 @@ final class Config
     public const FRANKENPHP_CONFIG = '/etc/frankenphp/Caddyfile';
     public const PHP_VERSIONS_DIR = '/opt/php-versions';
 
+    // cPanel/WHM migrations. APP_KEY encrypts secrets the panel has to keep
+    // for a while (source-server credentials of a running migration); it is
+    // generated once by install.sh and persisted in /root/.jinnpanel/app_key.
+    public const APP_KEY = '__APP_KEY__';
+    public const MIGRATION_DIR = '/var/lib/jinnpanel/migrations';
+    // Port the source cPanel server uploads backups to in "push" mode (SFTPGo).
+    public const SFTP_PUBLIC_PORT = 2022;
+
     public const APP_NAME = 'JinnPanel';
     public const SESSION_NAME = 'hostpanel_sid';
 }

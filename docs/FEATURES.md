@@ -28,6 +28,21 @@ rest).
 created packages are global; a reseller can also define their own custom
 packages, usable only by their own hosting accounts.
 
+**cPanel Migration** (admin + reseller) - one-click move of accounts from a
+cPanel & WHM server: a single cPanel account, every account of a WHM
+reseller, or (admin only) any accounts on a whole server through WHM
+root. Connect with an API token (or password), tick the accounts, press
+Start. Each account's full cPanel backup is brought over and restored:
+main/addon/subdomains with their site files, MySQL databases and users
+(same names and, where MariaDB can use them, the same passwords), email
+accounts with their existing passwords, and all stored mail with its
+folders and read/flagged state. Hosting accounts keep their username and
+cPanel password; with WHM root, cPanel resellers can be recreated as
+JinnPanel resellers that own their customers. Progress is live, every
+account gets a detailed report (anything skipped, generated passwords,
+things to check), failed accounts are rolled back and can be retried.
+Full guide: [`docs/MIGRATION.md`](MIGRATION.md).
+
 **Server Config** (admin only):
 - **Mail Settings** - browse and edit any of ~150 Stalwart settings objects,
   grouped (Server, Web & API, Mail protocols, Security & spam, Storage,

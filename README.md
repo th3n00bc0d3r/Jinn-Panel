@@ -78,6 +78,10 @@ JinnPanel/
   one-click performance profiles (Balanced/Performance/Extreme) computed off
   the box's actual CPU/RAM, install/remove additional PHP versions as fully
   isolated instances, AutoSSL, and live service logs on the dashboard.
+- **cPanel Migration**: one-click move from cPanel & WHM - a single
+  account, a reseller's accounts, or a whole server via WHM root - with
+  site files, databases, email accounts and stored mail
+  ([`docs/MIGRATION.md`](docs/MIGRATION.md)).
 - **cPanel** (end-user side): domains (real vhosts, HTTP+HTTPS), MySQL
   databases, email accounts (real Stalwart mailboxes), SFTP accounts (real
   SFTPGo virtual users), DNS zones (real Knot DNS), a file manager, and

@@ -28,6 +28,8 @@ const LOG_DIR = '/var/www/hostpanel/storage/logs';
 const KNOT_ZONE_DIR = '/var/lib/knot';
 const PHP_VERSIONS_DIR = '/opt/php-versions';
 const APP_CONFIG = '/var/www/hostpanel/src/Config.php';
+const MIGRATION_RUNNER = '/var/www/hostpanel/worker/migration-runner.php';
+const MIGRATION_DIR = '/var/lib/jinnpanel/migrations';
 
 snapshotLogs();
 
@@ -69,6 +71,12 @@ if (is_dir(QUEUE_DIR)) {
                     break;
                 case 'pull_log':
                     pullLog($job['service'], (int) ($job['lines'] ?? 1000), $log);
+                    break;
+                case 'migration_start':
+                    startMigrationRunner((int) ($job['migration_id'] ?? 0), $log);
+                    break;
+                case 'migration_stop':
+                    stopMigrationRunner((int) ($job['migration_id'] ?? 0), $log);
                     break;
                 default:
                     throw new RuntimeException('Unknown job type: ' . $job['type']);
@@ -366,6 +374,71 @@ function deletePhpVersionRow(string $version, callable $log): void
     } catch (Throwable $e) {
         $log('warning: could not delete php_versions row: ' . $e->getMessage());
     }
+}
+
+/**
+ * cPanel migrations run for hours, so they get their own transient systemd
+ * unit instead of blocking this 5-second worker: `jinnpanel-migration-<id>`,
+ * running as frankenphp:webusers (the identity the panel already uses for
+ * vhosts, databases and mail), outside FrankenPHP's sandbox and request
+ * lifecycle. `journalctl -u jinnpanel-migration-<id>` shows its output.
+ */
+function startMigrationRunner(int $id, callable $log): void
+{
+    if ($id <= 0) {
+        throw new RuntimeException('Invalid migration id');
+    }
+    $unit = "jinnpanel-migration-$id";
+    try {
+        if (!is_file(MIGRATION_RUNNER)) {
+            throw new RuntimeException(MIGRATION_RUNNER . ' is missing - re-run install.sh to deploy it.');
+        }
+        if (!is_dir(MIGRATION_DIR)) {
+            mkdir(MIGRATION_DIR, 02770, true);
+            chown(MIGRATION_DIR, 'frankenphp');
+            chgrp(MIGRATION_DIR, 'webusers');
+            chmod(MIGRATION_DIR, 02770);
+            exec('restorecon -R ' . escapeshellarg(dirname(MIGRATION_DIR)) . ' 2>/dev/null');
+        }
+
+        exec('systemctl is-active --quiet ' . escapeshellarg("$unit.service"), $out, $code);
+        if ($code === 0) {
+            $log("$unit is already running");
+            return;
+        }
+        exec('systemctl reset-failed ' . escapeshellarg("$unit.service") . ' 2>/dev/null');
+
+        run('systemd-run --quiet --collect'
+            . ' --unit=' . escapeshellarg($unit)
+            . ' --description=' . escapeshellarg("JinnPanel cPanel migration #$id")
+            . ' --uid=frankenphp --gid=webusers'
+            . ' --property=Nice=10 --property=UMask=0002'
+            . ' --setenv=HOME=' . escapeshellarg(MIGRATION_DIR)
+            . ' ' . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(MIGRATION_RUNNER) . ' ' . $id);
+        $log("started $unit");
+    } catch (Throwable $e) {
+        // Don't leave the migration "queued" forever in the panel.
+        try {
+            $pdo = appDb();
+            $pdo->prepare("UPDATE migration_items SET status = 'failed', step = 'Failed', error = ? WHERE migration_id = ? AND selected = 1 AND status = 'pending'")
+                ->execute(['Could not start the migration runner: ' . $e->getMessage(), $id]);
+            $pdo->prepare("UPDATE migrations SET status = 'failed', finished_at = NOW() WHERE id = ? AND status = 'queued'")->execute([$id]);
+        } catch (Throwable $e2) {
+            $log('warning: could not mark migration failed: ' . $e2->getMessage());
+        }
+        throw $e;
+    }
+}
+
+function stopMigrationRunner(int $id, callable $log): void
+{
+    if ($id <= 0) {
+        throw new RuntimeException('Invalid migration id');
+    }
+    $unit = "jinnpanel-migration-$id.service";
+    exec('systemctl stop ' . escapeshellarg($unit) . ' 2>&1', $out);
+    exec('systemctl reset-failed ' . escapeshellarg($unit) . ' 2>/dev/null');
+    $log("stopped $unit");
 }
 
 function appDb(): PDO

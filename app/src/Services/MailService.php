@@ -97,6 +97,18 @@ final class MailService
      */
     public static function createMailbox(string $mailDomainId, string $localPart, string $password): string
     {
+        return self::createMailboxWithSecrets($mailDomainId, $localPart, [$password]);
+    }
+
+    /**
+     * Creates a mailbox with one or more password credentials. Each secret
+     * may be plaintext or an existing crypt()-style hash ($6$/$5$/$1$/
+     * bcrypt) - Stalwart recognises and verifies hashed secrets natively,
+     * which is how a cPanel migration keeps a mailbox's password working
+     * without the panel ever knowing it.
+     */
+    public static function createMailboxWithSecrets(string $mailDomainId, string $localPart, array $secrets): string
+    {
         $responses = self::call([
             ['x:Account/set', [
                 'accountId' => self::accountId(),
@@ -104,9 +116,7 @@ final class MailService
                     '@type' => 'User',
                     'name' => $localPart,
                     'domainId' => $mailDomainId,
-                    'credentials' => [
-                        ['@type' => 'Password', 'secret' => $password],
-                    ],
+                    'credentials' => self::credentials($secrets),
                 ]],
             ], '0'],
         ]);
@@ -116,6 +126,26 @@ final class MailService
         }
         $reason = json_encode($result['notCreated'] ?? $result);
         throw new RuntimeException("Could not create mailbox '$localPart': $reason");
+    }
+
+    /** Replaces a mailbox's password credentials (e.g. to drop a temporary import credential). */
+    public static function setSecrets(string $mailAccountId, array $secrets): void
+    {
+        $responses = self::call([
+            ['x:Account/set', [
+                'accountId' => self::accountId(),
+                'update' => [$mailAccountId => ['credentials' => self::credentials($secrets)]],
+            ], '0'],
+        ]);
+        $result = $responses[0][1] ?? [];
+        if (!array_key_exists($mailAccountId, (array) ($result['updated'] ?? []))) {
+            throw new RuntimeException('Could not update mailbox credentials: ' . json_encode($result['notUpdated'] ?? $result));
+        }
+    }
+
+    private static function credentials(array $secrets): array
+    {
+        return array_values(array_map(fn(string $s) => ['@type' => 'Password', 'secret' => $s], $secrets));
     }
 
     public static function deleteMailbox(string $mailAccountId): void

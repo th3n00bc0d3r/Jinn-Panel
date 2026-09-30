@@ -82,9 +82,27 @@ final class DatabaseController
         }
 
         try { ProvisioningService::dropDatabase($row['db_name']); } catch (Throwable $e) { error_log($e->getMessage()); }
-        try { ProvisioningService::dropDbUser($row['db_user']); } catch (Throwable $e) { error_log($e->getMessage()); }
 
-        $del = Database::app()->prepare('DELETE FROM db_instances WHERE id = ?');
+        // Migrated cPanel accounts can share one MySQL user between several
+        // databases: only drop the user when nothing else still needs it.
+        $pdo = Database::app();
+        $shared = $pdo->prepare('SELECT COUNT(*) FROM db_instances WHERE db_user = ? AND id <> ?');
+        $shared->execute([$row['db_user'], $id]);
+        $stillUsed = (int) $shared->fetchColumn() > 0;
+        if (!$stillUsed) {
+            try {
+                $extra = $pdo->prepare('SELECT COUNT(*) FROM db_user_accounts WHERE db_user = ?');
+                $extra->execute([$row['db_user']]);
+                $stillUsed = (int) $extra->fetchColumn() > 0;
+            } catch (PDOException $e) {
+                // db_user_accounts only exists once 003_cpanel_migration.sql is applied.
+            }
+        }
+        if (!$stillUsed) {
+            try { ProvisioningService::dropDbUser($row['db_user']); } catch (Throwable $e) { error_log($e->getMessage()); }
+        }
+
+        $del = $pdo->prepare('DELETE FROM db_instances WHERE id = ?');
         $del->execute([$id]);
 
         Flash::ok("Database \"{$row['db_name']}\" deleted.");
