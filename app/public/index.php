@@ -60,6 +60,17 @@ $router->post('/whm/server-config/php-versions', ['PhpVersionController', 'insta
 $router->post('/whm/server-config/php-versions/{version}/remove', ['PhpVersionController', 'remove']);
 $router->post('/whm/logs/pull', ['WhmDashboardController', 'pullLog']);
 
+// DNS zones (admin only). Static paths before /{id}.
+$router->get('/whm/dns', ['WhmDnsController', 'index']);
+$router->post('/whm/dns/zones', ['WhmDnsController', 'storeZone']);
+$router->post('/whm/dns/server-zone', ['WhmDnsController', 'ensureServerZone']);
+$router->post('/whm/dns/nameservers', ['WhmDnsController', 'saveNameservers']);
+$router->get('/whm/dns/{id}', ['WhmDnsController', 'show']);
+$router->post('/whm/dns/{id}/records', ['WhmDnsController', 'addRecord']);
+$router->post('/whm/dns/{id}/records/{record}/delete', ['WhmDnsController', 'deleteRecord']);
+$router->post('/whm/dns/{id}/republish', ['WhmDnsController', 'republish']);
+$router->post('/whm/dns/{id}/delete', ['WhmDnsController', 'destroyZone']);
+
 // cPanel (end user)
 $router->get('/cpanel', ['CpanelDashboardController', 'index']);
 $router->get('/cpanel/domains', ['DomainController', 'index']);

@@ -51,6 +51,9 @@ if (is_dir(QUEUE_DIR)) {
                 case 'dns_remove':
                     dnsApply($job['domain'], false, $log);
                     break;
+                case 'dns_write':
+                    dnsWrite((string) $job['domain'], (string) ($job['content'] ?? ''), $log);
+                    break;
                 case 'set_ini':
                     setIniValues($job['file'], $job['settings'], $log);
                     break;
@@ -93,23 +96,111 @@ if (is_dir(QUEUE_DIR)) {
     }
 }
 
+const DNS_DOMAIN_RE = '/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/i';
+
+/** Register (create) or unregister + delete (remove) a zone in Knot. */
 function dnsApply(string $domain, bool $create, callable $log): void
 {
-    if (!preg_match('/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/i', $domain)) {
+    if (!preg_match(DNS_DOMAIN_RE, $domain)) {
         throw new RuntimeException('Invalid domain');
     }
-    run('knotc conf-begin');
     if ($create) {
-        run('knotc conf-set ' . escapeshellarg("zone[$domain]"));
-        run('knotc conf-set ' . escapeshellarg("zone[$domain].file") . ' ' . escapeshellarg("$domain.zone"));
-    } else {
-        run('knotc conf-unset ' . escapeshellarg("zone[$domain]"));
-    }
-    run('knotc conf-commit');
-    if ($create) {
+        knotRegisterZone($domain);
         run('knotc zone-reload ' . escapeshellarg($domain));
+    } else {
+        if (knotZoneRegistered($domain)) {
+            knotConf(fn() => run('knotc conf-unset ' . escapeshellarg("zone[$domain]")));
+        }
+        if (is_file(KNOT_ZONE_DIR . "/$domain.zone")) {
+            unlink(KNOT_ZONE_DIR . "/$domain.zone");
+        }
     }
     $log('dns ' . ($create ? 'create' : 'remove') . " $domain done");
+}
+
+/**
+ * Write a zone rendered by DnsService (the panel DB is the source of truth),
+ * register it with Knot if needed, check it and reload. The panel can't
+ * write /var/lib/knot itself (knot:knot 0755), which is why this lives here.
+ * If Knot can't load the new text, the previous file is put back, so one
+ * bad record never takes a whole zone down.
+ */
+function dnsWrite(string $domain, string $content, callable $log): void
+{
+    if (!preg_match(DNS_DOMAIN_RE, $domain)) {
+        throw new RuntimeException('Invalid domain');
+    }
+    if ($content === '' || strlen($content) > 4 * 1024 * 1024 || str_contains($content, "\0")) {
+        throw new RuntimeException('Refusing to write an empty, oversized or binary zone');
+    }
+    $file = KNOT_ZONE_DIR . "/$domain.zone";
+    $previous = is_file($file) ? file_get_contents($file) : false;
+    $tmp = KNOT_ZONE_DIR . "/.$domain.zone.tmp";
+    if (file_put_contents($tmp, $content) === false) {
+        throw new RuntimeException("Cannot write $tmp");
+    }
+    chown($tmp, 'knot');
+    chgrp($tmp, 'knot');
+    chmod($tmp, 0640);
+    if (!rename($tmp, $file)) {
+        throw new RuntimeException("Cannot move the new zone into $file");
+    }
+    exec('restorecon ' . escapeshellarg($file) . ' 2>/dev/null');
+
+    // A blocking reload is the check: if Knot can't parse the new file it
+    // fails and keeps serving the zone it already had in memory. (knotc
+    // zone-check can't be used - on Knot 3.5 it reports "no such zone" even
+    // for loaded zones.)
+    $wasRegistered = knotZoneRegistered($domain);
+    try {
+        if (!$wasRegistered) {
+            knotRegisterZone($domain);
+        }
+        run('knotc -b zone-reload ' . escapeshellarg($domain));
+    } catch (Throwable $e) {
+        if ($previous !== false) {
+            file_put_contents($file, $previous);
+            exec('knotc -b zone-reload ' . escapeshellarg($domain) . ' 2>&1');
+        } elseif (!$wasRegistered) {
+            try {
+                knotConf(fn() => run('knotc conf-unset ' . escapeshellarg("zone[$domain]")));
+            } catch (Throwable) {
+            }
+            unlink($file);
+        }
+        throw new RuntimeException('Knot rejected the new zone, previous version kept: ' . $e->getMessage());
+    }
+    $log("dns write $domain done");
+}
+
+function knotZoneRegistered(string $domain): bool
+{
+    exec('knotc conf-read ' . escapeshellarg("zone[$domain]") . ' 2>&1', $out, $code);
+    return $code === 0;
+}
+
+function knotRegisterZone(string $domain): void
+{
+    if (knotZoneRegistered($domain)) {
+        return;
+    }
+    knotConf(function () use ($domain): void {
+        run('knotc conf-set ' . escapeshellarg("zone[$domain]"));
+        run('knotc conf-set ' . escapeshellarg("zone[$domain].file") . ' ' . escapeshellarg("$domain.zone"));
+    });
+}
+
+/** Run knotc conf-* changes in one transaction; abort it on failure so the next job isn't locked out. */
+function knotConf(callable $changes): void
+{
+    run('knotc conf-begin');
+    try {
+        $changes();
+        run('knotc conf-commit');
+    } catch (Throwable $e) {
+        exec('knotc conf-abort 2>&1');
+        throw $e;
+    }
 }
 
 /** @param array<string,string> $settings */

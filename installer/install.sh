@@ -96,7 +96,8 @@ fi
 log "Installing base packages"
 dnf -y makecache
 # rsync + gzip: used by WHM > cPanel Migration to unpack and copy site files.
-dnf -y install tar gzip rsync unzip dnf-plugins-core epel-release curl firewalld
+# bind-utils: dig, used to verify the server's own DNS zone at the end.
+dnf -y install tar gzip rsync unzip dnf-plugins-core epel-release curl firewalld bind-utils
 ok "Base packages installed"
 
 if ! systemctl is-active --quiet firewalld; then
@@ -190,13 +191,24 @@ ok "FrankenPHP running"
 # 4. Stalwart Mail
 # ---------------------------------------------------------------------------
 
+# Stalwart takes a few seconds to open its listeners after a (re)start.
+# Asking too early made curl -s below write no file at all, and the JSON
+# parse of that missing file aborted the whole install on a fresh box.
+wait_for_stalwart() {
+    for _ in $(seq 1 60); do
+        curl -s -o /dev/null http://127.0.0.1:8080/jmap/session && return 0
+        sleep 1
+    done
+    warn "Stalwart's HTTP listener (127.0.0.1:8080) didn't come up within 60s."
+}
+
 log "Installing Stalwart Mail"
 if [ ! -f /usr/local/bin/stalwart ]; then
     curl --proto '=https' --tlsv1.2 -sSf https://get.stalw.art/install.sh -o /tmp/stalwart-install.sh
     sh /tmp/stalwart-install.sh
 fi
 systemctl enable --now stalwart
-sleep 3
+wait_for_stalwart
 
 if [ ! -f "$STATE_DIR/mail_admin_pass" ]; then
     log "Bootstrapping Stalwart (first install)"
@@ -257,7 +269,7 @@ print(d['methodResponses'][0][1]['updated']['singleton']['secret'])
             echo "admin@$HOSTNAME_FQDN" > "$STATE_DIR/mail_admin_user"
             echo "$MAIL_ADMIN_PASS" > "$STATE_DIR/mail_admin_pass"
             systemctl restart stalwart
-            sleep 2
+            wait_for_stalwart
         else
             warn "Stalwart bootstrap response didn't parse as expected - check /tmp/stalwart-bootstrap-response.json and finish setup manually (see docs/TROUBLESHOOTING.md)."
         fi
@@ -277,6 +289,102 @@ if ! curl -sf -u "$MAIL_ADMIN_USER:$MAIL_ADMIN_PASS" http://127.0.0.1:8080/jmap/
     echo "Put working ones in $STATE_DIR/mail_admin_user and $STATE_DIR/mail_admin_pass and re-run." >&2
     exit 1
 fi
+
+# Stalwart's default listeners include HTTPS on :443, which belongs to
+# FrankenPHP (the panel and every hosted site). Whichever starts first wins,
+# so a fresh install - or any reboot - could leave the panel crash-looping on
+# "address already in use". Move any Stalwart listener bound to :443 to
+# :8443 (left closed in the firewall; the panel talks to Stalwart over
+# 127.0.0.1:8080). The listener object is found in Stalwart's schema rather
+# than hardcoded, and this is a no-op once nothing is bound to :443.
+STALWART_443_RESULT=$(MAIL_ADMIN_USER="$MAIL_ADMIN_USER" MAIL_ADMIN_PASS="$MAIL_ADMIN_PASS" python3 - 2>&1 <<'PY'
+import base64, json, os, re, urllib.request
+
+BASE = "http://127.0.0.1:8080"
+AUTH = "Basic " + base64.b64encode((os.environ["MAIL_ADMIN_USER"] + ":" + os.environ["MAIL_ADMIN_PASS"]).encode()).decode()
+USING = ["urn:ietf:params:jmap:core", "urn:stalwart:jmap"]
+BIND = re.compile(r"^(.*:)443$")
+
+
+def call(method, path, body=None):
+    data = None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request(BASE + path, data=data, method=method,
+                                 headers={"Authorization": AUTH, "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.loads(r.read().decode() or "null")
+
+
+def fix(v):
+    """Rewrite ...:443 -> ...:8443 in a bind value (string, list or set-as-map)."""
+    if isinstance(v, str):
+        m = BIND.match(v)
+        return (m.group(1) + "8443", True) if m else (v, False)
+    if isinstance(v, list):
+        out, changed = [], False
+        for x in v:
+            nx, c = fix(x)
+            out.append(nx)
+            changed |= c
+        return out, changed
+    if isinstance(v, dict):
+        out, changed = {}, False
+        for k, x in v.items():
+            nk, ck = fix(k)
+            nx, cx = fix(x)
+            out[nk] = nx
+            changed |= ck or cx
+        return out, changed
+    return v, False
+
+
+schema = call("GET", "/api/schema")
+names = sorted(n for n in (schema.get("schemas") or {}) if "listener" in n.lower())
+if not names:
+    print("SKIP no listener object in Stalwart's schema")
+    raise SystemExit(0)
+account = list(call("GET", "/jmap/session")["primaryAccounts"].values())[0]
+moved = []
+for obj in names:
+    res = call("POST", "/jmap/", {"using": USING, "methodCalls": [[obj + "/get", {"accountId": account, "ids": None}, "0"]]})
+    kind, body = res["methodResponses"][0][0], res["methodResponses"][0][1]
+    if kind == "error":
+        continue
+    updates = {}
+    for item in body.get("list", []):
+        patch = {}
+        for prop, val in item.items():
+            if "bind" in prop.lower():
+                nv, changed = fix(val)
+                if changed:
+                    patch[prop] = nv
+        if patch:
+            updates[item["id"]] = patch
+            moved.append(str(item.get("name") or item["id"]))
+    if updates:
+        res = call("POST", "/jmap/", {"using": USING, "methodCalls": [[obj + "/set", {"accountId": account, "update": updates}, "0"]]})
+        result = res["methodResponses"][0][1]
+        if result.get("notUpdated"):
+            print("FAIL " + json.dumps(result["notUpdated"]))
+            raise SystemExit(1)
+print(("MOVED " + " ".join(moved)) if moved else "OK")
+PY
+) || true
+STALWART_443_LAST=$(printf '%s\n' "$STALWART_443_RESULT" | tail -n1)
+case "$STALWART_443_LAST" in
+    MOVED*)
+        systemctl restart stalwart
+        wait_for_stalwart
+        systemctl reset-failed frankenphp 2>/dev/null || true
+        systemctl restart frankenphp
+        ok "Moved Stalwart's HTTPS listener off :443 to :8443 (${STALWART_443_LAST#MOVED })"
+        ;;
+    OK*)
+        ok "Port 443 is free for the panel (no Stalwart listener on it)"
+        ;;
+    *)
+        warn "Couldn't check Stalwart's listeners for :443 ($STALWART_443_LAST). If the panel doesn't load, move Stalwart's https listener to another port in its admin UI (Listeners)."
+        ;;
+esac
 
 firewall-cmd --permanent --add-service=smtp >/dev/null
 firewall-cmd --permanent --add-port=465/tcp --add-port=587/tcp --add-port=993/tcp --add-port=995/tcp --add-port=4190/tcp --add-port=8080/tcp >/dev/null
@@ -494,6 +602,60 @@ systemctl enable --now hostpanel-worker.timer
 ok "Background worker running (every 5s)"
 
 # ---------------------------------------------------------------------------
+# DNS: nameservers + this server's own zone
+# ---------------------------------------------------------------------------
+# Publishes the zone for the hostname's parent (server.example.com ->
+# example.com) with ns1/ns2 glue, the hostname and panel.<hostname>, so the
+# panel resolves as soon as the registrar's nameservers/glue point here -
+# no hosts-file edits. Overrides: JINNPANEL_NS1_HOST / _NS1_IP / _NS2_HOST /
+# _NS2_IP, JINNPANEL_DNS_ZONE. Later edits in WHM > DNS Zones are kept.
+
+log "Publishing DNS for $HOSTNAME_FQDN"
+# A second public IPv4 on the box, if there is one, is the natural home for ns2.
+NS2_IP_DETECTED=$(ip -4 -o addr show scope global | awk '{split($4,a,"/"); print a[1]}' | grep -vxF "$SERVER_IP" | head -n1 || true)
+DNS_LINE=$(cd "$APP_ROOT" && runuser -u frankenphp -- env \
+    JINNPANEL_NS1_HOST="${JINNPANEL_NS1_HOST:-}" JINNPANEL_NS1_IP="${JINNPANEL_NS1_IP:-}" \
+    JINNPANEL_NS2_HOST="${JINNPANEL_NS2_HOST:-}" JINNPANEL_NS2_IP="${JINNPANEL_NS2_IP:-}" \
+    JINNPANEL_NS2_IP_DETECTED="$NS2_IP_DETECTED" JINNPANEL_DNS_ZONE="${JINNPANEL_DNS_ZONE:-}" \
+    /usr/bin/php worker/dns-bootstrap.php | tail -n1) || DNS_LINE=""
+[ -n "$DNS_LINE" ] || { warn "DNS bootstrap failed - see $APP_ROOT/storage/logs/app.log"; DNS_LINE="- - - - -"; }
+read -r DNS_ZONE NS1_HOST NS1_IP NS2_HOST NS2_IP <<< "$DNS_LINE"
+
+PUBLIC_A=""
+if [ "$DNS_ZONE" != "-" ]; then
+    DNS_SOA=""
+    for _ in $(seq 1 30); do
+        DNS_SOA=$(dig +norec +short SOA "$DNS_ZONE" @127.0.0.1 2>/dev/null || true)
+        [ -n "$DNS_SOA" ] && break
+        sleep 1
+    done
+    if [ -n "$DNS_SOA" ]; then
+        ok "Knot is serving $DNS_ZONE (ns1 $NS1_HOST $NS1_IP, ns2 $NS2_HOST $NS2_IP)"
+    else
+        warn "Knot isn't answering for $DNS_ZONE yet - see WHM > DNS Zones for the last publish result."
+    fi
+    PUBLIC_A=$(dig +short A "$PANEL_HOSTNAME" @1.1.1.1 2>/dev/null | tail -n1 || true)
+else
+    warn "$HOSTNAME_FQDN isn't a public hostname - no server DNS zone was published."
+fi
+
+if [ "$PUBLIC_A" = "$SERVER_IP" ]; then
+    DNS_NOTE="    1. DNS is live: $PANEL_HOSTNAME already resolves to $SERVER_IP."
+elif [ "$DNS_ZONE" != "-" ]; then
+    DNS_NOTE="    1. DNS: this server now serves the zone $DNS_ZONE. For $PANEL_HOSTNAME
+       to resolve publicly, set at the registrar of $DNS_ZONE:
+           nameservers   $NS1_HOST, $NS2_HOST
+           glue records  $NS1_HOST -> $NS1_IP
+                         $NS2_HOST -> $NS2_IP
+       Until that propagates, map \"$SERVER_IP  $PANEL_HOSTNAME\" in your
+       local hosts file to reach the panel."
+else
+    DNS_NOTE="    1. On the machine you'll browse from, map this server's IP to its
+       hostname - e.g. on Windows add to C:\\Windows\\System32\\drivers\\etc\\hosts:
+           $SERVER_IP  $HOSTNAME_FQDN  $PANEL_HOSTNAME"
+fi
+
+# ---------------------------------------------------------------------------
 # Done
 # ---------------------------------------------------------------------------
 
@@ -513,10 +675,8 @@ cat <<SUMMARY
 
   JinnPanel is deployed and every service is running.
 
-  Next step (the only manual one):
-    1. On the machine you'll browse from, map this server's IP to its
-       hostname - e.g. on Windows add to C:\\Windows\\System32\\drivers\\etc\\hosts:
-           $SERVER_IP  $HOSTNAME_FQDN  $PANEL_HOSTNAME
+  Next steps:
+$DNS_NOTE
     2. Visit:  https://$PANEL_HOSTNAME/setup
        and create the real administrator account. That page IS the
        "get this into production" step - no admin account exists until

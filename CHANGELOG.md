@@ -5,6 +5,25 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project doesn't yet follow semantic versioning releases (no tags/releases
 have been cut) - entries are grouped by development milestone instead.
 
+## Unreleased
+
+- **WHM > DNS Zones** (admin): nameserver settings, every zone on the server
+  (the server's own, hosted domains', standalone), and record management for
+  A, AAAA, CNAME, MX, TXT, NS, SRV and CAA, with a zone-file preview.
+- DNS records now live in the panel DB (`dns_zones`, `dns_records`,
+  `panel_settings`); zone files are rendered from them. "Re-provision" no
+  longer resets a zone to the template.
+- Fix: zone files were never written - FrankenPHP can't write
+  `/var/lib/knot`. The root worker now writes them, reloads
+  each zone in blocking mode and keeps the previous version if Knot rejects it.
+- Installer publishes the server's own zone (ns1/ns2 glue, hostname,
+  `panel.<hostname>`), so the panel resolves without hosts-file edits once
+  the registrar's glue points at the server.
+- Installer fix: wait for Stalwart's listeners before bootstrapping it (a
+  fresh install could abort on the session call).
+- Installer fix: move Stalwart's HTTPS listener off :443 to :8443, so it
+  can't take the port from FrankenPHP.
+
 ## [Unreleased]
 
 ### cPanel Migration (WHM)
