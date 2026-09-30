@@ -298,7 +298,7 @@ fi
 # 127.0.0.1:8080). The listener object is found in Stalwart's schema rather
 # than hardcoded, and this is a no-op once nothing is bound to :443.
 STALWART_443_RESULT=$(MAIL_ADMIN_USER="$MAIL_ADMIN_USER" MAIL_ADMIN_PASS="$MAIL_ADMIN_PASS" python3 - 2>&1 <<'PY'
-import base64, json, os, re, urllib.request
+import base64, gzip, json, os, re, urllib.request
 
 BASE = "http://127.0.0.1:8080"
 AUTH = "Basic " + base64.b64encode((os.environ["MAIL_ADMIN_USER"] + ":" + os.environ["MAIL_ADMIN_PASS"]).encode()).decode()
@@ -309,9 +309,14 @@ BIND = re.compile(r"^(.*:)443$")
 def call(method, path, body=None):
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(BASE + path, data=data, method=method,
-                                 headers={"Authorization": AUTH, "Content-Type": "application/json"})
+                                 headers={"Authorization": AUTH, "Content-Type": "application/json",
+                                          "Accept-Encoding": "identity"})
     with urllib.request.urlopen(req, timeout=20) as r:
-        return json.loads(r.read().decode() or "null")
+        raw = r.read()
+        # /api/schema can come back gzip-encoded regardless of Accept-Encoding.
+        if r.headers.get("Content-Encoding", "").lower() == "gzip" or raw[:2] == b"\x1f\x8b":
+            raw = gzip.decompress(raw)
+        return json.loads(raw.decode() or "null")
 
 
 def fix(v):
@@ -618,7 +623,14 @@ DNS_LINE=$(cd "$APP_ROOT" && runuser -u frankenphp -- env \
     JINNPANEL_NS2_HOST="${JINNPANEL_NS2_HOST:-}" JINNPANEL_NS2_IP="${JINNPANEL_NS2_IP:-}" \
     JINNPANEL_NS2_IP_DETECTED="$NS2_IP_DETECTED" JINNPANEL_DNS_ZONE="${JINNPANEL_DNS_ZONE:-}" \
     /usr/bin/php worker/dns-bootstrap.php | tail -n1) || DNS_LINE=""
-[ -n "$DNS_LINE" ] || { warn "DNS bootstrap failed - see $APP_ROOT/storage/logs/app.log"; DNS_LINE="- - - - -"; }
+# "-" as the zone means the hostname has no public parent zone; a missing or
+# malformed line means the bootstrap itself failed - keep the two apart.
+DNS_BOOTSTRAP_FAILED=0
+if [ "$(wc -w <<< "$DNS_LINE")" -ne 5 ]; then
+    DNS_BOOTSTRAP_FAILED=1
+    warn "DNS bootstrap failed - no server DNS zone was published. See $APP_ROOT/storage/logs/app.log and the output above, then re-run the installer."
+    DNS_LINE="- - - - -"
+fi
 read -r DNS_ZONE NS1_HOST NS1_IP NS2_HOST NS2_IP <<< "$DNS_LINE"
 
 PUBLIC_A=""
@@ -635,12 +647,17 @@ if [ "$DNS_ZONE" != "-" ]; then
         warn "Knot isn't answering for $DNS_ZONE yet - see WHM > DNS Zones for the last publish result."
     fi
     PUBLIC_A=$(dig +short A "$PANEL_HOSTNAME" @1.1.1.1 2>/dev/null | tail -n1 || true)
-else
+elif [ "$DNS_BOOTSTRAP_FAILED" = 0 ]; then
     warn "$HOSTNAME_FQDN isn't a public hostname - no server DNS zone was published."
 fi
 
 if [ "$PUBLIC_A" = "$SERVER_IP" ]; then
     DNS_NOTE="    1. DNS is live: $PANEL_HOSTNAME already resolves to $SERVER_IP."
+elif [ "$DNS_BOOTSTRAP_FAILED" = 1 ]; then
+    DNS_NOTE="    1. DNS: publishing the server zone failed (see
+       $APP_ROOT/storage/logs/app.log); fix it and re-run the installer.
+       Until then, map \"$SERVER_IP  $PANEL_HOSTNAME\" in your local hosts
+       file to reach the panel."
 elif [ "$DNS_ZONE" != "-" ]; then
     DNS_NOTE="    1. DNS: this server now serves the zone $DNS_ZONE. For $PANEL_HOSTNAME
        to resolve publicly, set at the registrar of $DNS_ZONE:

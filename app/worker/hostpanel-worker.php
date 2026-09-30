@@ -30,6 +30,9 @@ const PHP_VERSIONS_DIR = '/opt/php-versions';
 const APP_CONFIG = '/var/www/hostpanel/src/Config.php';
 const MIGRATION_RUNNER = '/var/www/hostpanel/worker/migration-runner.php';
 const MIGRATION_DIR = '/var/lib/jinnpanel/migrations';
+// Top-level consts are defined when execution reaches them (unlike functions),
+// so every constant the job loop below uses must be declared up here.
+const DNS_DOMAIN_RE = '/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/i';
 
 snapshotLogs();
 
@@ -95,8 +98,6 @@ if (is_dir(QUEUE_DIR)) {
         unlink($jobFile);
     }
 }
-
-const DNS_DOMAIN_RE = '/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/i';
 
 /** Register (create) or unregister + delete (remove) a zone in Knot. */
 function dnsApply(string $domain, bool $create, callable $log): void

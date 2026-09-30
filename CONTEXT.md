@@ -179,22 +179,29 @@ the `db_user` index change) and also ship an upgrade file in
   zone), ensures the server zone, and imports zones for domains that existed
   before zones lived in the DB.
 
-### Open issues on this branch (fix in order)
+### Open issues on this branch
 
-1. **Collation mismatch**: joining `dns_zones` to `domains` fails with
-   "Illegal mix of collations (utf8mb4_general_ci / utf8mb4_unicode_ci)".
-   Check which table has which in `information_schema.tables`, declare the
-   matching `ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=...` on the three
-   new tables, and add an idempotent `ALTER TABLE ... CONVERT TO CHARACTER
-   SET` for installs that already created them. Until fixed: WHM > DNS
-   Zones returns 500, new domains get no zone, and dns-bootstrap fails.
-2. install.sh, Stalwart :443 check: `/api/schema` comes back gzip-encoded;
-   decompress it (body starts with `\x1f\x8b` / `Content-Encoding: gzip`).
-3. install.sh summary: when dns-bootstrap fails it claims the hostname
-   "isn't a public hostname"; report the failure separately.
-4. Re-run the installer and verify `dig @127.0.0.1 SOA <server zone>`, public
-   resolution of `panel.<hostname>`, and the WHM > DNS Zones page.
-5. Not yet: record editing for cPanel users (own domains), AAAA for the
+Fixed on 2026-09-30 and verified with an installer re-run on a live server
+(`dig @127.0.0.1 SOA <server zone>` answers, `panel.<hostname>` resolves
+publicly, WHM > DNS Zones renders):
+
+- ~~Collation mismatch~~: the three DNS tables had taken the database default
+  `utf8mb4_unicode_ci`; every other table is `utf8mb4_general_ci`. They now
+  declare `COLLATE=utf8mb4_general_ci`, and `schema.sql` / `004_dns_zones.sql`
+  convert existing tables with conditional `ALTER TABLE ... CONVERT TO`.
+  New tables must declare `ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_general_ci` explicitly.
+- ~~Stalwart :443 check~~: the installer now decompresses gzip responses from
+  `/api/schema`.
+- ~~Misleading summary~~: a failed dns-bootstrap is reported as a failure, not
+  as "isn't a public hostname".
+- ~~Worker `dns_write` jobs failed~~ with `Undefined constant "DNS_DOMAIN_RE"`:
+  the const was declared after the job loop (top-level `const` isn't hoisted
+  like functions). It now sits with the other constants at the top.
+
+Still open:
+
+1. Not yet: record editing for cPanel users (own domains), AAAA for the
    server's own names, importing DNS records during cPanel migration.
 
 ## Production readiness (review of 2026-09-30)
