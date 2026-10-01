@@ -18,9 +18,9 @@ into per-site Caddy files that `VhostService` imports:
 Build a section in the user panel (cPanel > Domains > *domain* > Routes) that
 does this per domain:
 
-- [ ] Read every `.htaccess` under the domain's docroot (root and subfolders)
+- [x] Read every `.htaccess` under the domain's docroot (root and subfolders)
       and show it next to the generated Caddy rules.
-- [ ] Translator for the common subset, flagging anything it can't translate
+- [x] Translator for the common subset, flagging anything it can't translate
       instead of guessing:
   - `RewriteRule ^pat$ target [L,QSA]` -> `path_regexp` + `rewrite`
     (`$n` -> `{re.<name>.n}`, QSA -> `&{query}`); `[R=301]` -> `redir`;
@@ -38,18 +38,18 @@ does this per domain:
   - Ignore with a note: `Options -Indexes` (Caddy never lists directories),
     `mod_deflate`/`mod_expires` (use `encode`/`Cache-Control`), `AddType`,
     LiteSpeed cache, cPanel `php_value` blocks.
-- [ ] Let the user edit the generated rules, then validate before saving:
+- [x] Let the user edit the generated rules, then validate before saving:
       the root worker writes the files and runs
       `frankenphp validate --config /etc/frankenphp/Caddyfile`; only reload on
       success, otherwise restore the previous files and show the error.
-- [ ] The web process must not write the rules directly (same reason as zone
+- [x] The web process must not write the rules directly (same reason as zone
       files and vhosts: a job through `SystemWorkerService`), and rules must be
       restricted so one customer can't add directives affecting another site
       (e.g. no `import`, `root` outside the docroot, `reverse_proxy`).
-- [ ] Run the translator automatically during cPanel migration, mark the
+- [x] Run the translator automatically during cPanel migration, mark the
       domain "routes need review" when anything was skipped, and drop the
       generic ".htaccess files found" warning.
-- [ ] Alt PHP versions: the rules are only imported for `php_version = default`
+- [x] Alt PHP versions: the rules are only imported for `php_version = default`
       sites; alt-version sites need the rules in their instance fragment.
 
 ## 2. Manual fixes still needed after adding/migrating an account

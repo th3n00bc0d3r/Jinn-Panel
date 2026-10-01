@@ -385,3 +385,15 @@ CREATE TABLE IF NOT EXISTS s3_fetches (
     finished_at DATETIME NULL,
     CONSTRAINT fk_s3_user FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- Routes translated from .htaccess that need a human look (something
+-- couldn't be translated faithfully). Also appended to schema.sql; idempotent.
+SET @rr_sql = IF(
+    (SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'domains' AND COLUMN_NAME = 'routes_review') = 0,
+    'ALTER TABLE domains ADD COLUMN routes_review TINYINT(1) NOT NULL DEFAULT 0',
+    'SELECT 1'
+);
+PREPARE rr_stmt FROM @rr_sql;
+EXECUTE rr_stmt;
+DEALLOCATE PREPARE rr_stmt;

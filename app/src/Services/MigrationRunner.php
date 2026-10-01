@@ -1063,8 +1063,29 @@ final class MigrationRunner
                 }
             }
         }
+        // .htaccess -> Caddy routes (cPanel > Domains > domain > Routes).
+        $review = [];
+        foreach ($htaccess as $domain) {
+            try {
+                $row = $this->pdo->prepare('SELECT * FROM domains WHERE domain_name = ? AND user_id = ?');
+                $row->execute([$domain, $userId]);
+                $d = $row->fetch();
+                $g = RoutesService::overview($d)['generated'];
+                $errors = RoutesService::queueSave($d, (string) $g['route'], (string) $g['site'], (bool) $g['needs_review']);
+                if ($errors) {
+                    $this->report['warnings'][] = "$domain: the rules translated from .htaccess didn't pass the checks (" . implode(' ', array_slice($errors, 0, 2)) . ') - set them in cPanel > Domains > Routes.';
+                } elseif ($g['needs_review']) {
+                    $review[] = $domain;
+                }
+            } catch (Throwable $e) {
+                $this->report['warnings'][] = "$domain: .htaccess not translated - " . $e->getMessage();
+            }
+        }
         if ($htaccess) {
-            $this->report['warnings'][] = '.htaccess files found (' . implode(', ', $htaccess) . '). FrankenPHP doesn\'t read Apache .htaccess: "pretty URL" routing to index.php works automatically, but custom redirects, deny rules and auth need re-creating.';
+            $this->report['info'][] = '.htaccess rules translated for ' . implode(', ', $htaccess) . ' (this server doesn\'t read .htaccess).';
+        }
+        if ($review) {
+            $this->report['warnings'][] = 'Routes need review for ' . implode(', ', $review) . ': some .htaccess rules couldn\'t be translated exactly - see cPanel > Domains > (domain) > Routes.';
         }
         if ($hardcoded) {
             $this->report['warnings'][] = 'These files contain the old /home/' . $user . '/ path and may need updating: ' . implode(', ', $hardcoded) . '.';

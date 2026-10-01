@@ -526,6 +526,13 @@ fi
 ( cd "$APP_ROOT" && tailwindcss -i public/assets/css/input.css -o public/assets/css/app.css --minify )
 chown frankenphp:webusers "$APP_ROOT/public/assets/css/app.css"
 
+# Per-site routing rules (cPanel > Domains > Routes): written by the root
+# worker only - root-owned so sites, which run as frankenphp, can't edit them.
+mkdir -p /var/lib/frankenphp/site-rules
+chown -R root:webusers /var/lib/frankenphp/site-rules
+chmod 0755 /var/lib/frankenphp/site-rules
+find /var/lib/frankenphp/site-rules -type f -exec chmod 0644 {} +
+
 # Per-site PHP settings: FrankenPHP ignores .user.ini, so a server-wide
 # auto_prepend_file includes the site's generated settings file
 # (PhpSettingsService) - one is_file() per request.

@@ -33,9 +33,9 @@ $st = $ssl['state'];
                 <div class="flex gap-3"><dt class="w-36 shrink-0 text-slate-400">Control panel</dt><dd><a class="text-sky-700 hover:underline" href="https://<?= e($name) ?>/jpanel" target="_blank" rel="noopener"><?= e($name) ?>/jpanel</a> <span class="block text-xs text-slate-400">Opens this panel at https://<?= e($name) ?>:2083 - share it with whoever manages the site.</span></dd></div>
                 <div class="flex gap-3"><dt class="w-36 shrink-0 text-slate-400">PHP</dt><dd class="text-slate-700"><?= e($d['php_version'] === 'default' ? 'Default (8.5)' : 'PHP ' . $d['php_version']) ?></dd></div>
                 <div class="flex gap-3"><dt class="w-36 shrink-0 text-slate-400">DNS points to</dt><dd class="font-mono text-slate-700"><?= e($addresses ? implode(', ', $addresses) : 'nothing') ?></dd></div>
-                <?php if ($routes): ?>
-                <div class="flex gap-3"><dt class="w-36 shrink-0 text-slate-400">Routes</dt><dd class="text-slate-700">Custom rewrite rules active (translated from .htaccess)</dd></div>
-                <?php endif; ?>
+                <div class="flex gap-3"><dt class="w-36 shrink-0 text-slate-400">Routes</dt><dd class="text-slate-700">
+                    <?= $routes ? 'Custom rules' : 'Default routing' ?><?= !empty($d['routes_review']) ? ' <span class="text-amber-700">(needs review)</span>' : '' ?>
+                    &middot; <a href="/cpanel/domains/<?= $id ?>/routes" class="text-sky-700 hover:underline">Routes &amp; .htaccess</a></dd></div>
             </dl>
         </div>
 

@@ -248,6 +248,47 @@ final class DomainController
         self::backTo($d);
     }
 
+    /** cPanel > Domains > domain > Routes: .htaccess, translated rules, rules in use. */
+    public static function routes(array $params): void
+    {
+        Auth::requireRole(['user']);
+        $me = Auth::user();
+        $d = self::owned($me, (int) ($params['id'] ?? 0));
+        View::render('cpanel/routes', [
+            'title' => 'Routes · ' . $d['domain_name'],
+            'd' => $d,
+            'o' => RoutesService::overview($d),
+            'last' => RoutesService::lastResult((string) $d['domain_name']),
+            'pending' => RoutesService::pending((string) $d['domain_name']),
+        ], 'cpanel');
+    }
+
+    public static function routesSave(array $params): void
+    {
+        Auth::requireRole(['user']);
+        Csrf::requireValid();
+        $me = Auth::user();
+        $d = self::owned($me, (int) ($params['id'] ?? 0));
+        $action = (string) ($_POST['action'] ?? 'save');
+        $review = false;
+        if ($action === 'generated') {
+            $g = RoutesService::overview($d)['generated'];
+            [$route, $site, $review] = [(string) $g['route'], (string) $g['site'], (bool) $g['needs_review']];
+        } elseif ($action === 'reset') {
+            [$route, $site] = ['', ''];
+        } else {
+            [$route, $site] = [(string) ($_POST['route'] ?? ''), (string) ($_POST['site'] ?? '')];
+        }
+        $errors = RoutesService::queueSave($d, $route, $site, $review);
+        if ($errors) {
+            Flash::error('Not saved: ' . implode(' ', array_slice($errors, 0, 5)));
+        } else {
+            Flash::ok($action === 'reset' ? 'Resetting to the default routing...' : 'Applying the rules - Caddy checks them first; the result shows below in a few seconds.');
+        }
+        header('Location: /cpanel/domains/' . (int) $d['id'] . '/routes');
+        exit;
+    }
+
     public static function phpSettings(array $params): void
     {
         Auth::requireRole(['user']);

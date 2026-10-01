@@ -87,6 +87,9 @@ if (is_dir(QUEUE_DIR)) {
                 case 's3_fetch':
                     startS3Fetch((int) ($job['fetch_id'] ?? 0), $log);
                     break;
+                case 'routes_apply':
+                    routesApply($job, $log);
+                    break;
                 default:
                     throw new RuntimeException('Unknown job type: ' . $job['type']);
             }
@@ -478,6 +481,62 @@ function deletePhpVersionRow(string $version, callable $log): void
  * vhosts, databases and mail), outside FrankenPHP's sandbox and request
  * lifecycle. `journalctl -u jinnpanel-migration-<id>` shows its output.
  */
+/**
+ * cPanel > Domains > Routes: write a site's routing rules (root-owned, so
+ * sites - which run as frankenphp - can't change them), re-render the site,
+ * and reload only if Caddy accepts the whole config; otherwise put the
+ * previous rules back. The rules are re-validated here: the job file comes
+ * from a directory frankenphp can write.
+ */
+function routesApply(array $job, callable $log): void
+{
+    $domain = strtolower((string) ($job['domain'] ?? ''));
+    if (!preg_match(DNS_DOMAIN_RE, $domain)) {
+        throw new RuntimeException('Invalid domain');
+    }
+    $siteDir = realpath('/var/www/' . $domain);
+    $docroot = realpath((string) ($job['docroot'] ?? ''));
+    if ($siteDir === false || $docroot === false || !str_starts_with($docroot . '/', $siteDir . '/')) {
+        throw new RuntimeException('Document root is outside the site folder');
+    }
+    require_once '/var/www/hostpanel/src/Services/HtaccessTranslator.php';
+    $new = ['route' => $job['route'] ?? null, 'site' => $job['site'] ?? null];
+    foreach ($new as $kind => $text) {
+        if ($text !== null && (!is_string($text) || ($errors = HtaccessTranslator::validate($text, $docroot, $kind)))) {
+            throw new RuntimeException("Rejected $kind rules: " . implode('; ', array_slice((array) ($errors ?? ['not text']), 0, 3)));
+        }
+    }
+    $dir = '/var/lib/frankenphp/site-rules';
+    $files = ['route' => "$dir/$domain.caddy", 'site' => "$dir/$domain.site.caddy"];
+    $old = array_map(fn($f) => is_file($f) ? (string) file_get_contents($f) : null, $files);
+    $put = function (array $contents) use ($files, $domain): void {
+        foreach ($files as $kind => $f) {
+            if ($contents[$kind] === null) {
+                @unlink($f);
+            } else {
+                file_put_contents("$f.tmp", $contents[$kind]);
+                chown("$f.tmp", 'root');
+                chgrp("$f.tmp", 'webusers');
+                chmod("$f.tmp", 0644);
+                rename("$f.tmp", $f);
+            }
+        }
+        exec('runuser -u frankenphp -- ' . escapeshellarg(PHP_BINARY) . ' /var/www/hostpanel/worker/vhost-write.php ' . escapeshellarg($domain) . ' 2>&1', $o, $c);
+        if ($c !== 0) {
+            throw new RuntimeException('Re-rendering the site failed: ' . implode(' ', array_slice($o, -3)));
+        }
+    };
+    $put($new);
+    exec('frankenphp validate --config /etc/frankenphp/Caddyfile 2>&1', $out, $code);
+    if ($code !== 0) {
+        $put($old);
+        $msg = implode(' ', array_filter(array_map(fn($l) => preg_match('/Error:|error/i', $l) ? trim($l) : '', $out)));
+        throw new RuntimeException('Caddy rejected the rules, the previous ones were kept: ' . mb_substr($msg !== '' ? $msg : implode(' ', array_slice($out, -2)), 0, 600));
+    }
+    run('frankenphp reload --config /etc/frankenphp/Caddyfile --force');
+    $log("routes for $domain applied");
+}
+
 /** Background download of cPanel backups from S3 into the import folder (S3FetchService). */
 function startS3Fetch(int $id, callable $log): void
 {

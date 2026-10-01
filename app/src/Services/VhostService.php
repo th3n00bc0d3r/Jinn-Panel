@@ -85,8 +85,9 @@ final class VhostService
         $safeName = preg_replace('/[^a-z0-9.-]/i', '_', $domain);
         $confPath = Config::VHOSTS_CADDY_DIR . "/$safeName.caddyfile";
         $rulesFile = self::rulesFile($domain);
-        // Site-level part of those rules (headers, handle_errors).
-        $siteRules = is_file(self::siteRulesFile($domain)) && $phpVersion === 'default'
+        // Site-level part of those rules (headers, handle_errors) - in the
+        // main block for every PHP version (it fronts alt-version sites too).
+        $siteRules = is_file(self::siteRulesFile($domain))
             ? "\timport " . self::siteRulesFile($domain) . "\n" : '';
 
         if ($phpVersion === 'default') {
@@ -219,13 +220,16 @@ final class VhostService
         // listener is loopback-only and plain HTTP on purpose - the main
         // instance already terminates real TLS before reverse_proxy'ing here.
         $port = PhpVersionService::port($phpVersion);
+        // The site's routing rules (cPanel > Domains > Routes) run here, in
+        // the instance that executes its PHP; they end in php_server.
+        $rules = self::rulesFile($domain);
+        $body = is_file($rules) ? "route {\n\t\timport {$rules}\n\t}" : "try_files {path} /index.php\n\tphp_server";
         $conf = <<<CADDY
         http://{$domain}:{$port}, http://www.{$domain}:{$port} {
         	bind 127.0.0.1
         	root * {$docroot}
         	encode zstd br gzip
-        	try_files {path} /index.php
-        	php_server
+        	{$body}
         }
         CADDY;
         file_put_contents("$dir/$safeName.caddyfile", $conf);
