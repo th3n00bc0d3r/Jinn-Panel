@@ -74,8 +74,15 @@ do them.
       creates missing mailboxes; never touches or rolls back the account.
       Also fixed: Dovecot gzip/bzip2/xz/zstd-compressed messages were
       rejected as invalid.
-- [ ] **Default account inbox** (`~/mail/cur|new`, the cPanel user's own
-      mailbox) isn't migrated or reported.
+- [x] **Default account inbox** (`~/mail`, the cPanel user's own mailbox:
+      system mail and catch-all deliveries) is migrated to
+      `<user>@<main domain>` with the cPanel account password, when it holds
+      mail. 9 of 13 accounts had some (538 messages).
+- [ ] **Catch-all addresses.** Most domains had cPanel's default
+      `*: <user>` (unknown addresses -> default mailbox); not recreated, so
+      that mail is now rejected. Add a per-domain "default address" setting
+      (reject / deliver to a mailbox / forward) in cPanel > Email, and
+      offer to migrate it.
 - [ ] **Mail DNS for local mail.** Domains whose mail stays on this server get
       only the panel's MX. The zone template should also publish:
   - `mail.<domain>` when it's missing: A/AAAA to the server, or a CNAME to

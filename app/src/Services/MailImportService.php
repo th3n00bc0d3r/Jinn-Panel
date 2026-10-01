@@ -175,6 +175,9 @@ final class MailImportService
                 continue;
             }
             $name = substr($entry, 1);
+            if ($name === 'mailbox_format.cpanel' || str_contains($name, '@')) {
+                continue; // cPanel's format-conversion marker / ".<local>@<domain_tld>" address links, not folders
+            }
             if (stripos($name, 'INBOX.') === 0) {
                 $name = substr($name, 6);
             }

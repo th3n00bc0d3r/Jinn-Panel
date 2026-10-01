@@ -273,7 +273,7 @@ final class MigrationRunner
                 $sftpUser = null;
             }
             $this->setItem(['step' => 'Extracting mail from the backup', 'progress' => 45]);
-            $this->extract($archive, $this->work . '/extract', ['*/cp/*', '*/homedir/etc/*', '*/homedir/mail/*', '*/homedir.tar']);
+            $this->extract($archive, $this->work . '/extract', ['*/cp/*', '*/shadow', '*/va/*', '*/homedir/etc/*', '*/homedir/mail/*', '*/homedir.tar']);
             if ($this->m['transfer_mode'] !== 'file') {
                 @unlink($archive);
             }
@@ -826,8 +826,30 @@ final class MigrationRunner
         $preserve = $this->opt['mail_passwords'] !== 'generate';
         $insert = $this->pdo->prepare('INSERT INTO email_accounts (user_id, domain_id, local_part, mail_account_id) VALUES (?, ?, ?, ?)');
         $exists = $this->pdo->prepare('SELECT mail_account_id FROM email_accounts WHERE domain_id = ? AND local_part = ?');
+
+        // The cPanel account's own default mailbox becomes <user>@<main
+        // domain>, logging in with the cPanel account password like cPanel
+        // webmail's default account did.
+        $user = $r->username();
+        $main = $r->mainDomain();
+        $defaultMaildir = ($withData && $main !== null && in_array($main, $domains, true)) ? $r->defaultMaildir() : null;
+        $catchAll = $r->catchAllDomains();
+        if ($catchAll) {
+            $this->report['info'][] = 'On cPanel, mail to unknown addresses at ' . implode(', ', $catchAll)
+                . " went to the account's default mailbox (catch-all). That isn't recreated here - unknown addresses are rejected.";
+        }
+
         foreach ($domains as $domain) {
             $accounts = $r->mailAccounts($domain);
+            if ($defaultMaildir !== null && $domain === $main) {
+                if (isset($accounts[$user])) {
+                    $this->report['warnings'][] = "The account's default mailbox (system mail) wasn't migrated: $user@$main is already a regular mailbox.";
+                    $defaultMaildir = null;
+                } else {
+                    $accounts[$user] = $r->accountPasswordHash();
+                }
+            }
+            $isDefault = fn(string $local) => $defaultMaildir !== null && $domain === $main && $local === $user;
             if (!$accounts) {
                 continue;
             }
@@ -848,7 +870,7 @@ final class MigrationRunner
                 $this->checkpoint();
                 $address = "$local@$domain";
                 $this->setItem(['step' => "Mailbox $address", 'progress' => 80]);
-                $maildir = $withData ? $r->maildir($domain, $local) : null;
+                $maildir = $withData ? ($isDefault($local) ? $defaultMaildir : $r->maildir($domain, $local)) : null;
                 $exists->execute([$domainRow['id'], $local]);
                 $existingId = $exists->fetchColumn();
                 if ($existingId !== false) {
@@ -868,7 +890,8 @@ final class MigrationRunner
 
                 $generated = null;
                 $real = ($preserve && $hash !== null) ? $hash : ($generated = Crypto::randomPassword(16));
-                $entry = ['address' => $address, 'status' => 'ok', 'password' => $generated ? 'generated' : 'preserved', 'generated_password' => $generated, 'note' => ''];
+                $entry = ['address' => $address, 'status' => 'ok', 'password' => $generated ? 'generated' : 'preserved', 'generated_password' => $generated,
+                    'note' => $isDefault($local) ? "The cPanel account's default mailbox (system mail, catch-all); same password as the cPanel account." : ''];
                 try {
                     $accountId = MailService::createMailbox($mailDomainId, $local, $real);
                 } catch (Throwable $e) {

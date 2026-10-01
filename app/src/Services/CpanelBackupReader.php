@@ -449,6 +449,59 @@ final class CpanelBackupReader
     }
 
     /** realpath($base/$rel) if it exists and is still inside $base. */
+    /** The account's main domain (cp/<user> DNS=), or null. */
+    public function mainDomain(): ?string
+    {
+        $d = strtolower((string) ($this->cpFile()['DNS'] ?? ''));
+        return preg_match(self::DOMAIN_RE, $d) ? $d : null;
+    }
+
+    /**
+     * The cPanel account's own "default" mailbox (~/mail/cur|new and its
+     * dot-folders): system mail for <user>@<server hostname>, plus whatever
+     * a domain's catch-all ("*: <user>") delivered. Null when it holds no
+     * messages.
+     */
+    public function defaultMaildir(): ?string
+    {
+        $dir = self::inside($this->homedir(), 'mail');
+        if ($dir === null || !is_dir($dir)) {
+            return null;
+        }
+        // Skips cPanel's ".<local>@<domain_tld>" entries: links to the
+        // address mailboxes under mail/<domain>/, not folders of this one.
+        $boxes = array_filter(glob("$dir/.[!.]*", GLOB_ONLYDIR) ?: [], fn($b) => !is_link($b) && !str_contains(basename($b), '@'));
+        foreach (array_merge([$dir], $boxes) as $box) {
+            foreach (['cur', 'new'] as $sub) {
+                foreach (scandir("$box/$sub") ?: [] as $f) {
+                    if ($f[0] !== '.' && is_file("$box/$sub/$f")) {
+                        return $dir;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    /** Domains whose cPanel catch-all ("default address", va/<domain> "*:") delivered to this account. */
+    public function catchAllDomains(): array
+    {
+        $out = [];
+        foreach (glob($this->root . '/va/*') ?: [] as $file) {
+            $domain = basename($file);
+            if (!preg_match(self::DOMAIN_RE, $domain)) {
+                continue;
+            }
+            foreach (file($file, FILE_IGNORE_NEW_LINES) ?: [] as $line) {
+                if (preg_match('/^\*:\s*"?([^"\s]+)"?\s*$/', $line, $m) && strtolower($m[1]) === $this->username) {
+                    $out[] = $domain;
+                }
+            }
+        }
+        sort($out);
+        return $out;
+    }
+
     public static function inside(string $base, string $rel): ?string
     {
         $real = realpath($base . '/' . $rel);
