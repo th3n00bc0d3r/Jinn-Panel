@@ -660,6 +660,27 @@ dnf -y install knot
 
 sed -i 's/#    listen: \[ 127.0.0.1@53, ::1@53 \]/    listen: [ 0.0.0.0@53, ::@53 ]/' /etc/knot/knot.conf
 grep -q '^    listen:' /etc/knot/knot.conf || warn "Could not find the expected commented listen line in knot.conf - check it manually, Knot may only be listening on localhost."
+# The worker registers zones with knotc conf-set, which only changes Knot's
+# memory; it also writes them to zones.conf so they survive a restart. Seed it
+# from the zone files on disk (an upgrade from a version that didn't have it).
+if [[ ! -f /etc/knot/zones.conf ]]; then
+    {
+        echo "# Hosted zones - written by the JinnPanel worker. Do not edit by hand."
+        zone_files=(/var/lib/knot/*.zone)
+        if [[ -e "${zone_files[0]}" ]]; then
+            echo "zone:"
+            for f in "${zone_files[@]}"; do
+                d=$(basename "$f" .zone)
+                echo "  - domain: \"$d\""
+            done
+        fi
+    } > /etc/knot/zones.conf
+fi
+chown root:knot /etc/knot/zones.conf
+chmod 0640 /etc/knot/zones.conf
+restorecon /etc/knot/zones.conf 2>/dev/null || true
+grep -q '^include: "zones.conf"' /etc/knot/knot.conf || printf '\ninclude: "zones.conf"\n' >> /etc/knot/knot.conf
+knotc conf-check >/dev/null
 systemctl enable --now knot
 firewall-cmd --permanent --add-service=dns >/dev/null
 firewall-cmd --reload >/dev/null

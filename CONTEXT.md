@@ -224,6 +224,14 @@ the `db_user` index change) and also ship an upgrade file in
   `/var/lib/knot` (knot:knot 0755). Don't use `knotc zone-check` as a
   validator either - on Knot 3.5 it reports "no such zone" even for loaded
   zones.
+- Zones are registered with `knotc conf-set`, which only changes Knot's
+  memory (knot.conf is a text file, not a confdb). After every conf-*
+  transaction the worker writes the live zone list to `/etc/knot/zones.conf`,
+  which knot.conf includes (`include: "zones.conf"`, added by the installer).
+  Without it a Knot restart or a reboot loads 0 zones and every hosted domain
+  - the server hostname too - stops resolving (it happened on 2026-10-01).
+  `knotc conf-export` is no substitute: it exports knotc's view of the file,
+  not the running server's zones.
 - UI: WHM > DNS Zones (`WhmDnsController`, `views/whm/dns.php`,
   `views/whm/dns_zone.php`), admin only. cPanel > DNS is read-only and
   renders from the DB.

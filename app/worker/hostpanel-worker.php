@@ -30,6 +30,7 @@ const QUEUE_DIR = '/var/www/hostpanel/storage/config-queue';
 // frankenphp can write - a link planted there would redirect root's writes.
 const OUT_DIR = '/var/lib/jinnpanel/worker';
 const KNOT_ZONE_DIR = '/var/lib/knot';
+const KNOT_ZONES_CONF = '/etc/knot/zones.conf';
 const PHP_VERSIONS_DIR = '/opt/php-versions';
 const APP_CONFIG = '/var/www/hostpanel/src/Config.php';
 const MIGRATION_RUNNER = '/var/www/hostpanel/worker/migration-runner.php';
@@ -390,7 +391,11 @@ function knotRegisterZone(string $domain): void
     });
 }
 
-/** Run knotc conf-* changes in one transaction; abort it on failure so the next job isn't locked out. */
+/**
+ * Run knotc conf-* changes in one transaction; abort it on failure so the next job isn't locked out.
+ * conf-* only changes Knot's in-memory config (knot.conf is a plain file, not a confdb), so the
+ * zone list is then written to KNOT_ZONES_CONF, which knot.conf includes - or a restart drops every zone.
+ */
 function knotConf(callable $changes): void
 {
     run('knotc conf-begin');
@@ -401,6 +406,36 @@ function knotConf(callable $changes): void
         exec('knotc conf-abort 2>&1');
         throw $e;
     }
+    knotPersistZones();
+}
+
+/** Write the zones Knot is serving now to KNOT_ZONES_CONF (atomically). */
+function knotPersistZones(): void
+{
+    exec('knotc conf-read zone.domain 2>&1', $out, $code);
+    if ($code !== 0) {
+        throw new RuntimeException('knotc conf-read zone.domain failed: ' . implode(' ', $out));
+    }
+    $zones = [];
+    foreach ($out as $line) {
+        if (preg_match('/^zone\.domain\s+(\S+?)\.?$/', trim($line), $m) && preg_match(DNS_DOMAIN_RE, $m[1])) {
+            $zones[] = strtolower($m[1]);
+        }
+    }
+    sort($zones);
+    $text = "# Hosted zones - written by the JinnPanel worker. Do not edit by hand.\n"
+        . ($zones ? "zone:\n" . implode('', array_map(fn($z) => "  - domain: \"$z\"\n", $zones)) : '');
+    $tmp = KNOT_ZONES_CONF . '.tmp';
+    if (file_put_contents($tmp, $text) === false) {
+        throw new RuntimeException("Cannot write $tmp");
+    }
+    chown($tmp, 'root');
+    chgrp($tmp, 'knot');
+    chmod($tmp, 0640);
+    if (!rename($tmp, KNOT_ZONES_CONF)) {
+        throw new RuntimeException('Cannot move the zone list into ' . KNOT_ZONES_CONF);
+    }
+    exec('restorecon ' . escapeshellarg(KNOT_ZONES_CONF) . ' 2>/dev/null');
 }
 
 /** @return array<string,string> only allowed keys with well-formed values */
