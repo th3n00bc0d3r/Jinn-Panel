@@ -132,9 +132,11 @@ function test_vhost_static_server(): void
     $sock = 'unix//run/p.sock';
     $static = ['sock' => 'unix//run/jinnpanel-static/u/static.sock', 'ttl' => 300];
     $out = VhostService::fpmRules("php_server", $sock, $static);
-    T::ok(str_contains($out, "php_fastcgi $sock\nreverse_proxy unix//run/jinnpanel-static/u/static.sock {"), 'php_server -> pool + static server', $out);
+    // In a route block: inside handle blocks Caddy would sort reverse_proxy before php_fastcgi
+    // and the static server would get .php requests (it refuses them, but PHP must run).
+    T::ok(str_starts_with($out, "route {\n\tphp_fastcgi $sock\n\treverse_proxy unix//run/jinnpanel-static/u/static.sock {"), 'php_server -> route { pool, then static server }', $out);
     T::ok(str_contains($out, 'header_up X-JP-Root {http.vars.root}') && str_contains($out, 'header_up X-JP-TTL "300"'), 'root and cache lifetime passed', $out);
-    T::ok(str_contains($out, "handle_response @jp_missing {\n\t\terror 404\n\t}"), '404 from the static server becomes a Caddy error', $out);
+    T::ok(str_contains($out, "handle_response @jp_missing {\n\t\t\terror 404\n\t\t}"), '404 from the static server becomes a Caddy error', $out);
     T::ok(!str_contains(VhostService::fpmRules("file_server", $sock, $static), 'file_server'), 'file_server replaced');
     $err = VhostService::fpmRules("handle_errors 404 {\n\trewrite * /404.html\n\tfile_server\n}", $sock, $static);
     T::ok(str_contains($err, 'copy_response 404') && !str_contains($err, 'error 404'), 'error pages keep their status', $err);

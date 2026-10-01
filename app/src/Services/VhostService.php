@@ -190,7 +190,13 @@ final class VhostService
         if ($sub) {
             $out .= " {\n" . implode('', array_map(fn($l) => "$indent\t" . trim($l) . "\n", $sub)) . "$indent}";
         }
-        return $out . "\n{$indent}" . self::fileHandler($matcher, $indent, $static, $errorCode);
+        if ($static === null) {
+            return $out . "\n{$indent}" . self::fileHandler($matcher, $indent, null, $errorCode);
+        }
+        // In a route block, so PHP always comes first: inside handle blocks
+        // Caddy sorts directives, and reverse_proxy sorts before php_fastcgi.
+        $in = "$indent\t";
+        return "route {\n{$in}" . str_replace("\n", "\n\t", $out) . "\n{$in}" . str_replace("\n", "\n\t", self::fileHandler($matcher, $indent, $static, $errorCode)) . "\n{$indent}}";
     }
 
     /**

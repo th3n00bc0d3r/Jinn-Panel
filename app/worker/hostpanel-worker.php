@@ -98,10 +98,11 @@ chmod(OUT_DIR, 0750);
 // Command-line entry points (as root):
 //   sync-accounts        install.sh: every account's runtime (Linux user, folders, pools) now
 //   sync-account <id>    one account (operators: after fixing something by hand)
+//   usage                measure usage now and apply hard disk quotas (also at boot)
 //   backup <id>          one backup (its own systemd unit, started by backupStart)
 //   restore <id> <parts> one restore (files,databases,mail)
 //   backup-all           the daily run of every account and the server
-if (PHP_SAPI === 'cli' && isset($argv[1]) && in_array($argv[1], ['sync-accounts', 'sync-account', 'backup', 'restore', 'backup-all'], true)) {
+if (PHP_SAPI === 'cli' && isset($argv[1]) && in_array($argv[1], ['sync-accounts', 'sync-account', 'usage', 'backup', 'restore', 'backup-all'], true)) {
     $echo = function (string $m): void {
         echo '[' . date('c') . "] $m\n";
     };
@@ -110,6 +111,10 @@ if (PHP_SAPI === 'cli' && isset($argv[1]) && in_array($argv[1], ['sync-accounts'
             exit(accountsSyncAll($echo, true) > 0 ? 1 : 0);
         case 'sync-account':
             accountSync((int) ($argv[2] ?? 0), $echo);
+            break;
+        case 'usage':
+            panelClasses();
+            UsageService::refresh($echo);
             break;
         case 'backup':
             panelClasses();
@@ -1336,6 +1341,10 @@ function staticServerSync(string $username, string $lu, array $domains): void
         }
     }
     runAs($lu, ['mkdir', '-p', '-m', '0700', ACCOUNT_HOME . "/$username/tmp/nginx"]);
+    // Its sockets/pid folder: the account's, the web server may come in (nginx -t needs it too).
+    ensureDir(STATIC_RUN, 'root', 'root', 0755);
+    ensureDir(STATIC_RUN . "/$username", $lu, 'frankenphp', 0750);
+    exec('restorecon -R ' . escapeshellarg(STATIC_RUN . "/$username") . ' 2>/dev/null');
 
     $text = staticConfig($username, $domains);
     $changed = @file_get_contents($conf) !== $text;
@@ -1440,6 +1449,10 @@ function staticConfig(string $username, array $domains): string
             gzip_min_length 512;
             gzip_vary on;
             gzip_types text/plain text/css text/xml text/javascript application/javascript application/json application/xml application/manifest+json image/svg+xml application/rss+xml application/atom+xml font/ttf font/otf application/vnd.ms-fontobject;
+            # Never a PHP file's source (PHP goes to the pool; this is only reached by mistake).
+            location ~* \.(php[0-9]?|phtml|phar|inc)(/|\$) {
+                return 404;
+            }
             location / {
                 add_header X-Accel-Expires \$http_x_jp_ttl;
                 try_files \$uri \$uri/ =404;

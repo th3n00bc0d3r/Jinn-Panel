@@ -77,6 +77,12 @@ the account's quota, plus measured disk space and this month's bandwidth)
 and quick links. Over the disk quota, uploads and new databases/mailboxes/
 domains are refused; over the bandwidth, the sites pause until next month.
 
+**Cache** - per domain: a static file cache (compressed copies of HTML,
+CSS, JS, SVG, fonts... served without being compressed again; on/off,
+lifetime 1 minute to 1 week, clear - File Manager changes clear it
+automatically), browser caching on/off, the page cache for PHP pages, and
+an object cache (Valkey) login for WordPress/Laravel.
+
 **Backups** - download the account's backups (site files, each database,
 mail), back up now, restore any part.
 

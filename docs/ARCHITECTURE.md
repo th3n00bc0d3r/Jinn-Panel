@@ -75,8 +75,8 @@ shell, locked password), created and kept in line by the worker's
 by `install.sh`):
 
 - **Files.** `/var/www/<domain>` belongs to the account, mode 0750, plus an
-  ACL letting `frankenphp` traverse it (Caddy serves static files, the
-  panel reads) - other accounts can't even list it. A folder the panel or a
+  ACL letting `frankenphp` in (Caddy checks which files exist; it doesn't
+  serve them - see *Static files*) - other accounts can't even list it. A folder the panel or a
   migration created is handed over (`chown -R -P -h`, no world-writable
   bits). `/var/www` itself is `root:frankenphp 1775`: the panel may create
   new site folders, the sticky bit stops it from renaming anyone else's.
@@ -92,11 +92,29 @@ by `install.sh`):
   master, with `opcache.validate_permission` and `opcache.restrict_api`.
   The FPM binary is labelled `httpd_exec_t`, so it runs as `httpd_t` like
   FrankenPHP and EL's own php-fpm.
-- **Vhosts.** `VhostService` renders `php_fastcgi <socket>` + `file_server`
-  where sites used to say `php_server`; routing rules translated from
-  `.htaccess` still say `php_server` (the editor's language) and are
-  rewritten on render (`VhostService::fpmRules`). A suspended account's
-  sites answer 503, one over its monthly bandwidth 509.
+- **Static files.** Caddy never sends a customer file itself: every
+  non-PHP request goes to the account's own static server,
+  `jinnpanel-static@<name>` - nginx running as `jp_<name>`, config from
+  `staticServerSync` in `/etc/jinnpanel/static/<name>.conf`, sockets in
+  `/run/jinnpanel-static/<name>/` (only frankenphp may connect). It reads
+  files with the account's rights only, so a link in a site folder pointing
+  at another account's files or the panel's gets nothing, and it refuses
+  links to files the account doesn't own (`disable_symlinks if_not_owner`).
+  Caddy passes the effective document root (`X-JP-Root`, checked against
+  the account's own site folders) and the domain's cache lifetime
+  (`X-JP-TTL`). In front of the files sits a per-domain response cache of
+  gzip-compressed copies (`/var/lib/jinnpanel-static-cache/<name>/<domain>`,
+  32 MB each; cPanel > Cache > Static file cache: on/off, lifetime, clear;
+  File Manager changes clear it). Caddy still opens files to see whether
+  they exist (try_files, file matchers), hence its read ACL - but it never
+  serves their contents.
+- **Vhosts.** `VhostService` renders `php_fastcgi <pool socket>` + a
+  `reverse_proxy` to the static server where sites used to say
+  `php_server`/`file_server`; routing rules translated from `.htaccess`
+  still say `php_server` (the editor's language) and are rewritten on
+  render (`VhostService::fpmRules`; `handle_errors` pages keep their status
+  through `copy_response <code>`). A suspended account's sites answer 503,
+  one over its monthly bandwidth 509.
 - **The panel acting on customer files.** The panel can only read into
   site folders, so file work (File Manager, Exposed files, Routes' .htaccess
   scan, clearing OPcache) runs *inside the account's own pool*:

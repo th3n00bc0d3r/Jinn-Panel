@@ -76,7 +76,9 @@ Scoping rules used everywhere: a `user` only ever touches rows with
 
 ## Privilege model (important)
 
-- The **panel** runs in FrankenPHP as `frankenphp`. Each **hosting account**
+- The **panel** runs in FrankenPHP as `frankenphp`. Static files of a site
+  come from its account's own nginx (`jinnpanel-static@<username>`, as the
+  account, per-domain response cache) - Caddy only routes to it. Each **hosting account**
   is a Linux user `jp_<username>` that owns `/var/www/<domain>` (0750 + an
   ACL for frankenphp) and whose sites' PHP runs in its own PHP-FPM pool
   (`jinnpanel-php-fpm@<default|82|...>`, socket
@@ -291,14 +293,10 @@ The security review of 2026-09-30 listed 19 items. Status after the work of
 
 Known limits of the isolation (worth knowing before letting strangers host):
 
-- Caddy serves every site's static files as `frankenphp`, which can read
-  every account's files and the panel's `Config.php`. A symlink in a
-  docroot pointing elsewhere would be served. Symlinks can't be made by
-  customers today (PHP: open_basedir + exec/putenv disabled; SFTP: SFTPGo
-  refuses them; archives: the pool agent refuses them; migrations: rsync
-  --safe-links) - but an account with `php_exec` on could. Real fix: serve
-  static files from a separate, secret-less web server user in front of the
-  panel instance.
+- (Fixed 2026-10-01) Static files used to be served by Caddy as
+  `frankenphp`, which can read every account's files; they now come from
+  each account's own static server (nginx as the account, links to others'
+  files refused), so a symlink reaches nothing the account can't read.
 - SFTPGo now holds CAP_DAC_OVERRIDE/CHOWN/FOWNER (to write as the account),
   so its admin API (8090, open on the internet by the owner's choice) is
   close to root on files. Binding it to 127.0.0.1 is strongly recommended.

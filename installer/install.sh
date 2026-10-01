@@ -957,6 +957,23 @@ else
 fi
 runuser -u frankenphp -- php "$APP_ROOT/worker/sftp-sync.php" | sed 's/^/    /' || warn "Updating some SFTP logins failed (above)."
 
+# At boot: measure usage and apply the hard disk quotas right away
+# (otherwise the hourly run does it).
+cat > /etc/systemd/system/jinnpanel-usage-boot.service <<'UNIT'
+[Unit]
+Description=JinnPanel - measure account usage and apply disk quotas at boot
+After=mariadb.service stalwart.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/php -d auto_prepend_file= /usr/local/bin/hostpanel-worker.php usage
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable jinnpanel-usage-boot.service >/dev/null 2>&1
+
 systemctl enable --now hostpanel-worker.timer
 ok "Background worker running (every 5s)"
 
