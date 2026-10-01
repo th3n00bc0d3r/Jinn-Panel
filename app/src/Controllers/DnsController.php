@@ -12,8 +12,9 @@ final class DnsController
         $domains = $stmt->fetchAll();
 
         foreach ($domains as &$d) {
-            $zoneFile = '/var/lib/knot/' . $d['domain_name'] . '.zone';
-            $d['zone_content'] = is_readable($zoneFile) ? file_get_contents($zoneFile) : null;
+            // Rendered from the panel DB (the source of truth for zones).
+            $zone = DnsService::findZoneByName($d['domain_name']);
+            $d['zone_content'] = $zone ? DnsService::renderZone((int) $zone['id']) : null;
         }
         unset($d);
 
@@ -40,7 +41,7 @@ final class DnsController
             DnsService::createZone($domain['domain_name']);
             $upd = Database::app()->prepare('UPDATE domains SET dns_provisioned = 1 WHERE id = ?');
             $upd->execute([$id]);
-            Flash::ok('DNS zone (re)provisioned.');
+            Flash::ok('DNS zone re-published (existing records kept).');
         } catch (Throwable $e) {
             error_log($e->getMessage());
             Flash::error('DNS provisioning failed: ' . $e->getMessage());

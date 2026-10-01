@@ -148,6 +148,62 @@ the `db_user` index change) and also ship an upgrade file in
   cPanel backup; **not yet run against a real cPanel server**.
 - Account deletion and migration rollback share `AccountCleanupService::purge()`.
 
+## DNS zones (branch `dns-management`)
+
+- **Source of truth is the panel DB**: `dns_zones`, `dns_records`,
+  `panel_settings` (`app/migrations/004_dns_zones.sql`, also appended to
+  `schema.sql`). A hosted domain's zone is linked by name
+  (`dns_zones.zone_name = domains.domain_name`), not by FK.
+- `DnsService` renders zone text. SOA, apex NS and in-zone glue for ns1/ns2
+  are generated from the nameserver settings (`panel_settings` keys
+  `dns_ns1_host`, `dns_ns1_ip`, `dns_ns2_host`, `dns_ns2_ip`, optional
+  `dns_server_zone`) and are never stored as records.
+- Every change goes through `DnsService::publish()`: bump serial, enqueue a
+  `dns_write` job carrying the full zone text. `hostpanel-worker.php` (root)
+  writes `/var/lib/knot/<zone>.zone` (knot:knot 0640), registers the zone in
+  Knot if needed and runs `knotc -b zone-reload`; if that fails it restores
+  the previous file (Knot keeps serving the zone it had).
+- Never write zone files from the web process: FrankenPHP can't write
+  `/var/lib/knot` (knot:knot 0755). Don't use `knotc zone-check` as a
+  validator either - on Knot 3.5 it reports "no such zone" even for loaded
+  zones.
+- UI: WHM > DNS Zones (`WhmDnsController`, `views/whm/dns.php`,
+  `views/whm/dns_zone.php`), admin only. cPanel > DNS is read-only and
+  renders from the DB.
+- Server zone = the hostname's parent (server.example.com -> example.com),
+  flagged `is_server_zone`: can't be deleted, and `removeZone()` leaves it
+  alone when a hosted domain with the same name is removed.
+- `app/worker/dns-bootstrap.php`, run by install.sh as frankenphp: stores
+  nameservers on the first run (env `JINNPANEL_NS1_HOST` / `_NS1_IP` /
+  `_NS2_HOST` / `_NS2_IP` always win, `JINNPANEL_DNS_ZONE` overrides the
+  zone), ensures the server zone, and imports zones for domains that existed
+  before zones lived in the DB.
+
+### Open issues on this branch
+
+Fixed on 2026-09-30 and verified with an installer re-run on a live server
+(`dig @127.0.0.1 SOA <server zone>` answers, `panel.<hostname>` resolves
+publicly, WHM > DNS Zones renders):
+
+- ~~Collation mismatch~~: the three DNS tables had taken the database default
+  `utf8mb4_unicode_ci`; every other table is `utf8mb4_general_ci`. They now
+  declare `COLLATE=utf8mb4_general_ci`, and `schema.sql` / `004_dns_zones.sql`
+  convert existing tables with conditional `ALTER TABLE ... CONVERT TO`.
+  New tables must declare `ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_general_ci` explicitly.
+- ~~Stalwart :443 check~~: the installer now decompresses gzip responses from
+  `/api/schema`.
+- ~~Misleading summary~~: a failed dns-bootstrap is reported as a failure, not
+  as "isn't a public hostname".
+- ~~Worker `dns_write` jobs failed~~ with `Undefined constant "DNS_DOMAIN_RE"`:
+  the const was declared after the job loop (top-level `const` isn't hoisted
+  like functions). It now sits with the other constants at the top.
+
+Still open:
+
+1. Not yet: record editing for cPanel users (own domains), AAAA for the
+   server's own names, importing DNS records during cPanel migration.
+
 ## Production readiness (review of 2026-09-30)
 
 Verdict: **not ready for production with untrusted customers.** It is a

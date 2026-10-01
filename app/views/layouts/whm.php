@@ -7,6 +7,7 @@ $navItems = [
 ];
 if (Auth::isAdmin()) {
     $navItems[] = ['section' => 'Server Config'];
+    $navItems[] = ['href' => '/whm/dns', 'label' => 'DNS Zones', 'icon' => 'globe'];
     $navItems[] = ['href' => '/whm/server-config/mail', 'label' => 'Mail Settings', 'icon' => 'mail'];
     $navItems[] = ['href' => '/whm/server-config/sftp', 'label' => 'SFTP Settings', 'icon' => 'folder-up'];
     $navItems[] = ['href' => '/whm/server-config/php', 'label' => 'PHP Settings', 'icon' => 'settings'];
