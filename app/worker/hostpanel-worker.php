@@ -90,6 +90,12 @@ if (is_dir(QUEUE_DIR)) {
                 case 'routes_apply':
                     routesApply($job, $log);
                     break;
+                case 'php_ext_list':
+                    phpExtList($log);
+                    break;
+                case 'php_ext_change':
+                    phpExtChange((string) ($job['ext'] ?? ''), !empty($job['install']), $log);
+                    break;
                 case 'routes_remove':
                     routesRemove((string) ($job['domain'] ?? ''), $log);
                     break;
@@ -538,6 +544,51 @@ function routesApply(array $job, callable $log): void
     }
     run('frankenphp reload --config /etc/frankenphp/Caddyfile --force');
     $log("routes for $domain applied");
+}
+
+/** Installed and available php-zts-* extension packages, cached for WHM > PHP Extensions. */
+function phpExtList(callable $log): void
+{
+    $names = function (string $what): array {
+        exec('timeout 300 dnf -q list --' . $what . " 'php-zts-*' 2>/dev/null", $out);
+        $n = [];
+        foreach ($out as $line) {
+            if (preg_match('/^php-zts-([a-z0-9_]+)\.(x86_64|aarch64|noarch)\s/', $line, $m)) {
+                $n[] = $m[1];
+            }
+        }
+        sort($n);
+        return array_values(array_unique($n));
+    };
+    $skip = ['cli', 'embed', 'cgi', 'fpm', 'devel', 'dbg', 'common'];
+    $installed = array_values(array_diff($names('installed'), $skip));
+    $available = array_values(array_diff($names('available'), $skip, $installed));
+    $file = '/var/www/hostpanel/storage/php-extensions.json';
+    file_put_contents($file, json_encode(['updated' => time(), 'installed' => $installed, 'available' => $available]));
+    chown($file, 'frankenphp');
+    $log(count($installed) . ' installed, ' . count($available) . ' available');
+}
+
+/** dnf install/remove one php-zts extension, then restart what runs the default PHP. */
+function phpExtChange(string $ext, bool $install, callable $log): void
+{
+    $protected = ['pdo', 'pdo_mysql', 'mysqlnd', 'mysqli', 'gd', 'intl', 'zip', 'bcmath', 'gmp', 'soap', 'sqlite3', 'pdo_sqlite', 'xsl', 'bz2', 'gettext', 'ftp', 'imagick', 'cli', 'embed', 'cgi', 'fpm', 'devel', 'common'];
+    if (!preg_match('/^[a-z0-9_]{2,40}$/', $ext) || (!$install && in_array($ext, $protected, true))) {
+        throw new RuntimeException("Refusing to change php-zts-$ext");
+    }
+    run('dnf -y ' . ($install ? 'install' : 'remove') . ' ' . escapeshellarg("php-zts-$ext"));
+    // A broken extension must not take the sites down: check the CLI loads it.
+    exec('/usr/bin/php-zts -m 2>&1', $mods, $code);
+    if ($code !== 0 || preg_grep('/PHP (Warning|Fatal).*Unable to load/i', $mods)) {
+        if ($install) {
+            exec('dnf -y remove ' . escapeshellarg("php-zts-$ext") . ' 2>&1');
+        }
+        throw new RuntimeException("php-zts-$ext doesn't load (" . implode(' ', array_slice($mods, 0, 2)) . ') - removed again');
+    }
+    run('systemctl restart frankenphp');
+    exec('systemctl try-restart jinnpanel-webmail 2>&1');
+    phpExtList(fn($m) => null);
+    $log("php-zts-$ext " . ($install ? 'installed' : 'removed') . '; FrankenPHP restarted');
 }
 
 /** A removed domain's routing rules (only once the domain is really gone). */

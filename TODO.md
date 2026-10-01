@@ -132,7 +132,7 @@ do them.
       were public on cPanel too (site `.zip` archives, `orders.json`,
       `_backups/` folders, `error_log`). Flag files like these after a
       migration.
-- [ ] **PHP extensions** were missing (only PDO): fixed in `install.sh`, but
+- [x] **PHP extensions** were missing (only PDO): fixed in `install.sh`, but
       there's no per-site way to enable more - add a WHM page listing
       available `php-zts-*` extensions.
 

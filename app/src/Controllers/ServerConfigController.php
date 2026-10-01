@@ -93,6 +93,44 @@ final class ServerConfigController
         exit;
     }
 
+    // ---- PHP extensions ----
+
+    public static function phpExtensions(): void
+    {
+        Auth::requireRole(['admin']);
+        $list = PhpExtensionService::list();
+        $last = PhpExtensionService::lastResult();
+        if ($list['updated'] === null || $list['updated'] < time() - 86400) {
+            PhpExtensionService::refresh();
+        }
+        View::render('whm/server_config/php_extensions', [
+            'title' => 'PHP Extensions',
+            'list' => $list,
+            'last' => $last,
+            'pending' => (bool) glob(__DIR__ . '/../../storage/config-queue/php-ext*.json'),
+        ], 'whm');
+    }
+
+    public static function phpExtensionChange(): void
+    {
+        Auth::requireRole(['admin']);
+        Csrf::requireValid();
+        try {
+            if (($_POST['op'] ?? '') === 'refresh') {
+                PhpExtensionService::refresh();
+                Flash::ok('Refreshing the package list...');
+            } else {
+                $ext = (string) ($_POST['ext'] ?? '');
+                PhpExtensionService::change($ext, ($_POST['op'] ?? '') === 'install');
+                Flash::ok("Queued: php-zts-$ext - the web server restarts when it's done (a second or two).");
+            }
+        } catch (Throwable $e) {
+            Flash::error($e->getMessage());
+        }
+        header('Location: /whm/server-config/php-extensions');
+        exit;
+    }
+
     // ---- PHP / OPcache ----
 
     public static function phpIndex(): void

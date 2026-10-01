@@ -58,6 +58,8 @@ $router->get('/whm/server-config/database', ['ServerConfigController', 'database
 $router->post('/whm/server-config/database', ['ServerConfigController', 'databaseUpdate']);
 $router->get('/whm/server-config/tuning', ['ServerConfigController', 'tuningIndex']);
 $router->post('/whm/server-config/tuning', ['ServerConfigController', 'tuningApply']);
+$router->get('/whm/server-config/php-extensions', ['ServerConfigController', 'phpExtensions']);
+$router->post('/whm/server-config/php-extensions', ['ServerConfigController', 'phpExtensionChange']);
 $router->get('/whm/server-config/php-versions', ['PhpVersionController', 'index']);
 $router->post('/whm/server-config/php-versions', ['PhpVersionController', 'install']);
 $router->post('/whm/server-config/php-versions/{version}/remove', ['PhpVersionController', 'remove']);
