@@ -34,7 +34,8 @@ $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
                 <?php if (isset($item['section'])): ?>
                 <p class="px-3 pt-4 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-600"><?= e($item['section']) ?></p>
                 <?php continue; endif; ?>
-                <?php $active = $path === $item['href'] || str_starts_with($path, $item['href'] . '/'); ?>
+                <?php // The dashboards (/cpanel, /whm) are a prefix of every page: exact match only.
+                $active = $path === $item['href'] || (substr_count($item['href'], '/') > 1 && str_starts_with($path, $item['href'] . '/')); ?>
             <a href="<?= e($item['href']) ?>"
                class="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors <?= $active ? "bg-{$accent}-600 text-white" : 'text-slate-400 hover:bg-slate-900 hover:text-white' ?>">
                 <?= icon($item['icon'], 'h-5 w-5 shrink-0') ?>

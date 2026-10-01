@@ -178,6 +178,6 @@ do them.
 
 ## 4. Look and feel
 
-- [ ] **Light animations, a more futuristic panel:** subtle transitions
+- [x] **Light animations, a more futuristic panel:** subtle transitions
       (page fade-in, card hover lift, progress bars, number counters,
       gradient/glow accents), respecting `prefers-reduced-motion`.

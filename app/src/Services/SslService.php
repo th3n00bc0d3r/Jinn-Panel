@@ -9,7 +9,8 @@ declare(strict_types=1);
  * forever and the site has no working certificate. So "automatic" (the
  * default) means: Let's Encrypt when the domain already resolves here,
  * self-signed otherwise - and upgradeAll() (daily) moves self-signed sites
- * to Let's Encrypt once their DNS points here.
+ * to Let's Encrypt once their DNS points here, and Let's Encrypt sites that
+ * point elsewhere without a certificate back to self-signed.
  */
 final class SslService
 {
@@ -110,9 +111,27 @@ final class SslService
                 $log[] = "{$d['domain_name']}: FAILED to switch to Let's Encrypt - " . $e->getMessage();
             }
         }
+        // And back: a Let's Encrypt site that has no valid certificate and
+        // doesn't point here only makes Caddy retry ACME (until Let's Encrypt
+        // rate-limits the server) - self-signed until its DNS moves.
+        $down = $pdo->prepare("UPDATE domains SET ssl_mode = 'self_signed' WHERE id = ?");
+        foreach ($pdo->query("SELECT * FROM domains WHERE ssl_mode = 'letsencrypt' ORDER BY domain_name")->fetchAll() as $d) {
+            $cert = self::certificate((string) $d['domain_name']);
+            if (($cert !== null && $cert['valid_to'] > time()) || self::resolvesHere((string) $d['domain_name'])) {
+                continue;
+            }
+            try {
+                VhostService::create((string) $d['domain_name'], (string) ($d['php_version'] ?: 'default'), 'self_signed', false, false);
+                $down->execute([$d['id']]);
+                $changed = true;
+                $log[] = "{$d['domain_name']}: doesn't point here and has no certificate - self-signed until it does";
+            } catch (Throwable $e) {
+                $log[] = "{$d['domain_name']}: FAILED to switch to self-signed - " . $e->getMessage();
+            }
+        }
         if ($changed) {
             VhostService::reload();
         }
-        return $log ?: ['SSL: no self-signed site points here yet'];
+        return $log ?: ['SSL: nothing to change'];
     }
 }
