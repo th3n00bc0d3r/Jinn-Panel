@@ -799,7 +799,7 @@ USER_CONFIG_TYPE=file
 USER_SETTINGS_DIR=$WEBMAIL_DATA/users
 ATTACHMENT_DIR=$WEBMAIL_DATA/attachments
 APP_DATA_DIR=$WEBMAIL_DATA/app_data
-CYPHT_MODULES=core,contacts,local_contacts,imap,smtp,account,idle_timer,themes,profiles,inline_message,imap_folders,keyboard_shortcuts,tags,saved_searches,advanced_search,highlights,history,brute_force
+CYPHT_MODULES=core,contacts,local_contacts,imap,smtp,account,idle_timer,themes,profiles,inline_message,imap_folders,keyboard_shortcuts,tags,saved_searches,advanced_search,highlights,history
 ENV
 # Regenerates site/ for this path, with this install's own SITE_ID (the
 # release ships the CI machine's).
@@ -807,6 +807,10 @@ ENV
 # "info" on mail.example.com logs in as info@example.com.
 cat > "$WEBMAIL_HOME/prepend.php" <<'PHP'
 <?php
+// AUTH_TYPE is also a CGI variable, empty on every request: Cypht's
+// env('AUTH_TYPE', 'DB') then falls back to database logins (there is no DB).
+putenv('AUTH_TYPE=IMAP');
+$_ENV['AUTH_TYPE'] = $_SERVER['AUTH_TYPE'] = 'IMAP';
 if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['username'], $_POST['password'])
     && is_string($_POST['username']) && $_POST['username'] !== '' && !str_contains($_POST['username'], '@')
     && preg_match('/^mail\.([a-z0-9.-]+)$/', strtolower((string) ($_SERVER['HTTP_HOST'] ?? '')), $m)) {
