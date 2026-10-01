@@ -378,7 +378,7 @@ final class DomainController
         self::backTo($d);
     }
 
-    /** Clears the domain's cached PHP code (OPcache), plus its page cache when enabled. */
+    /** Clears the domain's cached PHP code (OPcache), static file cache, and its page/object cache when enabled. */
     public static function clearCache(array $params): void
     {
         Auth::requireRole(['user']);
@@ -386,7 +386,7 @@ final class DomainController
         $me = Auth::user();
         $d = self::owned($me, (int) ($params['id'] ?? 0));
         $n = CacheService::clearDomain($d);
-        $parts = ["{$n['opcache']} cached PHP files"];
+        $parts = ["{$n['opcache']} cached PHP files", "{$n['static']} cached static files"];
         if ($n['pages'] !== null) {
             $parts[] = "{$n['pages']} cached pages";
         }

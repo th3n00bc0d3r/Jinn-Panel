@@ -75,8 +75,11 @@ final class VhostService
 
         $safeName = preg_replace('/[^a-z0-9.-]/i', '_', $domain);
         $confPath = Config::VHOSTS_CADDY_DIR . "/$safeName.caddyfile";
-        [$owner, $offline] = self::ownerState($domain);
+        [$owner, $offline, $cache] = self::ownerState($domain);
         $sock = 'unix/' . AccountRuntime::socket((string) $owner, $phpVersion);
+        // Static files: the account's own static server (nginx as the
+        // account), with the domain's server-cache lifetime (0 = off).
+        $static = ['sock' => 'unix/' . AccountRuntime::staticSocket((string) $owner), 'ttl' => $cache['ttl']];
 
         // A site's own routing (translated from its .htaccess, cPanel >
         // Domains > Routes) replaces the default front-controller fallback.
@@ -84,10 +87,10 @@ final class VhostService
         // account's pool. Site-level part: headers, handle_errors.
         $rulesFile = self::rulesFile($domain);
         $siteRulesFile = self::siteRulesFile($domain);
-        $siteRules = is_file($siteRulesFile) ? self::indent(self::fpmRules((string) file_get_contents($siteRulesFile), $sock), 1) . "\n" : '';
+        $siteRules = is_file($siteRulesFile) ? self::indent(self::fpmRules((string) file_get_contents($siteRulesFile), $sock, $static), 1) . "\n" : '';
         $phpBlock = is_file($rulesFile)
-            ? self::indent(self::fpmRules((string) file_get_contents($rulesFile), $sock), 2)
-            : "\t\ttry_files {path} /index.php\n\t\t@nophp {\n\t\t\tpath *.php\n\t\t\tnot file {path}\n\t\t}\n\t\terror @nophp 404\n\t\t" . self::phpHandler($sock, '', [], "\t\t");
+            ? self::indent(self::fpmRules((string) file_get_contents($rulesFile), $sock, $static), 2)
+            : "\t\ttry_files {path} /index.php\n\t\t@nophp {\n\t\t\tpath *.php\n\t\t\tnot file {path}\n\t\t}\n\t\terror @nophp 404\n\t\t" . self::phpHandler($sock, '', [], "\t\t", $static);
 
         // (@nophp: a request for a missing .php file - e.g. the /index.php
         // fallback on a site served from index.html - is a 404, not a 500.)
@@ -111,9 +114,11 @@ final class VhostService
             // didn't set its own). CSS/JS short: they're often edited in
             // place without a version in the file name.
             . "\t@jp_media path_regexp jp_media (?i)\\.(png|jpe?g|gif|webp|avif|svg|ico|woff2?|ttf|otf|eot|mp4|webm|mp3|pdf)$\n"
-            . "\theader @jp_media ?Cache-Control \"public, max-age=2592000\"\n"
             . "\t@jp_assets path_regexp jp_assets (?i)\\.(css|js|mjs)$\n"
-            . "\theader @jp_assets ?Cache-Control \"public, max-age=86400\"\n";
+            . ($cache['browser']
+                ? "\theader @jp_media ?Cache-Control \"public, max-age=2592000\"\n\theader @jp_assets ?Cache-Control \"public, max-age=86400\"\n"
+                // Browser cache off (cPanel > Cache): browsers check back every time.
+                : "\theader @jp_media ?Cache-Control \"no-cache\"\n\theader @jp_assets ?Cache-Control \"no-cache\"\n");
 
         // Every site's requests go to one JSON access log: UsageService
         // counts each account's monthly bandwidth from it.
@@ -148,69 +153,152 @@ final class VhostService
         return $docroot;
     }
 
-    /** @return array{0:string,1:?string} owning account's username, and why its sites are off ('suspended', 'bandwidth') or null */
+    /**
+     * @return array{0:string,1:?string,2:array{ttl:int,browser:bool}} owning account's
+     *   username; why its sites are off ('suspended', 'bandwidth') or null; its cache settings
+     */
     private static function ownerState(string $domain): array
     {
         // No try/catch: on a database error the site must keep its current
         // config rather than be rewritten to point at no pool at all.
-        $s = Database::app()->prepare('SELECT u.username, u.status AS user_status, d.status AS domain_status, COALESCE(au.over_bandwidth, 0) AS over_bw
+        $s = Database::app()->prepare('SELECT u.username, u.status AS user_status, d.status AS domain_status, COALESCE(au.over_bandwidth, 0) AS over_bw, d.static_cache_ttl, d.browser_cache
             FROM domains d JOIN users u ON u.id = d.user_id LEFT JOIN account_usage au ON au.user_id = u.id WHERE d.domain_name = ?');
         $s->execute([$domain]);
         $row = $s->fetch();
         if (!$row) {
             throw new RuntimeException("$domain is not hosted here - no site config written.");
         }
+        $cache = ['ttl' => max(0, (int) $row['static_cache_ttl']), 'browser' => (int) $row['browser_cache'] === 1];
         if ($row['user_status'] !== 'active' || $row['domain_status'] !== 'active') {
-            return [(string) $row['username'], 'suspended'];
+            return [(string) $row['username'], 'suspended', $cache];
         }
-        return [(string) $row['username'], (int) $row['over_bw'] === 1 ? 'bandwidth' : null];
+        return [(string) $row['username'], (int) $row['over_bw'] === 1 ? 'bandwidth' : null, $cache];
     }
 
     /**
      * php_server ("run PHP here", like FrankenPHP's own directive) as the
      * account's pool: php_fastcgi (same try_files/index/split semantics)
-     * followed by file_server for everything that isn't PHP.
+     * followed by the static file handler for everything that isn't PHP.
      *
      * @param list<string> $sub subdirective lines (try_files, index, split)
+     * @param array{sock:string,ttl:int}|null $static the account's static server (null: plain file_server)
      */
-    private static function phpHandler(string $sock, string $matcher, array $sub, string $indent): string
+    private static function phpHandler(string $sock, string $matcher, array $sub, string $indent, ?array $static = null, ?int $errorCode = null): string
     {
         $m = $matcher !== '' ? " $matcher" : '';
         $out = "php_fastcgi{$m} {$sock}";
         if ($sub) {
             $out .= " {\n" . implode('', array_map(fn($l) => "$indent\t" . trim($l) . "\n", $sub)) . "$indent}";
         }
-        return $out . "\n{$indent}file_server{$m}";
+        return $out . "\n{$indent}" . self::fileHandler($matcher, $indent, $static, $errorCode);
     }
 
     /**
-     * Rewrites every php_server directive in validated routing rules
-     * (HtaccessTranslator::validate) into the pool handler. Directive
-     * position only: a line that is `php_server [matcher] [{`.
+     * file_server, as the account's static server: Caddy only checks which
+     * files exist (it may not read them); the account's own nginx reads and
+     * serves them, through its cache. A 404 from it becomes Caddy's own 404
+     * (so handle_errors pages still work); inside handle_errors <code>, the
+     * error page goes out with that status.
+     *
+     * @param array{sock:string,ttl:int}|null $static
      */
-    public static function fpmRules(string $rules, string $sock): string
+    private static function fileHandler(string $matcher, string $indent, ?array $static, ?int $errorCode = null): string
     {
-        $lines = preg_split('/\r?\n/', $rules);
+        $m = $matcher !== '' ? " $matcher" : '';
+        if ($static === null) {
+            return "file_server{$m}";
+        }
+        $i = "$indent\t";
+        $after = $errorCode !== null
+            ? "{$i}handle_response {\n{$i}\tcopy_response {$errorCode}\n{$i}}\n"
+            // 403 too: a folder without an index page (or a refused link) - Caddy says 404 for those.
+            : "{$i}@jp_missing status 403 404\n{$i}handle_response @jp_missing {\n{$i}\terror 404\n{$i}}\n";
+        return "reverse_proxy{$m} {$static['sock']} {\n"
+            . "{$i}header_up X-JP-Root {http.vars.root}\n"
+            . "{$i}header_up X-JP-TTL \"" . (int) $static['ttl'] . "\"\n"
+            . $after
+            . "{$indent}}";
+    }
+
+    /**
+     * Rewrites validated routing rules (HtaccessTranslator::validate) for
+     * this server: every php_server into the account's pool + static server,
+     * every file_server into the static server (its subdirectives dropped -
+     * nginx does index files and canonical URLs itself). Directive position
+     * only. handle_errors blocks with several codes are split into one per
+     * code, so an error page keeps its own status.
+     *
+     * @param array{sock:string,ttl:int}|null $static null: keep file_server (tests, no static server)
+     */
+    public static function fpmRules(string $rules, string $sock, ?array $static = null): string
+    {
+        $lines = self::splitErrorBlocks(preg_split('/\r?\n/', $rules));
+        $out = [];
+        $depth = 0;
+        $errors = []; // stack of [depth the block opened at, status code]
+        for ($i = 0; $i < count($lines); $i++) {
+            $line = $lines[$i];
+            $code = $errors ? end($errors)[1] : null;
+            if (preg_match('/^(\s*)php_server((?:\s+[^\s{]+)?)\s*(\{)?\s*$/', $line, $m)) {
+                $sub = [];
+                if (!empty($m[3])) {
+                    $d = 1;
+                    while (++$i < count($lines)) {
+                        $d += substr_count($lines[$i], '{') - substr_count($lines[$i], '}');
+                        if ($d <= 0) {
+                            break;
+                        }
+                        $sub[] = $lines[$i];
+                    }
+                }
+                $out[] = $m[1] . self::phpHandler($sock, trim($m[2]), $sub, $m[1], $static, $code);
+                continue;
+            }
+            if ($static !== null && preg_match('/^(\s*)file_server((?:\s+@[^\s{]+)?)\s*(\{)?\s*$/', $line, $m)) {
+                if (!empty($m[3])) {
+                    $d = 1;
+                    while (++$i < count($lines) && ($d += substr_count($lines[$i], '{') - substr_count($lines[$i], '}')) > 0) {
+                    }
+                }
+                $out[] = $m[1] . self::fileHandler(trim($m[2]), $m[1], $static, $code);
+                continue;
+            }
+            if (preg_match('/^\s*handle_errors\s+(\d{3})\s*\{\s*$/', $line, $m)) {
+                $errors[] = [$depth, (int) $m[1]];
+            }
+            $depth += substr_count($line, '{') - substr_count($line, '}');
+            while ($errors && $depth <= end($errors)[0]) {
+                array_pop($errors);
+            }
+            $out[] = $line;
+        }
+        return implode("\n", $out);
+    }
+
+    /** `handle_errors 403 404 { ... }` -> one block per code. @param list<string> $lines @return list<string> */
+    private static function splitErrorBlocks(array $lines): array
+    {
         $out = [];
         for ($i = 0; $i < count($lines); $i++) {
-            if (!preg_match('/^(\s*)php_server((?:\s+[^\s{]+)?)\s*(\{)?\s*$/', $lines[$i], $m)) {
+            if (!preg_match('/^(\s*)handle_errors((?:\s+\d{3}){2,})\s*\{\s*$/', $lines[$i], $m)) {
                 $out[] = $lines[$i];
                 continue;
             }
-            $sub = [];
-            if (!empty($m[3])) {
-                $depth = 1;
-                while (++$i < count($lines)) {
-                    $depth += substr_count($lines[$i], '{') - substr_count($lines[$i], '}');
-                    if ($depth <= 0) {
-                        break;
-                    }
-                    $sub[] = $lines[$i];
+            $body = [];
+            $d = 1;
+            while (++$i < count($lines)) {
+                $d += substr_count($lines[$i], '{') - substr_count($lines[$i], '}');
+                if ($d <= 0) {
+                    break;
                 }
+                $body[] = $lines[$i];
             }
-            $out[] = $m[1] . self::phpHandler($sock, trim($m[2]), $sub, $m[1]);
+            foreach (preg_split('/\s+/', trim($m[2])) as $code) {
+                array_push($out, "{$m[1]}handle_errors $code {", ...$body);
+                $out[] = "{$m[1]}}";
+            }
         }
-        return implode("\n", $out);
+        return $out;
     }
 
     private static function indent(string $text, int $tabs): string

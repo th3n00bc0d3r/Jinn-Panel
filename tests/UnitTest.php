@@ -127,6 +127,23 @@ function test_vhost_php_server_rewrite(): void
     T::same('respond "php_server" 200', VhostService::fpmRules('respond "php_server" 200', $sock), 'only directive position');
 }
 
+function test_vhost_static_server(): void
+{
+    $sock = 'unix//run/p.sock';
+    $static = ['sock' => 'unix//run/jinnpanel-static/u/static.sock', 'ttl' => 300];
+    $out = VhostService::fpmRules("php_server", $sock, $static);
+    T::ok(str_contains($out, "php_fastcgi $sock\nreverse_proxy unix//run/jinnpanel-static/u/static.sock {"), 'php_server -> pool + static server', $out);
+    T::ok(str_contains($out, 'header_up X-JP-Root {http.vars.root}') && str_contains($out, 'header_up X-JP-TTL "300"'), 'root and cache lifetime passed', $out);
+    T::ok(str_contains($out, "handle_response @jp_missing {\n\t\terror 404\n\t}"), '404 from the static server becomes a Caddy error', $out);
+    T::ok(!str_contains(VhostService::fpmRules("file_server", $sock, $static), 'file_server'), 'file_server replaced');
+    $err = VhostService::fpmRules("handle_errors 404 {\n\trewrite * /404.html\n\tfile_server\n}", $sock, $static);
+    T::ok(str_contains($err, 'copy_response 404') && !str_contains($err, 'error 404'), 'error pages keep their status', $err);
+    $multi = VhostService::fpmRules("handle_errors 403 404 {\n\trewrite * /e.html\n\tfile_server\n}\nheader X-A b", $sock, $static);
+    T::ok(str_contains($multi, 'handle_errors 403 {') && str_contains($multi, 'handle_errors 404 {') && str_contains($multi, 'copy_response 403') && str_contains($multi, 'copy_response 404'), 'multi-code error blocks split', $multi);
+    T::ok(str_ends_with($multi, 'header X-A b'), 'lines after the block kept', $multi);
+    T::same(substr_count($multi, '{'), substr_count($multi, '}'), 'braces balanced');
+}
+
 function test_cron_schedules(): void
 {
     T::same('*/15 * * * *', CronService::normaliseSchedule(' */15  * * * * '), 'normalised');

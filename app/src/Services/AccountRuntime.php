@@ -56,6 +56,12 @@ final class AccountRuntime
         return self::FPM_RUN . '/' . self::tag($phpVersion) . '/' . strtolower($username) . '.sock';
     }
 
+    /** The account's static file server (nginx as the account, its cache in front). */
+    public static function staticSocket(string $username): string
+    {
+        return '/run/jinnpanel-static/' . strtolower($username) . '/static.sock';
+    }
+
     /** Whether the account's pool for that version is up (its socket exists). */
     public static function ready(string $username, string $phpVersion = 'default'): bool
     {

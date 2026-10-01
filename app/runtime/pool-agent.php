@@ -28,6 +28,31 @@ require __DIR__ . '/FileManagerService.php';
 require __DIR__ . '/ExposureService.php';
 require __DIR__ . '/RoutesService.php';
 
+/**
+ * Every regular file under $dir (links and folders not followed): calls
+ * $fn(path, size). A link pointing outside the account can't even be
+ * lstat()ed under open_basedir - such entries are simply skipped.
+ */
+function jp_walk(string $dir, callable $fn, int &$budget): void
+{
+    foreach (@scandir($dir) ?: [] as $e) {
+        if ($e === '.' || $e === '..' || $budget-- <= 0) {
+            continue;
+        }
+        $p = "$dir/$e";
+        $st = @lstat($p);
+        if ($st === false) {
+            continue;
+        }
+        $type = $st['mode'] & 0170000;
+        if ($type === 0040000) {
+            jp_walk($p, $fn, $budget);
+        } elseif ($type === 0100000) {
+            $fn($p, (int) $st['size']);
+        }
+    }
+}
+
 $reply = function (array $data): never {
     header('Content-Type: application/json');
     echo json_encode($data, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
@@ -163,27 +188,57 @@ try {
         case 'opcache_clear':
             // Compiled scripts of this site only (opcache.restrict_api lets only this folder call it).
             $n = 0;
+            $budget = 200000;
             if (function_exists('opcache_invalidate')) {
-                $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS));
-                foreach ($it as $f) {
-                    if ($f->isFile() && str_ends_with($f->getFilename(), '.php') && @opcache_invalidate($f->getPathname(), true)) {
+                jp_walk($root, function (string $p) use (&$n): void {
+                    if (str_ends_with($p, '.php') && @opcache_invalidate($p, true)) {
                         $n++;
                     }
-                }
+                }, $budget);
             }
             $reply(['ok' => true, 'count' => $n]);
         case 'usage':
             // Bytes in the site folder (quota accounting).
             $bytes = 0;
             $files = 0;
-            $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS));
-            foreach ($it as $f) {
-                if (!$f->isLink()) {
-                    $bytes += (int) $f->getSize();
-                    $files++;
+            $budget = 2000000;
+            jp_walk($root, function (string $p, int $size) use (&$bytes, &$files): void {
+                $bytes += $size;
+                $files++;
+            }, $budget);
+            $reply(['ok' => true, 'bytes' => $bytes, 'files' => $files]);
+        case 'static_cache_clear':
+        case 'static_cache_count':
+            // This account's static server cache for the domain (files nginx made as this user).
+            $me = function_exists('posix_geteuid') ? (string) (posix_getpwuid(posix_geteuid())['name'] ?? '') : '';
+            $dir = '/var/lib/jinnpanel-static-cache/' . preg_replace('/^jp_/', '', $me) . '/' . basename($root);
+            $n = 0;
+            if (str_starts_with($me, 'jp_') && is_dir($dir) && !is_link($dir)) {
+                $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
+                foreach ($it as $f) {
+                    if ($f->isDir() && !$f->isLink()) {
+                        $op === 'static_cache_clear' && @rmdir($f->getPathname());
+                    } else {
+                        $n++;
+                        $op === 'static_cache_clear' && @unlink($f->getPathname());
+                    }
                 }
             }
-            $reply(['ok' => true, 'bytes' => $bytes, 'files' => $files]);
+            $reply(['ok' => true, 'count' => $n]);
+        case 'is_static':
+            // No PHP at all under the document root (bounded scan): the page cache has nothing to do.
+            $docroot = (string) ($args['docroot'] ?? '');
+            $static = $fm->inside((string) realpath($docroot)) && is_dir($docroot);
+            $budget = 5000;
+            if ($static) {
+                jp_walk($docroot, function (string $p) use (&$static): void {
+                    if (str_ends_with(strtolower($p), '.php')) {
+                        $static = false;
+                    }
+                }, $budget);
+                $static = $static && $budget > 0; // a big tree: don't guess
+            }
+            $reply(['ok' => true, 'static' => $static]);
         case 'ping':
             $reply(['ok' => true, 'user' => function_exists('posix_geteuid') ? (posix_getpwuid(posix_geteuid())['name'] ?? '') : '']);
         default:

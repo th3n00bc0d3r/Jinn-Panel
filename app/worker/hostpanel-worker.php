@@ -43,6 +43,11 @@ const FPM_RUN = '/run/jinnpanel-php';
 const PAGECACHE_DIR = '/var/lib/jinnpanel-pagecache';
 const SITE_INI_DIR = '/var/lib/frankenphp/site-ini';
 const POOL_LIB = '/usr/local/lib/jinnpanel/pool';
+// Each account's static files: its own nginx (jinnpanel-static@<username>),
+// as its own user, with a per-domain response cache - see staticServerSync().
+const STATIC_ETC = '/etc/jinnpanel/static';
+const STATIC_RUN = '/run/jinnpanel-static';
+const STATIC_CACHE_DIR = '/var/lib/jinnpanel-static-cache';
 const LINUX_PREFIX = 'jp_';
 // putenv too: with it, LD_PRELOAD + mail() starts arbitrary programs anyway.
 const DEFAULT_DISABLED_FUNCTIONS = 'exec,passthru,shell_exec,system,proc_open,popen,pcntl_exec,dl,putenv';
@@ -1063,6 +1068,8 @@ function accountSync(int $userId, callable $log): void
     foreach (array_keys($changed) as $tag) {
         fpmReload((string) $tag, isset($byTag[$tag]) ? $username : null);
     }
+    $siteNames = array_values(array_filter(array_map(fn($r) => strtolower((string) $r['domain_name']), $domains), fn($n) => preg_match(DNS_DOMAIN_RE, $n)));
+    staticServerSync($username, $lu, $active ? $siteNames : []);
     $log("account $username synced: " . count($domains) . ' domain(s), pools: ' . (implode(', ', array_keys($byTag)) ?: 'none') . ($active ? '' : ' (suspended)'));
 }
 
@@ -1120,6 +1127,7 @@ function accountRemove(string $username, array $archive, callable $log): void
             fpmReload($tag);
         }
     }
+    staticServerSync($username, $lu, []);
     $moved = [];
     $dest = '/var/lib/jinnpanel/removed/' . $username . '-' . date('Ymd-His');
     foreach ($archive as $domain) {
@@ -1248,8 +1256,12 @@ function siteHandOver(string $dir, string $lu): void
 
 /**
  * As the account: nothing world-writable, no leftover setgid (the old
- * shared-group setup), and read access for frankenphp on everything (Caddy
- * serves the static files), inherited by whatever is created later.
+ * shared-group setup), and read access for frankenphp, inherited by what's
+ * created later - Caddy opens files to see whether they exist when it
+ * routes a request (try_files, file matchers). It never sends their
+ * contents: static files come from the account's own static server (which
+ * runs as the account, so a link to someone else's file gets nothing),
+ * PHP from its pool.
  */
 function siteGrantWeb(string $dir, string $lu): void
 {
@@ -1283,6 +1295,161 @@ function ensurePageCacheDir(string $domain, string $lu): void
     runAs($lu, ['setfacl', '-R', '-P', '-m', 'u:frankenphp:rwX,d:u:frankenphp:rwX,d:u::rwX,d:g::rwX', $dir]);
 }
 
+/**
+ * The account's static file server: nginx running as the account's user,
+ * so it can read the account's files and nothing else - a link in a site
+ * folder pointing at another account's files (or the panel's) gets 403,
+ * and links to files the account doesn't own are refused outright
+ * (disable_symlinks if_not_owner). Caddy hands it every non-PHP request
+ * (VhostService). Two servers on Unix sockets in STATIC_RUN/<username>/
+ * (jp_<name>:frankenphp 0750 - only the web server can connect):
+ *  - static.sock: a response cache per domain (compressed copies, the
+ *    lifetime the site chose - header X-JP-TTL, 0 = off);
+ *  - files.sock: the files themselves, gzip-compressed.
+ * No domains (or suspended): the server is stopped and disabled.
+ *
+ * @param list<string> $domains
+ */
+function staticServerSync(string $username, string $lu, array $domains): void
+{
+    $unit = "jinnpanel-static@$username.service";
+    $conf = STATIC_ETC . "/$username.conf";
+    if (!$domains) {
+        exec('systemctl disable --now ' . escapeshellarg($unit) . ' 2>&1');
+        @unlink($conf);
+        return;
+    }
+    @mkdir(STATIC_ETC, 0755, true);
+    ensureDir(STATIC_CACHE_DIR, 'root', 'root', 0711);
+    $cacheBase = STATIC_CACHE_DIR . "/$username";
+    if (is_link($cacheBase)) {
+        unlink($cacheBase);
+    }
+    if (!is_dir($cacheBase)) {
+        mkdir($cacheBase, 0700);
+    }
+    lchown($cacheBase, $lu);
+    lchgrp($cacheBase, $lu);
+    foreach ($domains as $d) {
+        if (!is_dir("$cacheBase/$d")) {
+            runAs($lu, ['mkdir', '-m', '0700', "$cacheBase/$d"]);
+        }
+    }
+    runAs($lu, ['mkdir', '-p', '-m', '0700', ACCOUNT_HOME . "/$username/tmp/nginx"]);
+
+    $text = staticConfig($username, $domains);
+    $changed = @file_get_contents($conf) !== $text;
+    if ($changed) {
+        file_put_contents("$conf.new", $text);
+        exec('runuser -u ' . escapeshellarg($lu) . ' -- /usr/sbin/nginx -t -q -c ' . escapeshellarg("$conf.new") . ' 2>&1', $out, $code);
+        if ($code !== 0) {
+            @unlink("$conf.new");
+            throw new RuntimeException("nginx rejected the static server config of $username: " . implode(' ', array_slice($out, -2)));
+        }
+        rename("$conf.new", $conf);
+    }
+    exec('systemctl is-active --quiet ' . escapeshellarg($unit), $o, $active);
+    if ($active !== 0) {
+        run('systemctl enable --now ' . escapeshellarg($unit));
+    } elseif ($changed) {
+        run('systemctl reload ' . escapeshellarg($unit));
+    }
+    for ($i = 0; $i < 25 && !file_exists(STATIC_RUN . "/$username/static.sock"); $i++) {
+        usleep(200000);
+        clearstatcache();
+    }
+}
+
+/** @param list<string> $domains */
+function staticConfig(string $username, array $domains): string
+{
+    $run = STATIC_RUN . "/$username";
+    $tmp = ACCOUNT_HOME . "/$username/tmp/nginx";
+    $cache = STATIC_CACHE_DIR . "/$username";
+    $alt = implode('|', array_map(fn($d) => preg_quote($d, '/'), $domains));
+    $zones = '';
+    $zoneMap = '';
+    foreach (array_values($domains) as $i => $d) {
+        $zones .= "    proxy_cache_path $cache/$d levels=1:2 keys_zone=jp$i:2m max_size=32m inactive=7d use_temp_path=off;\n";
+        $zoneMap .= "        \"~^/var/www/" . preg_quote($d, '/') . "(/|\$)\" jp$i;\n";
+    }
+    return <<<CONF
+    # Managed by JinnPanel (hostpanel-worker staticServerSync) - edits are overwritten.
+    # Static files of account $username, served as jp_$username.
+    worker_processes 1;
+    pid $run/nginx.pid;
+    error_log stderr error;
+    events { worker_connections 1024; }
+    http {
+        include /etc/nginx/mime.types;
+        default_type application/octet-stream;
+        access_log off;
+        server_tokens off;
+        sendfile on;
+        tcp_nopush on;
+        absolute_redirect off;
+        client_body_temp_path $tmp/body;
+        proxy_temp_path $tmp/proxy;
+        fastcgi_temp_path $tmp/fastcgi;
+        uwsgi_temp_path $tmp/uwsgi;
+        scgi_temp_path $tmp/scgi;
+        open_file_cache max=4000 inactive=60s;
+        open_file_cache_valid 10s;
+        open_file_cache_errors on;
+
+        # The document root Caddy sends: only this account's site folders.
+        map \$http_x_jp_root \$jp_root {
+            default /nonexistent;
+            "~^/var/www/($alt)(/[^\\x00]*)?\$" \$http_x_jp_root;
+        }
+        map \$http_x_jp_root \$jp_zone {
+            default off;
+    $zoneMap    }
+        map \$http_x_jp_ttl \$jp_nocache { default 0; "" 1; "0" 1; }
+        map \$http_accept_encoding \$jp_enc { default ""; "~*gzip" gzip; }
+    $zones
+        # The cache: one zone per domain, lifetime from the site's setting.
+        server {
+            listen unix:$run/static.sock;
+            # Cached descriptors would keep serving entries "Clear cache" just deleted.
+            open_file_cache off;
+            location / {
+                proxy_pass http://unix:$run/files.sock;
+                proxy_http_version 1.1;
+                proxy_set_header Host \$host;
+                proxy_set_header Accept-Encoding \$jp_enc;
+                proxy_cache \$jp_zone;
+                proxy_cache_key "\$host\$uri|\$jp_enc";
+                proxy_cache_valid 200 301 302 5m;
+                proxy_cache_revalidate on;
+                proxy_cache_lock on;
+                proxy_cache_use_stale error timeout updating;
+                proxy_cache_bypass \$jp_nocache;
+                proxy_no_cache \$jp_nocache;
+                add_header X-JinnPanel-Static \$upstream_cache_status always;
+            }
+        }
+        # The files, read with this account's rights; links to files it doesn't own are refused.
+        server {
+            listen unix:$run/files.sock;
+            root \$jp_root;
+            disable_symlinks if_not_owner;
+            gzip on;
+            gzip_proxied any;
+            gzip_comp_level 6;
+            gzip_min_length 512;
+            gzip_vary on;
+            gzip_types text/plain text/css text/xml text/javascript application/javascript application/json application/xml application/manifest+json image/svg+xml application/rss+xml application/atom+xml font/ttf font/otf application/vnd.ms-fontobject;
+            location / {
+                add_header X-Accel-Expires \$http_x_jp_ttl;
+                try_files \$uri \$uri/ =404;
+            }
+        }
+    }
+
+    CONF;
+}
+
 /** @param list<string> $domains */
 function poolConfig(string $username, string $lu, string $tag, array $domains, bool $allowExec): string
 {
@@ -1301,7 +1468,7 @@ function poolConfig(string $username, string $lu, string $tag, array $domains, b
             $paths[] = SITES_BASE . "/$d/";
         }
     }
-    $paths = array_values(array_unique(array_merge($paths, ["$home/", SITE_INI_DIR . '/', POOL_LIB . '/', '/usr/share/pear/', '/usr/share/php/'])));
+    $paths = array_values(array_unique(array_merge($paths, ["$home/", SITE_INI_DIR . '/', POOL_LIB . '/', STATIC_CACHE_DIR . "/$username/", '/usr/share/pear/', '/usr/share/php/'])));
     $basedir = implode(':', $paths);
     $disabled = $allowExec ? '' : DEFAULT_DISABLED_FUNCTIONS;
     $sock = FPM_RUN . "/$tag/$username.sock";

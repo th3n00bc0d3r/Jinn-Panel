@@ -63,6 +63,38 @@ REDIS_PREFIX=<?= e($creds['prefix'] . $first) ?>:</pre>
 
     <div class="<?= $card ?> overflow-hidden">
         <div class="px-5 py-3 border-b border-slate-100">
+            <h2 class="text-sm font-semibold text-slate-700">Static file cache</h2>
+            <p class="text-xs text-slate-400 mt-0.5 max-w-3xl">Keeps ready-to-send, compressed copies of your sites' static files (HTML, CSS, JavaScript, SVG, fonts...), so they go out without being compressed again for every visitor. Edits made in the File Manager show up right away; files uploaded over SFTP after the lifetime runs out, or when you clear the cache. Browser caching tells visitors' browsers to keep images for 30 days and CSS/JS for a day; turn it off while you're changing them a lot.</p>
+        </div>
+        <ul class="divide-y divide-slate-100 text-sm">
+            <?php foreach ($domains as $d): ?>
+            <?php $son = (int) $d['static_cache_ttl'] > 0; ?>
+            <li class="px-5 py-3 flex flex-wrap items-center gap-3">
+                <span class="font-medium text-slate-700 min-w-48"><?= e($d['domain_name']) ?></span>
+                <form method="post" action="/cpanel/cache/static/<?= (int) $d['id'] ?>" class="flex flex-wrap items-center gap-2">
+                    <?= Csrf::field() ?>
+                    <label class="flex items-center gap-2 text-sm text-slate-600"><input type="checkbox" name="enabled" value="1" <?= $son ? 'checked' : '' ?> class="rounded border-slate-300 text-sky-600 focus:ring-sky-500"> Cache</label>
+                    <select name="ttl" class="rounded-lg border border-slate-300 px-2 py-1.5 text-xs bg-white">
+                        <?php foreach (CacheService::STATIC_TTLS as $v => $l): ?>
+                        <option value="<?= $v ?>" <?= ($son ? (int) $d['static_cache_ttl'] : 300) === $v ? 'selected' : '' ?>><?= e($l) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                    <label class="flex items-center gap-2 text-sm text-slate-600"><input type="checkbox" name="browser" value="1" <?= (int) $d['browser_cache'] ? 'checked' : '' ?> class="rounded border-slate-300 text-sky-600 focus:ring-sky-500"> Browser caching</label>
+                    <button class="rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-xs font-medium px-3 py-1.5">Save</button>
+                </form>
+                <span class="text-xs text-slate-400"><?= $son && $d['static_entries'] !== null ? number_format((int) $d['static_entries']) . ' files cached' : ($son ? '' : 'off') ?></span>
+                <form method="post" action="/cpanel/cache/static/<?= (int) $d['id'] ?>" class="ml-auto">
+                    <?= Csrf::field() ?>
+                    <button name="op" value="clear" class="inline-flex items-center gap-1.5 text-xs font-medium text-sky-700 hover:text-sky-600" <?= $son ? '' : 'disabled' ?>><?= icon('refresh', 'h-3.5 w-3.5') ?> Clear</button>
+                </form>
+            </li>
+            <?php endforeach; ?>
+            <?php if (!$domains): ?><li class="px-5 py-6 text-center text-slate-400">Add a domain first.</li><?php endif; ?>
+        </ul>
+    </div>
+
+    <div class="<?= $card ?> overflow-hidden">
+        <div class="px-5 py-3 border-b border-slate-100">
             <h2 class="text-sm font-semibold text-slate-700">Page cache</h2>
             <p class="text-xs text-slate-400 mt-0.5 max-w-3xl">Stores whole pages for visitors who aren't logged in, so PHP doesn't run for them. Only plain page views are cached: never logged-in users, carts, forms, or pages that set a cookie. Changes show up after the lifetime runs out, or right away when you clear the cache.</p>
         </div>
@@ -72,7 +104,7 @@ REDIS_PREFIX=<?= e($creds['prefix'] . $first) ?>:</pre>
             <li class="px-5 py-3 flex flex-wrap items-center gap-3">
                 <span class="font-medium text-slate-700 min-w-48"><?= e($d['domain_name']) ?></span>
                 <?php if ($d['static'] && !$on): ?>
-                <span class="text-xs text-slate-500">Static site (no PHP) - served straight from disk, no page cache needed.</span>
+                <span class="text-xs text-slate-500">Static site (no PHP) - the static file cache above does the job, no page cache needed.</span>
                 <?php else: ?>
                 <form method="post" action="/cpanel/cache/domains/<?= (int) $d['id'] ?>" class="flex flex-wrap items-center gap-2">
                     <?= Csrf::field() ?>

@@ -140,6 +140,7 @@ $router->post('/cpanel/dns/{id}/records/{record}/delete', ['DnsController', 'del
 $router->get('/cpanel/cache', ['CacheController', 'index']);
 $router->post('/cpanel/cache/object', ['CacheController', 'objectCache']);
 $router->post('/cpanel/cache/domains/{id}', ['CacheController', 'pageCache']);
+$router->post('/cpanel/cache/static/{id}', ['CacheController', 'staticCache']);
 $router->get('/cpanel/cron', ['CronController', 'index']);
 $router->post('/cpanel/cron', ['CronController', 'store']);
 $router->post('/cpanel/cron/{id}/toggle', ['CronController', 'toggle']);

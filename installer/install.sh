@@ -268,6 +268,44 @@ semanage fcontext -a -t httpd_exec_t '/usr/bin/php-fpm-zts' 2>/dev/null || seman
 semanage fcontext -a -t httpd_exec_t '/opt/php-versions/[^/]+/php-fpm' 2>/dev/null || true
 restorecon /usr/sbin/php-fpm-zts
 systemctl disable --now php-fpm-zts >/dev/null 2>&1 || true
+# Sites' static files: each account's own nginx (jinnpanel-static@<name>,
+# as jp_<name>, config from the worker in /etc/jinnpanel/static/), with a
+# per-domain response cache - Caddy (frankenphp) may only look files up,
+# never read them, so a link in a site folder can't reach other accounts'
+# files or the panel's secrets. nginx's own service stays off.
+dnf -y install nginx
+systemctl disable --now nginx >/dev/null 2>&1 || true
+mkdir -p /etc/jinnpanel/static /run/jinnpanel-static /var/lib/jinnpanel-static-cache
+chmod 0755 /run/jinnpanel-static; chmod 0711 /var/lib/jinnpanel-static-cache
+semanage fcontext -a -t httpd_var_run_t '/run/jinnpanel-static(/.*)?' 2>/dev/null || true
+semanage fcontext -a -t httpd_cache_t '/var/lib/jinnpanel-static-cache(/.*)?' 2>/dev/null || true
+restorecon -R /run/jinnpanel-static /var/lib/jinnpanel-static-cache
+echo 'd /run/jinnpanel-static 0755 root root -' > /etc/tmpfiles.d/jinnpanel-static.conf
+cat > /etc/systemd/system/jinnpanel-static@.service <<'UNIT'
+[Unit]
+Description=JinnPanel static files of account %i (nginx as jp_%i)
+After=network.target
+
+[Service]
+Type=forking
+User=jp_%i
+Group=jp_%i
+PIDFile=/run/jinnpanel-static/%i/nginx.pid
+ExecStartPre=+/usr/bin/install -d -o jp_%i -g frankenphp -m 0750 /run/jinnpanel-static/%i
+ExecStartPre=+/usr/sbin/restorecon -R /run/jinnpanel-static/%i
+ExecStartPre=/usr/sbin/nginx -t -q -c /etc/jinnpanel/static/%i.conf
+ExecStart=/usr/sbin/nginx -c /etc/jinnpanel/static/%i.conf
+ExecReload=/bin/kill -HUP $MAINPID
+ExecStopPost=+/usr/bin/rm -f /run/jinnpanel-static/%i/static.sock /run/jinnpanel-static/%i/files.sock
+UMask=0007
+PrivateTmp=true
+NoNewPrivileges=true
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
 cat > /etc/systemd/system/jinnpanel-php-fpm@.service <<'UNIT'
 [Unit]
 Description=JinnPanel PHP-FPM (%i) - the hosting accounts' PHP

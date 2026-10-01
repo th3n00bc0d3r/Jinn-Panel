@@ -99,6 +99,7 @@ final class FileManagerController
                 }
             }
         }
+        $n > 0 && CacheService::purgeStatic((string) $domain['domain_name']); // visitors get the new files right away
         $n > 0 && Flash::ok("Uploaded $n file" . ($n === 1 ? '' : 's') . '.');
         $errors && Flash::error('Not uploaded: ' . implode(', ', array_slice($errors, 0, 10)));
         self::backTo($domain, $dir);
@@ -152,6 +153,7 @@ final class FileManagerController
                 })(),
                 default => throw new InvalidArgumentException('Unknown action.'),
             };
+            CacheService::purgeStatic($name); // visitors get the changed files right away
             Flash::ok($msg);
         } catch (Throwable $e) {
             Flash::error($e->getMessage());

@@ -17,7 +17,7 @@ final class CacheService
     public const VALKEY_HOST = '127.0.0.1';
     public const VALKEY_PORT = 6379;
 
-    /** @return array{opcache:int, pages:?int, objects:?int} counts of what was cleared (null = not in use) */
+    /** @return array{opcache:int, pages:?int, objects:?int, static:int} counts of what was cleared (null = not in use) */
     public static function clearDomain(array $domain): array
     {
         $name = (string) $domain['domain_name'];
@@ -38,7 +38,8 @@ final class CacheService
                 error_log('object cache clear: ' . $e->getMessage());
             }
         }
-        return ['opcache' => $opcache, 'pages' => $pages, 'objects' => $objects];
+        $static = self::purgeStatic($name);
+        return ['opcache' => $opcache, 'pages' => $pages, 'objects' => $objects, 'static' => $static];
     }
 
     // ------------------------------------------------------------------
@@ -89,21 +90,55 @@ final class CacheService
      */
     public static function isStatic(string $domain): bool
     {
-        $root = VhostService::effectiveDocroot($domain);
-        if (!is_dir($root) || is_file(VhostService::rulesFile($domain)) && str_contains((string) @file_get_contents(VhostService::rulesFile($domain)), '/index.php')) {
+        if (is_file(VhostService::rulesFile($domain)) && str_contains((string) @file_get_contents(VhostService::rulesFile($domain)), '/index.php')) {
             return false;
         }
-        $seen = 0;
-        $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS));
-        foreach ($it as $f) {
-            if (++$seen > 5000) {
-                return false; // big tree: don't guess
-            }
-            if ($f->isFile() && str_ends_with(strtolower($f->getFilename()), '.php')) {
-                return false;
-            }
+        try {
+            // The site's files are the account's to read: asked inside its pool.
+            return (bool) PoolClient::call($domain, 'is_static', ['docroot' => VhostService::effectiveDocroot($domain)])['static'];
+        } catch (Throwable) {
+            return false;
         }
-        return true;
+    }
+
+    // ------------------------------------------------------------------
+    // Static file cache: the account's static server (nginx) keeps
+    // compressed copies of each domain's static files for static_cache_ttl
+    // seconds (0 = off); browser_cache = Cache-Control for static files.
+    // ------------------------------------------------------------------
+
+    public const STATIC_TTLS = [60 => '1 minute', 300 => '5 minutes', 900 => '15 minutes', 3600 => '1 hour', 21600 => '6 hours', 86400 => '1 day', 604800 => '1 week'];
+
+    public static function setStaticCache(array $domain, int $ttl, bool $browser): void
+    {
+        if ($ttl !== 0 && !isset(self::STATIC_TTLS[$ttl])) {
+            throw new InvalidArgumentException('Pick one of the offered cache lifetimes.');
+        }
+        Database::app()->prepare('UPDATE domains SET static_cache_ttl = ?, browser_cache = ? WHERE id = ?')->execute([$ttl, $browser ? 1 : 0, $domain['id']]);
+        VhostService::create((string) $domain['domain_name'], (string) $domain['php_version'], (string) $domain['ssl_mode'], true, false);
+        if ($ttl === 0) {
+            self::purgeStatic((string) $domain['domain_name']);
+        }
+    }
+
+    /** Empties the domain's static file cache (from inside the account's pool); returns how many entries went. */
+    public static function purgeStatic(string $domain): int
+    {
+        try {
+            return (int) PoolClient::call($domain, 'static_cache_clear')['count'];
+        } catch (Throwable $e) {
+            error_log("static cache clear ($domain): " . $e->getMessage());
+            return 0;
+        }
+    }
+
+    public static function staticCount(string $domain): ?int
+    {
+        try {
+            return (int) PoolClient::call($domain, 'static_cache_count')['count'];
+        } catch (Throwable) {
+            return null;
+        }
     }
 
     public static function pageCount(string $domain): int
