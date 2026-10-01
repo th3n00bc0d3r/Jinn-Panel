@@ -1,0 +1,118 @@
+DirectoryIndex index.php
+Options -Indexes
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule ^ - [L]
+
+  RewriteRule ^login/?$ login.php [L,QSA]
+  RewriteRule ^logout/?$ logout.php [L,QSA]
+  RewriteRule ^download/?$ download.php [L,QSA]
+  RewriteRule ^forgot-password/?$ forgot-password.php [L,QSA]
+  RewriteRule ^reset-password/?$ reset-password.php [L,QSA]
+  RewriteRule ^verify-email/?$ verify-email.php [L,QSA]
+  RewriteRule ^api/upload/?$ api/upload.php [L,QSA]
+  RewriteRule ^api/task-comment/?$ api/task-comment.php [L,QSA]
+  RewriteRule ^api/task-comments-poll/?$ api/task-comments-poll.php [L,QSA]
+  RewriteRule ^api/task-link/?$ api/task-link.php [L,QSA]
+  RewriteRule ^api/task-link-update/?$ api/task-link-update.php [L,QSA]
+  RewriteRule ^api/task-link-delete/?$ api/task-link-delete.php [L,QSA]
+  RewriteRule ^api/uploaded-file-rename/?$ api/uploaded-file-rename.php [L,QSA]
+  RewriteRule ^api/uploaded-file-delete/?$ api/uploaded-file-delete.php [L,QSA]
+  RewriteRule ^api/admin-task-create/?$ api/admin-task-create.php [L,QSA]
+  RewriteRule ^api/admin-task-update/?$ api/admin-task-update.php [L,QSA]
+  RewriteRule ^api/admin-task-delete/?$ api/admin-task-delete.php [L,QSA]
+  RewriteRule ^api/admin-phase-create/?$ api/admin-phase-create.php [L,QSA]
+  RewriteRule ^api/admin-phase-update/?$ api/admin-phase-update.php [L,QSA]
+  RewriteRule ^api/admin-phase-delete/?$ api/admin-phase-delete.php [L,QSA]
+  RewriteRule ^api/admin-team-update/?$ api/admin-team-update.php [L,QSA]
+  RewriteRule ^api/admin-team-invite/?$ api/admin-team-invite.php [L,QSA]
+  RewriteRule ^api/admin-client-update/?$ api/admin-client-update.php [L,QSA]
+  RewriteRule ^api/admin-client-create/?$ api/admin-client-create.php [L,QSA]
+  RewriteRule ^api/admin-client-delete/?$ api/admin-client-delete.php [L,QSA]
+  RewriteRule ^api/admin-project-create/?$ api/admin-project-create.php [L,QSA]
+  RewriteRule ^api/admin-project-delete/?$ api/admin-project-delete.php [L,QSA]
+  RewriteRule ^api/client-invite/?$ api/client-invite.php [L,QSA]
+
+  RewriteRule ^admin/notifications/(unread|read)/?$ admin/notifications.php?filter=$1 [L,QSA]
+  RewriteRule ^admin/notifications/?$ admin/notifications.php [L,QSA]
+  RewriteRule ^client/notifications/(unread|read)/?$ client/notifications.php?filter=$1 [L,QSA]
+  RewriteRule ^client/notifications/?$ client/notifications.php [L,QSA]
+
+  RewriteRule ^admin/project/([^/]+)/tasks/([^/]+)/?$ admin/project-detail.php?project=$1&tab=tasks&phase=$2 [L,QSA]
+  RewriteRule ^admin/project/([^/]+)/tasks/?$ admin/project-detail.php?project=$1&tab=tasks [L,QSA]
+  RewriteRule ^admin/project/([^/]+)/links/?$ admin/project-detail.php?project=$1&tab=links [L,QSA]
+  RewriteRule ^admin/project/([^/]+)/files/?$ admin/project-detail.php?project=$1&tab=files [L,QSA]
+  RewriteRule ^admin/project/([^/]+)/stencils/([^/]+)/?$ admin/project-blocks.php?project=$1&phase=$2 [L,QSA]
+  RewriteRule ^admin/project/([^/]+)/stencils/?$ admin/project-blocks.php?project=$1 [L,QSA]
+  RewriteRule ^admin/project/([^/]+)/?$ admin/project-detail.php?project=$1 [L,QSA]
+
+  RewriteRule ^admin/stencils/project/([^/]+)/?$ admin/project-blocks.php?project=$1 [L,QSA]
+  RewriteRule ^admin/stencils/phase/([^/]+)/?$ admin/project-blocks.php?phase=$1 [L,QSA]
+  RewriteRule ^admin/stencils/?$ admin/project-blocks.php [L,QSA]
+
+  RewriteRule ^admin/tasks/([^/]+)/?$ admin/tasks.php?phase=$1 [L,QSA]
+  RewriteRule ^admin/tasks/?$ admin/tasks.php [L,QSA]
+
+  RewriteRule ^member/notifications/(unread|read)/?$ member/notifications.php?filter=$1 [L,QSA]
+  RewriteRule ^member/notifications/?$ member/notifications.php [L,QSA]
+
+  RewriteRule ^member/project/([^/]+)/stencils/?$ member/project-detail.php?project=$1&tab=stencils [L,QSA]
+  RewriteRule ^member/project/([^/]+)/tasks/?$ member/project-detail.php?project=$1&tab=tasks [L,QSA]
+  RewriteRule ^member/project/([^/]+)/links/?$ member/project-detail.php?project=$1&tab=links [L,QSA]
+  RewriteRule ^member/project/([^/]+)/files/?$ member/project-detail.php?project=$1&tab=files [L,QSA]
+  RewriteRule ^member/project/([^/]+)/?$ member/project-detail.php?project=$1 [L,QSA]
+
+  RewriteRule ^member/tasks/(links|files)/?$ member/tasks.php?tab=$1 [L,QSA]
+  RewriteRule ^member/tasks/([^/]+)/?$ member/tasks.php?phase=$1 [L,QSA]
+  RewriteRule ^member/tasks/?$ member/tasks.php [L,QSA]
+
+  RewriteRule ^member/stencils/([^/]+)/?$ member/blocks.php?phase=$1 [L,QSA]
+  RewriteRule ^member/stencils/?$ member/blocks.php [L,QSA]
+
+  RewriteRule ^member/files/filter/([^/]+)/?$ member/files.php?filter=$1 [L,QSA]
+  RewriteRule ^member/files/task/([^/]+)/?$ member/files.php?task=$1 [L,QSA]
+
+  RewriteRule ^member/([A-Za-z0-9_-]+)/?$ member/$1.php [L,QSA]
+
+  RewriteRule ^client/tasks/(links|files)/?$ client/tasks.php?tab=$1 [L,QSA]
+  RewriteRule ^client/tasks/([^/]+)/?$ client/tasks.php?phase=$1 [L,QSA]
+  RewriteRule ^client/tasks/?$ client/tasks.php [L,QSA]
+
+  RewriteRule ^client/project/([^/]+)/stencils/?$ client/project-detail.php?project=$1&tab=stencils [L,QSA]
+  RewriteRule ^client/project/([^/]+)/tasks/?$ client/project-detail.php?project=$1&tab=tasks [L,QSA]
+  RewriteRule ^client/project/([^/]+)/links/?$ client/project-detail.php?project=$1&tab=links [L,QSA]
+  RewriteRule ^client/project/([^/]+)/files/?$ client/project-detail.php?project=$1&tab=files [L,QSA]
+  RewriteRule ^client/project/([^/]+)/?$ client/project-detail.php?project=$1 [L,QSA]
+
+  RewriteRule ^client/stencils/([^/]+)/?$ client/blocks.php?phase=$1 [L,QSA]
+  RewriteRule ^client/stencils/?$ client/blocks.php [L,QSA]
+
+  RewriteRule ^client/files/filter/([^/]+)/?$ client/files.php?filter=$1 [L,QSA]
+  RewriteRule ^client/files/task/([^/]+)/?$ client/files.php?task=$1 [L,QSA]
+
+  RewriteRule ^admin/([A-Za-z0-9_-]+)/?$ admin/$1.php [L,QSA]
+  RewriteRule ^client/([A-Za-z0-9_-]+)/?$ client/$1.php [L,QSA]
+
+  RewriteRule ^superadmin/?$ superadmin/index.php [L,QSA]
+  RewriteRule ^superadmin/logout/?$ superadmin/logout.php [L,QSA]
+  RewriteRule ^superadmin/dashboard/?$ superadmin/dashboard.php [L,QSA]
+
+  RewriteRule ^ajax/search/?$ ajax/search.php [L,QSA]
+  RewriteRule ^admin/search-results/?$ admin/search-results.php [L,QSA]
+  RewriteRule ^client/search-results/?$ client/search-results.php [L,QSA]
+  RewriteRule ^member/search-results/?$ member/search-results.php [L,QSA]
+
+  RewriteRule ^landing/?$ landing/index.html [L,QSA]
+  RewriteRule ^signup/?$ signup.php [L,QSA]
+
+  RewriteRule ^privacy/?$ landing/privacy.php [L,QSA]
+  RewriteRule ^terms/?$ landing/terms.php [L,QSA]
+  RewriteRule ^contact/?$ landing/contact.php [L,QSA]
+  RewriteRule ^help/?$ landing/help.php [L,QSA]
+  RewriteRule ^faq/?$ landing/faq.php [L,QSA]
+</IfModule>

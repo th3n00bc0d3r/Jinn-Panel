@@ -1,0 +1,2 @@
+Header set X-Assets "yes"
+php_flag engine off

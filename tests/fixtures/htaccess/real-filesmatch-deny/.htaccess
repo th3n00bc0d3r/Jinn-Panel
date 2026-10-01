@@ -1,0 +1,13 @@
+Options -Indexes
+DirectoryIndex index.php
+
+RewriteEngine On
+RewriteRule ^(app|bin|database|docs|resources|storage|vendor)($|/) - [F,L]
+
+<FilesMatch "^(composer\.(json|lock)|package(-lock)?\.json|phpunit\.xml|README\.md|router\.php|\.)">
+Require all denied
+</FilesMatch>
+
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^ index.php [QSA,L]

@@ -1,0 +1,6 @@
+<Files "local-only.php">
+  Require ip 127.0.0.1
+</Files>
+<LimitExcept GET POST HEAD>
+  Require all denied
+</LimitExcept>

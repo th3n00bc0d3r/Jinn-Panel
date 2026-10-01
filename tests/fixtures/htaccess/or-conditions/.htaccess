@@ -1,0 +1,15 @@
+RewriteEngine On
+# Two different variables OR'ed: expanded into two matchers.
+RewriteCond %{QUERY_STRING} (^|&)preview=1 [OR]
+RewriteCond %{HTTP:X-Preview} ^yes$
+RewriteRule ^page$ /preview.php [L]
+# Same variable OR'ed: merged into one regex.
+RewriteCond %{REQUEST_METHOD} =PUT [OR]
+RewriteCond %{REQUEST_METHOD} =DELETE
+RewriteRule ^api/ - [F]
+# Query capture used in the target.
+RewriteCond %{QUERY_STRING} ^id=(\d+)$
+RewriteRule ^item$ /item.php?item=%1 [L]
+# Only on the first pass (Caddy has only one): condition dropped.
+RewriteCond %{ENV:REDIRECT_STATUS} ^$
+RewriteRule ^(.+)\.php$ /$1 [R=301,L]

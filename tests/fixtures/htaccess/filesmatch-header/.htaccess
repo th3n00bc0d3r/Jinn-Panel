@@ -1,0 +1,17 @@
+<IfModule mod_headers.c>
+  Header always set X-Frame-Options "SAMEORIGIN"
+  Header unset X-Powered-By
+  <FilesMatch "\.(css|js|png)$">
+    Header set Cache-Control "public, max-age=31536000, immutable"
+  </FilesMatch>
+  <FilesMatch "\.php$">
+    Header set Cache-Control "no-store"
+    Header append Vary "Cookie"
+  </FilesMatch>
+  <Files "robots.txt">
+    Header set X-Robots-Tag "noindex"
+  </Files>
+</IfModule>
+<FilesMatch "^\.ht|\.(bak|sql|log)$">
+  Require all denied
+</FilesMatch>

@@ -1,0 +1,5 @@
+# cPanel "Directory Privacy": can't be translated, so the folder fails closed.
+AuthType Basic
+AuthName "Members"
+AuthUserFile "/home/example/.htpasswds/public_html/private/passwd"
+Require valid-user

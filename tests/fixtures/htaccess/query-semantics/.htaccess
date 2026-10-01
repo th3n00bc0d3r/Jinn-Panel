@@ -1,0 +1,19 @@
+RewriteEngine On
+RewriteBase /
+# Target with its own query, no QSA: the request's query is dropped.
+RewriteRule ^replace/(\w+)$ index.php?p=$1 [L]
+# QSA: appended with &.
+RewriteRule ^append/(\w+)$ index.php?p=$1 [QSA,L]
+# No ? in the target: the request's query is kept.
+RewriteRule ^keep$ index.php [L]
+# A lone ? drops the query.
+RewriteRule ^drop$ index.php? [L]
+# QSD drops it too.
+RewriteRule ^discard$ index.php [QSD,L]
+# Redirects keep the query unless the target has one.
+RewriteRule ^go-keep$ /landing [R=302,L]
+RewriteRule ^go-replace$ /landing?from=old [R=302,L]
+RewriteRule ^go-drop$ /landing? [R=302,L]
+# A rule without [L] rewrites and carries on.
+RewriteRule ^chain/(.*)$ step/$1
+RewriteRule ^step/(.*)$ index.php?step=$1 [L,QSA]

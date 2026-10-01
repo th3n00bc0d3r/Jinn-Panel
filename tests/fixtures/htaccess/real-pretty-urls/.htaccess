@@ -1,0 +1,20 @@
+DirectoryIndex index.php
+
+    RewriteEngine On
+    RewriteBase /
+
+    
+    RewriteCond %{THE_REQUEST} \s/+index\.php[\s?]
+    RewriteRule ^index\.php$ / [R=301,L]
+
+    RewriteRule ^comingsoon/?$ comingsoon.php [L]
+    RewriteRule ^preorder/?$ preorder.php [L]
+    RewriteRule ^gallery/?$ index.php?section=gallery [L,QSA]
+    RewriteRule ^features/?$ index.php?section=features [L,QSA]
+    RewriteRule ^sdk/?$ index.php?section=sdk [L,QSA]
+    RewriteRule ^product/?$ index.php?section=product [L,QSA]
+    RewriteRule ^curriculum/?$ index.php?section=curriculum [L,QSA]
+
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^([A-Za-z0-9_-]+)/?$ $1.php [L]

@@ -1,0 +1,8 @@
+ErrorDocument 404 /errors/404.html
+ErrorDocument 403 "Access denied"
+ErrorDocument 410 /errors/gone.php
+ErrorDocument 500 default
+
+RedirectMatch 410 ^/retired/
+RewriteEngine On
+RewriteRule ^secret/ - [F]
