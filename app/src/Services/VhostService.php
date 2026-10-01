@@ -49,16 +49,31 @@ final class VhostService
         // something any panel can bypass).
         $tlsLine = $sslMode === 'letsencrypt' ? '' : "\ttls internal\n";
 
+        $safeName = preg_replace('/[^a-z0-9.-]/i', '_', $domain);
+        $confPath = Config::VHOSTS_CADDY_DIR . "/$safeName.caddyfile";
+        $rulesFile = self::rulesFile($domain);
+        // Site-level part of those rules (headers, handle_errors).
+        $siteRules = is_file(self::siteRulesFile($domain)) && $phpVersion === 'default'
+            ? "\timport " . self::siteRulesFile($domain) . "\n" : '';
+
         if ($phpVersion === 'default') {
-            $phpBlock = "root * {$docroot}\n\ttry_files {path} /index.php\n\tphp_server";
+            // A site's own routing (translated from its .htaccess) replaces
+            // the default front-controller fallback. It ends in php_server.
+            $phpBlock = is_file($rulesFile)
+                ? "import {$rulesFile}"
+                : "try_files {path} /index.php\n\t\t@nophp {\n\t\t\tpath *.php\n\t\t\tnot file {path}\n\t\t}\n\t\terror @nophp 404\n\t\tphp_server";
         } else {
             $port = PhpVersionService::port($phpVersion);
             $phpBlock = "reverse_proxy 127.0.0.1:{$port}";
             self::writeAltInstanceFragment($domain, $phpVersion, $docroot);
         }
 
-        $safeName = preg_replace('/[^a-z0-9.-]/i', '_', $domain);
-        $confPath = Config::VHOSTS_CADDY_DIR . "/$safeName.caddyfile";
+        // (@nophp: a request for a missing .php file - e.g. the /index.php
+        // fallback on a site served from index.html - is a 404, not a 500.)
+        // Apache (cPanel) never serves dotfiles; Caddy does unless told not
+        // to - and sites ship .env, .git, .htaccess. cPanel also leaves a
+        // php.ini/.user.ini in docroots. `route` keeps this ahead of PHP.
+        $guard = "@hidden {\n\t\t\tpath_regexp hidden (/\\.[^/]|/php\\.ini\$)\n\t\t\tnot path /.well-known/*\n\t\t}\n\t\trespond @hidden 404";
 
         // www.<domain> is served too: every DNS zone the panel creates has a
         // www record, and a name with no site block fails the TLS handshake
@@ -67,18 +82,33 @@ final class VhostService
         https://{$domain}, https://www.{$domain} {
         {$tlsLine}
         	encode zstd br gzip
-
-        	{$phpBlock}
-        }
-
-        http://{$domain}, http://www.{$domain} {
         	root * {$docroot}
-        	encode zstd br gzip
-
-        	try_files {path} /index.php
-        	php_server
+        {$siteRules}
+        	route {
+        		{$guard}
+        		{$phpBlock}
+        	}
         }
+
         CADDY;
+        if ($sslMode !== 'letsencrypt') {
+            // Caddy's local CA isn't trusted by browsers, so keep plain HTTP
+            // usable. With Let's Encrypt there is no http:// block: Caddy then
+            // redirects HTTP to HTTPS on its own (and still answers ACME).
+            $conf .= <<<CADDY
+
+            http://{$domain}, http://www.{$domain} {
+            	encode zstd br gzip
+            	root * {$docroot}
+            {$siteRules}
+            	route {
+            		{$guard}
+            		{$phpBlock}
+            	}
+            }
+
+            CADDY;
+        }
 
         file_put_contents($confPath, $conf);
         if ($reload) { // false when rewriting many sites; the caller reloads once
@@ -86,6 +116,18 @@ final class VhostService
         }
 
         return $docroot;
+    }
+
+    /** Site-level companion of rulesFile(): header and handle_errors directives. */
+    public static function siteRulesFile(string $domain): string
+    {
+        return substr(self::rulesFile($domain), 0, -strlen('.caddy')) . '.site.caddy';
+    }
+
+    /** Optional per-site Caddy routing, e.g. translated from the site's .htaccess. */
+    public static function rulesFile(string $domain): string
+    {
+        return dirname(Config::VHOSTS_CADDY_DIR) . '/site-rules/' . preg_replace('/[^a-z0-9.-]/i', '_', $domain) . '.caddy';
     }
 
     public static function remove(string $domain, string $phpVersion = 'default'): void
