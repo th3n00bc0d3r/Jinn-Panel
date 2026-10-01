@@ -65,14 +65,15 @@ final class MailImportService
                         $stats['skipped']++; // Dovecot "T" flag: deleted, just not expunged yet
                         continue;
                     }
-                    $size = (int) filesize($file);
-                    if ($size === 0 || $size > $this->maxUpload) {
-                        $stats['skipped']++;
-                        $stats['errors'][] = basename($file) . ": skipped (size $size bytes)";
-                        continue;
-                    }
                     try {
-                        $blobId = $this->upload((string) file_get_contents($file));
+                        $message = self::readMessage($file);
+                        $size = strlen($message);
+                        if ($size === 0 || $size > $this->maxUpload) {
+                            $stats['skipped']++;
+                            $stats['errors'][] = basename($file) . ": skipped (size $size bytes)";
+                            continue;
+                        }
+                        $blobId = $this->upload($message);
                     } catch (Throwable $e) {
                         $stats['failed']++;
                         self::note($stats, basename($file) . ': ' . $e->getMessage());
@@ -98,6 +99,36 @@ final class MailImportService
             }
         }
         return $stats;
+    }
+
+    /**
+     * A message file's contents, decompressed: cPanel's Dovecot zlib plugin
+     * stores messages gzip-compressed (and can use bzip2/xz/zstd), while the
+     * plain ones are left as they are.
+     */
+    public static function readMessage(string $file): string
+    {
+        $raw = (string) file_get_contents($file);
+        $out = match (true) {
+            str_starts_with($raw, "\x1f\x8b") => @gzdecode($raw),
+            str_starts_with($raw, 'BZh') && function_exists('bzdecompress') => @bzdecompress($raw),
+            str_starts_with($raw, "\xfd7zXZ\x00") => self::decompressWith('xz', $file),
+            str_starts_with($raw, "\x28\xb5\x2f\xfd") => self::decompressWith('zstd', $file),
+            default => $raw,
+        };
+        if (!is_string($out)) {
+            throw new RuntimeException('compressed message could not be decompressed');
+        }
+        return $out;
+    }
+
+    private static function decompressWith(string $tool, string $file): string|false
+    {
+        if (trim((string) shell_exec('command -v ' . escapeshellarg($tool) . ' 2>/dev/null')) === '') {
+            throw new RuntimeException("message is $tool-compressed and $tool is not installed (dnf -y install $tool)");
+        }
+        $out = '';
+        return CpanelBackupReader::run([$tool, '-dc', $file], $out) === 0 ? $out : false;
     }
 
     private static function note(array &$stats, string $msg): void

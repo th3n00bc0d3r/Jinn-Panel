@@ -298,6 +298,7 @@ final class MigrationService
             // Nothing is (still) running to notice a flag - settle it directly.
             $pdo->prepare("UPDATE migration_items SET status = 'cancelled', step = 'Cancelled' WHERE migration_id = ? AND status NOT IN ('completed','completed_with_errors','failed')")
                 ->execute([$m['id']]);
+            $pdo->prepare("UPDATE migration_items SET mail_restore = 0, step = 'Mail restore cancelled' WHERE migration_id = ? AND mail_restore = 1")->execute([$m['id']]);
             $pdo->prepare("UPDATE migrations SET status = 'cancelled', cancel_requested = 1, finished_at = NOW() WHERE id = ?")->execute([$m['id']]);
             return;
         }
@@ -314,6 +315,38 @@ final class MigrationService
         $stmt = $pdo->prepare("UPDATE migration_items SET status = 'pending', step = 'Waiting to retry', progress = 0, error = NULL
                                WHERE migration_id = ? AND status IN ('failed','cancelled')");
         $stmt->execute([$m['id']]);
+        $count = $stmt->rowCount();
+        if ($count > 0) {
+            $pdo->prepare("UPDATE migrations SET status = 'queued', cancel_requested = 0, finished_at = NULL WHERE id = ?")->execute([$m['id']]);
+            self::enqueueRunner((int) $m['id']);
+        }
+        return $count;
+    }
+
+    /**
+     * Queues "restore mail" for finished items (all of them, or just
+     * $itemId): the runner fetches each account's backup again and creates
+     * the mailboxes - with their stored mail - that aren't on this server
+     * yet. Nothing else about the account is touched.
+     */
+    public static function restoreMail(array $m, ?int $itemId = null): int
+    {
+        if (!in_array($m['status'], self::FINISHED, true)) {
+            throw new RuntimeException('Wait for the migration to finish (or cancel it) first.');
+        }
+        if (!self::canRetry($m)) {
+            throw new RuntimeException('The source credentials for this migration were discarded, so its backups can\'t be fetched again. Start a new migration instead.');
+        }
+        $pdo = Database::app();
+        $sql = "UPDATE migration_items SET mail_restore = 1, step = 'Waiting to restore mail', progress = 0
+                WHERE migration_id = ? AND selected = 1 AND status IN ('completed','completed_with_errors') AND target_user_id IS NOT NULL";
+        $args = [$m['id']];
+        if ($itemId !== null) {
+            $sql .= ' AND id = ?';
+            $args[] = $itemId;
+        }
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($args);
         $count = $stmt->rowCount();
         if ($count > 0) {
             $pdo->prepare("UPDATE migrations SET status = 'queued', cancel_requested = 0, finished_at = NULL WHERE id = ?")->execute([$m['id']]);

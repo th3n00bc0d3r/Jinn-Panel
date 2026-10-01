@@ -3,6 +3,9 @@ include __DIR__ . '/_helpers.php';
 $finished = in_array($m['status'], MigrationService::FINISHED, true);
 $active = in_array($m['status'], MigrationService::ACTIVE, true);
 $retryable = $finished && MigrationService::canRetry($m) && (bool) array_filter($items, fn($i) => in_array($i['status'], ['failed', 'cancelled'], true));
+$mailRestorable = fn($i) => $finished && MigrationService::canRetry($m) && in_array($i['status'], ['completed', 'completed_with_errors'], true) && $i['target_user_id'] !== null;
+$mailFailed = fn($i) => (bool) array_filter($i['report_data']['email'] ?? [], fn($e) => in_array($e['status'] ?? '', ['failed', 'partial'], true));
+$mailRestoreAll = (bool) array_filter($items, fn($i) => $mailRestorable($i) && $mailFailed($i));
 $btn = 'inline-flex items-center gap-2 rounded-lg text-sm font-medium px-4 py-2 transition-colors';
 $badges = [];
 foreach (['pending', 'queued', 'running', 'backing_up', 'transferring', 'restoring', 'completed', 'completed_with_errors', 'failed', 'cancelled', 'stalled'] as $s) {
@@ -37,6 +40,12 @@ $secretLine = function (?string $pw): string {
             <form method="post" action="/whm/migrations/<?= (int) $m['id'] ?>/retry">
                 <?= Csrf::field() ?>
                 <button class="<?= $btn ?> bg-indigo-600 hover:bg-indigo-500 text-white"><?= icon('play', 'h-4 w-4') ?> Retry failed accounts</button>
+            </form>
+            <?php endif; ?>
+            <?php if ($mailRestoreAll): ?>
+            <form method="post" action="/whm/migrations/<?= (int) $m['id'] ?>/restore-mail" data-confirm="Fetch every account's backup again and create the mailboxes (with their stored mail) that aren't on this server yet? Nothing else is changed.">
+                <?= Csrf::field() ?>
+                <button class="<?= $btn ?> bg-white border border-slate-300 hover:bg-slate-50 text-slate-700"><?= icon('mail', 'h-4 w-4') ?> Restore missing mailboxes</button>
             </form>
             <?php endif; ?>
             <?php if (!empty($m['secret_enc']) && (!$active || $stalled)): ?>
@@ -78,6 +87,13 @@ $secretLine = function (?string $pw): string {
             <?php if ((int) $it['is_reseller'] === 1): ?><span class="inline-flex text-xs font-medium rounded-full px-2 py-0.5 bg-violet-50 text-violet-700">reseller</span><?php endif; ?>
             <p class="text-sm text-slate-400"><?= e($it['source_domain'] ?? '') ?></p>
             <span class="ml-auto" data-item-badge><?= migration_status_badge($it['status']) ?></span>
+            <?php if ($mailRestorable($it) && !empty($it['report_data']['email'])): ?>
+            <form method="post" action="/whm/migrations/<?= (int) $m['id'] ?>/restore-mail" data-confirm="Fetch this account's backup again and create the mailboxes (with their stored mail) that aren't on this server yet? Nothing else is changed.">
+                <?= Csrf::field() ?>
+                <input type="hidden" name="item" value="<?= (int) $it['id'] ?>">
+                <button class="text-xs font-medium <?= $mailFailed($it) ? 'text-indigo-600 hover:text-indigo-500' : 'text-slate-500 hover:text-slate-700' ?>">Restore mail</button>
+            </form>
+            <?php endif; ?>
         </div>
         <div class="mt-3 h-1.5 rounded-full bg-slate-100 overflow-hidden">
             <div data-bar class="h-full rounded-full transition-all duration-500 <?= $it['status'] === 'failed' ? 'bg-red-500' : ($it['status'] === 'completed_with_errors' ? 'bg-amber-500' : 'bg-indigo-500') ?>" style="width: <?= max(0, min(100, (int) $it['progress'])) ?>%"></div>

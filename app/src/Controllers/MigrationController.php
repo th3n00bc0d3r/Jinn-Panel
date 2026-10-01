@@ -344,6 +344,20 @@ final class MigrationController
         self::redirectTo($m);
     }
 
+    /** POST item=<id> for one account, or no item for every finished account. */
+    public static function restoreMail(array $params): void
+    {
+        [$m] = self::mutating($params);
+        $itemId = isset($_POST['item']) && $_POST['item'] !== '' ? (int) $_POST['item'] : null;
+        try {
+            $n = MigrationService::restoreMail($m, $itemId);
+            $n > 0 ? Flash::ok("Restoring mail for $n account" . ($n === 1 ? '' : 's') . ' - mailboxes already on this server are left as they are.') : Flash::error('There are no finished accounts to restore mail for.');
+        } catch (Throwable $e) {
+            Flash::error($e->getMessage());
+        }
+        self::redirectTo($m);
+    }
+
     public static function destroy(array $params): void
     {
         [$m] = self::mutating($params);

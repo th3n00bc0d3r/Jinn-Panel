@@ -68,9 +68,12 @@ do them.
       mailbox create failed (cPanel > Email too). Fixed: create bare, set the
       password with a `credentials/0` patch; migration imports with a temp
       password, then swaps in the cPanel hash.
-- [ ] **Restore mail from backup** for an already-migrated account, without
-      redoing the whole account - needed to bring back the 26 mailboxes
-      (and their stored mail) that failed in the first migration.
+- [x] **Restore mail from backup** for an already-migrated account: WHM >
+      Migration > "Restore mail" (per account, or "Restore missing
+      mailboxes" for all). Re-reads the backup, extracts only the mail,
+      creates missing mailboxes; never touches or rolls back the account.
+      Also fixed: Dovecot gzip/bzip2/xz/zstd-compressed messages were
+      rejected as invalid.
 - [ ] **Default account inbox** (`~/mail/cur|new`, the cPanel user's own
       mailbox) isn't migrated or reported.
 - [ ] **Mail DNS for local mail.** Domains whose mail stays on this server get
@@ -106,3 +109,16 @@ do them.
 - [ ] **PHP extensions** were missing (only PDO): fixed in `install.sh`, but
       there's no per-site way to enable more - add a WHM page listing
       available `php-zts-*` extensions.
+
+## 3. Caching
+
+- [ ] **Cache feature.** Nothing is cached today beyond PHP's OPcache
+      defaults: no page cache, no object cache, no static-asset
+      `Cache-Control` headers. Scope to decide:
+  - per-site page cache in Caddy (the Souin/`cache-handler` module - not in
+    the stock FrankenPHP binary, needs an xcaddy build), on/off and TTL per domain in cPanel > Domains, with a
+    "Purge cache" button and rules that skip logged-in/cart cookies;
+  - Redis/Valkey for object caching (WordPress, Laravel) - one instance with
+    a per-account ACL user and memory limit, shown in cPanel;
+  - OPcache settings per PHP version in WHM (memory, revalidate frequency);
+  - long `Cache-Control` headers for static assets by default.

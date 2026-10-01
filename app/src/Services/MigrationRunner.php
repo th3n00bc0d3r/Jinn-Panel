@@ -36,6 +36,8 @@ final class MigrationRunner
     private string $work = '';
     private int $lastBeat = 0;
     private ?array $creatorCache = null;
+    /** Set while restoring only the mail of a finished item: its status must not change. */
+    private bool $mailOnly = false;
 
     public function __construct(private int $migrationId)
     {
@@ -79,6 +81,15 @@ final class MigrationRunner
                 }
                 $this->processItem($item);
             }
+
+            $stmt = $this->pdo->prepare('SELECT * FROM migration_items WHERE migration_id = ? AND selected = 1 AND mail_restore = 1 ORDER BY id');
+            $stmt->execute([$this->migrationId]);
+            foreach ($stmt->fetchAll() as $item) {
+                if ($this->cancelRequested()) {
+                    break;
+                }
+                $this->restoreMailItem($item);
+            }
         } catch (Throwable $e) {
             $this->log('FATAL: ' . $e->getMessage());
             $this->pdo->prepare("UPDATE migration_items SET status = 'failed', step = 'Failed', error = ? WHERE migration_id = ? AND status = 'pending' AND selected = 1")
@@ -121,6 +132,8 @@ final class MigrationRunner
         if ($cancelled) {
             $this->pdo->prepare("UPDATE migration_items SET status = 'cancelled', step = 'Cancelled' WHERE migration_id = ? AND status = 'pending'")->execute([$this->migrationId]);
         }
+        $this->pdo->prepare("UPDATE migration_items SET mail_restore = 0, step = ? WHERE migration_id = ? AND mail_restore = 1")
+            ->execute([$cancelled ? 'Mail restore cancelled' : 'Mail restore did not run', $this->migrationId]);
         $failed = ($counts['failed'] ?? 0);
         $ok = ($counts['completed'] ?? 0) + ($counts['completed_with_errors'] ?? 0);
         $status = match (true) {
@@ -213,6 +226,93 @@ final class MigrationRunner
             }
             self::rrmdir($this->work);
         }
+    }
+
+    /**
+     * "Restore mail" for an item that already finished: fetches the backup
+     * again, extracts only the mail parts of the home directory, and creates
+     * the mailboxes (with their stored mail) that aren't on this server yet.
+     * The account, its sites and databases are never touched or rolled
+     * back, and the item keeps its completed status even if this fails.
+     */
+    private function restoreMailItem(array $item): void
+    {
+        $this->item = $item;
+        $this->mailOnly = true;
+        $user = (string) $item['source_username'];
+        $previous = json_decode((string) $item['report'], true) ?: [];
+        $this->report = array_merge(['email' => [], 'warnings' => [], 'info' => []], $previous);
+        $oldEmail = (array) $this->report['email'];
+        $this->report['email'] = [];
+        $this->log("--- $user: restoring mail");
+        $this->setItem(['step' => 'Fetching the backup', 'progress' => 5, 'error' => null]);
+
+        $this->work = MigrationService::workDir() . '/' . $this->migrationId . '/' . (int) $item['id'];
+        self::rrmdir($this->work);
+        @mkdir($this->work . '/incoming', 02770, true);
+        @mkdir($this->work . '/extract', 02770, true);
+
+        $sftpUser = null;
+        $error = null;
+        try {
+            $owner = $this->pdo->prepare('SELECT username FROM users WHERE id = ?');
+            $owner->execute([(int) $item['target_user_id']]);
+            if ($owner->fetchColumn() !== $user) {
+                throw new RuntimeException("The JinnPanel account \"$user\" this item restored no longer exists.");
+            }
+            $archive = match ($this->m['transfer_mode']) {
+                'push' => $this->pushBackup($user, $sftpUser),
+                'file' => $this->localBackup($user),
+                default => $this->pullBackup($user),
+            };
+            if ($sftpUser) {
+                $this->deleteSftpUser($sftpUser);
+                $sftpUser = null;
+            }
+            $this->setItem(['step' => 'Extracting mail from the backup', 'progress' => 45]);
+            $this->extract($archive, $this->work . '/extract', ['*/cp/*', '*/homedir/etc/*', '*/homedir/mail/*', '*/homedir.tar']);
+            if ($this->m['transfer_mode'] !== 'file') {
+                @unlink($archive);
+            }
+
+            $domains = $this->pdo->prepare('SELECT domain_name FROM domains WHERE user_id = ? ORDER BY id');
+            $domains->execute([(int) $item['target_user_id']]);
+            $opt = $this->opt;
+            $this->opt['email_data'] = true; // the point of a mail restore, whatever the original run chose
+            try {
+                $this->restoreEmail((int) $item['target_user_id'], new CpanelBackupReader($this->work . '/extract', $user), $domains->fetchAll(PDO::FETCH_COLUMN));
+            } finally {
+                $this->opt = $opt;
+            }
+        } catch (Throwable $e) {
+            $error = $e->getMessage();
+            $this->log("--- $user: mail restore FAILED - $error");
+        } finally {
+            if ($sftpUser) {
+                $this->deleteSftpUser($sftpUser);
+            }
+            self::rrmdir($this->work);
+            $this->mailOnly = false;
+        }
+
+        // Mailboxes this run skipped (already on the server) keep their old entry.
+        $done = array_column($this->report['email'], 'address');
+        $kept = array_filter($oldEmail, fn($e) => !in_array($e['address'] ?? '', $done, true));
+        $created = count(array_filter($this->report['email'], fn($e) => ($e['status'] ?? '') !== 'failed'));
+        $this->report['email'] = array_values(array_merge($kept, $this->report['email']));
+        $this->report['info'][] = date('Y-m-d H:i') . ': mail restored again from the backup - '
+            . ($error === null ? "$created mailbox(es) created." : "stopped: $error");
+
+        $this->report['info'] = array_values(array_unique($this->report['info']));
+        $problems = $this->report['warnings'] || $this->hasFailures();
+        $this->pdo->prepare('UPDATE migration_items SET mail_restore = 0, status = ?, step = ?, progress = 100, error = ?, report = ? WHERE id = ?')->execute([
+            $problems || $error !== null ? 'completed_with_errors' : 'completed',
+            $error === null ? "Mail restored: $created mailbox(es) created" : ($error === 'Cancelled.' ? 'Mail restore cancelled' : 'Mail restore failed'),
+            $error === 'Cancelled.' ? null : $error,
+            $this->reportJson(),
+            (int) $item['id'],
+        ]);
+        $this->log("--- $user: mail restore " . ($error === null ? "done ($created mailbox(es) created)" : 'stopped'));
     }
 
     private function hasFailures(): bool
@@ -415,7 +515,8 @@ final class MigrationRunner
     // Step 2: extract
     // ------------------------------------------------------------------
 
-    private function extract(string $archive, string $dest): void
+    /** @param string[] $members only these (wildcard) members, e.g. just the mail; all if empty */
+    private function extract(string $archive, string $dest, array $members = []): void
     {
         $size = (int) filesize($archive);
         $free = (int) @disk_free_space($dest);
@@ -424,7 +525,16 @@ final class MigrationRunner
         }
         // GNU tar already refuses absolute and ".." member names; running as
         // an unprivileged user means it also can't set owners or devices.
-        $code = CpanelBackupReader::run(['tar', '-xzf', $archive, '-C', $dest, '--no-same-owner', '--no-same-permissions', '--delay-directory-restore'], $out);
+        $cmd = ['tar', '-xzf', $archive, '-C', $dest, '--no-same-owner', '--no-same-permissions', '--delay-directory-restore'];
+        if ($members) {
+            array_push($cmd, '--wildcards', ...$members);
+        }
+        $code = CpanelBackupReader::run($cmd, $out);
+        // With member patterns, tar exits 2 when one of them matched nothing
+        // (e.g. no homedir.tar) - fine as long as something was extracted.
+        if ($members && $code === 2 && preg_match('/Not found in archive/', (string) $out) && count(scandir($dest) ?: []) > 2) {
+            $code = 0;
+        }
         if ($code > 1) {
             throw new RuntimeException('Extracting the backup failed: ' . substr(trim((string) $out), 0, 400));
         }
@@ -712,6 +822,7 @@ final class MigrationRunner
         $withData = (bool) $this->opt['email_data'];
         $preserve = $this->opt['mail_passwords'] !== 'generate';
         $insert = $this->pdo->prepare('INSERT INTO email_accounts (user_id, domain_id, local_part, mail_account_id) VALUES (?, ?, ?, ?)');
+        $exists = $this->pdo->prepare('SELECT COUNT(*) FROM email_accounts WHERE domain_id = ? AND local_part = ?');
         foreach ($domains as $domain) {
             $accounts = $r->mailAccounts($domain);
             if (!$accounts) {
@@ -733,6 +844,10 @@ final class MigrationRunner
             foreach ($accounts as $local => $hash) {
                 $this->checkpoint();
                 $address = "$local@$domain";
+                $exists->execute([$domainRow['id'], $local]);
+                if ((int) $exists->fetchColumn() > 0) {
+                    continue; // already here (a mail restore of an earlier migration)
+                }
                 $this->setItem(['step' => "Mailbox $address", 'progress' => 80]);
                 $generated = null;
                 $real = ($preserve && $hash !== null) ? $hash : ($generated = Crypto::randomPassword(16));
@@ -1024,6 +1139,12 @@ final class MigrationRunner
     {
         $allowed = ['status', 'step', 'progress', 'report', 'error', 'started_at', 'finished_at', 'target_user_id'];
         $fields = array_intersect_key($fields, array_flip($allowed));
+        if ($this->mailOnly) {
+            unset($fields['status'], $fields['started_at'], $fields['finished_at']);
+            if (isset($fields['step'])) {
+                $fields['step'] = 'Restoring mail: ' . $fields['step'];
+            }
+        }
         if (isset($fields['step'])) {
             $fields['step'] = mb_substr((string) $fields['step'], 0, 250);
         }

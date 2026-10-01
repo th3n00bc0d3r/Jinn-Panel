@@ -40,6 +40,7 @@ $router->get('/whm/migrations/{id}/status', ['MigrationController', 'status']);
 $router->post('/whm/migrations/{id}/start', ['MigrationController', 'start']);
 $router->post('/whm/migrations/{id}/cancel', ['MigrationController', 'cancel']);
 $router->post('/whm/migrations/{id}/retry', ['MigrationController', 'retry']);
+$router->post('/whm/migrations/{id}/restore-mail', ['MigrationController', 'restoreMail']);
 $router->post('/whm/migrations/{id}/delete', ['MigrationController', 'destroy']);
 $router->post('/whm/migrations/{id}/discard-secret', ['MigrationController', 'discardSecret']);
 
