@@ -52,7 +52,9 @@ final class MailService
         ], [], self::auth());
 
         if ($res['status'] !== 200) {
-            throw new RuntimeException('Stalwart JMAP call failed with HTTP ' . $res['status'] . ': ' . $res['raw']);
+            // Not the raw body: Stalwart echoes the request back, passwords included.
+            $type = is_array($res['body'] ?? null) ? (string) ($res['body']['type'] ?? '') : '';
+            throw new RuntimeException('Stalwart JMAP call failed with HTTP ' . $res['status'] . ($type !== '' ? " ($type)" : '') . '.');
         }
         return $res['body']['methodResponses'] ?? [];
     }
@@ -140,7 +142,8 @@ final class MailService
         $responses = self::call([
             ['x:Account/set', [
                 'accountId' => self::accountId(),
-                'update' => [$mailAccountId => [
+                // An object even when the id looks numeric (PHP would make "0" a list).
+                'update' => (object) [$mailAccountId => [
                     'credentials/0' => ['@type' => 'Password', 'secret' => $password],
                 ]],
             ], '0'],
@@ -148,6 +151,53 @@ final class MailService
         $result = $responses[0][1] ?? [];
         if (!array_key_exists($mailAccountId, (array) ($result['updated'] ?? []))) {
             throw new RuntimeException('Could not set the mailbox password: ' . self::reason($result['notUpdated'][$mailAccountId] ?? $result));
+        }
+    }
+
+    /**
+     * Runs $fn with the mailbox exempt from Stalwart's per-account upload
+     * quota (50 MB / 1000 files per hour by default) and request rate
+     * limit, which a mail import hits within seconds; the account's own
+     * permissions are restored afterwards, whatever happens.
+     */
+    public static function withImportLimitsLifted(string $mailAccountId, callable $fn): mixed
+    {
+        $get = self::call([['x:Account/get', ['accountId' => self::accountId(), 'ids' => [$mailAccountId], 'properties' => ['permissions']], '0']]);
+        $original = $get[0][1]['list'][0]['permissions'] ?? null;
+        if (!is_array($original)) {
+            throw new RuntimeException('Could not read the mailbox permissions.');
+        }
+        $lifted = ['@type' => 'Merge', 'enabledPermissions' => ['unlimitedUploads' => true, 'unlimitedRequests' => true], 'disabledPermissions' => []];
+        if (($original['@type'] ?? '') === 'Merge') {
+            $lifted['enabledPermissions'] += (array) ($original['enabledPermissions'] ?? []);
+            $lifted['disabledPermissions'] = $original['disabledPermissions'] ?? [];
+        }
+        self::setPermissions($mailAccountId, $lifted);
+        try {
+            return $fn();
+        } finally {
+            self::setPermissions($mailAccountId, $original);
+        }
+    }
+
+    private static function setPermissions(string $mailAccountId, array $permissions): void
+    {
+        // Permission sets are maps; Stalwart returns an empty one as [] but
+        // only accepts {} back.
+        foreach (['enabledPermissions', 'disabledPermissions'] as $k) {
+            if (isset($permissions[$k]) && $permissions[$k] === []) {
+                $permissions[$k] = new stdClass();
+            }
+        }
+        $responses = self::call([
+            ['x:Account/set', [
+                'accountId' => self::accountId(),
+                'update' => (object) [$mailAccountId => ['permissions' => $permissions]],
+            ], '0'],
+        ]);
+        $result = $responses[0][1] ?? [];
+        if (!array_key_exists($mailAccountId, (array) ($result['updated'] ?? []))) {
+            throw new RuntimeException('Could not change the mailbox permissions: ' . self::reason($result['notUpdated'][$mailAccountId] ?? $result));
         }
     }
 

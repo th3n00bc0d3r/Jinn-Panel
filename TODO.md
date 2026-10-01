@@ -77,7 +77,23 @@ do them.
 - [ ] **Default account inbox** (`~/mail/cur|new`, the cPanel user's own
       mailbox) isn't migrated or reported.
 - [ ] **Mail DNS for local mail.** Domains whose mail stays on this server get
-      only the panel's MX: publish SPF, Stalwart's DKIM key and a DMARC record.
+      only the panel's MX. The zone template should also publish:
+  - `mail.<domain>` when it's missing: A/AAAA to the server, or a CNAME to
+    the server hostname (and the MX can then point at it);
+  - SPF (`v=spf1 mx a ~all`, plus the server's IPv4/IPv6);
+  - DKIM: Stalwart's key for the domain (`<selector>._domainkey`), created
+    with the mail domain;
+  - DMARC (`_dmarc`, start at `p=none` with a report address);
+  - autoconfig/autodiscover so mail clients set themselves up:
+    `autoconfig.<domain>` / `autodiscover.<domain>` (CNAME to the server)
+    and SRV records `_imaps._tcp`, `_submission._tcp`, `_autodiscover._tcp`.
+- [ ] **Webmail at `mail.<domain>`.** When `mail.<domain>` points at this
+      server, serve a web mail client there so users can read mail in a
+      browser: [Cypht](https://github.com/cypht-org/cypht) (PHP, runs on
+      FrankenPHP), installed once and shared by every domain, pre-set to
+      Stalwart's IMAP/SMTP on localhost. Needs: a Caddy site per
+      `mail.<domain>` (with its TLS cert), the login prefilled with the
+      domain, and a "Webmail" link in cPanel > Email.
 - [ ] **Imports from offsite backups need a UI.** File-mode migration
       (`worker/migration-import.php`) is CLI-only; the archives were fetched
       from S3 by hand. Add WHM > cPanel Migration > "From backup files", and

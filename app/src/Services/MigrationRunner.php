@@ -38,6 +38,8 @@ final class MigrationRunner
     private ?array $creatorCache = null;
     /** Set while restoring only the mail of a finished item: its status must not change. */
     private bool $mailOnly = false;
+    /** @var array<string,array> address => report entry from before a mail restore */
+    private array $previousEmail = [];
 
     public function __construct(private int $migrationId)
     {
@@ -243,6 +245,7 @@ final class MigrationRunner
         $previous = json_decode((string) $item['report'], true) ?: [];
         $this->report = array_merge(['email' => [], 'warnings' => [], 'info' => []], $previous);
         $oldEmail = (array) $this->report['email'];
+        $this->previousEmail = array_column($oldEmail, null, 'address');
         $this->report['email'] = [];
         $this->log("--- $user: restoring mail");
         $this->setItem(['step' => 'Fetching the backup', 'progress' => 5, 'error' => null]);
@@ -301,18 +304,18 @@ final class MigrationRunner
         $created = count(array_filter($this->report['email'], fn($e) => ($e['status'] ?? '') !== 'failed'));
         $this->report['email'] = array_values(array_merge($kept, $this->report['email']));
         $this->report['info'][] = date('Y-m-d H:i') . ': mail restored again from the backup - '
-            . ($error === null ? "$created mailbox(es) created." : "stopped: $error");
+            . ($error === null ? "$created mailbox(es) restored." : "stopped: $error");
 
         $this->report['info'] = array_values(array_unique($this->report['info']));
         $problems = $this->report['warnings'] || $this->hasFailures();
         $this->pdo->prepare('UPDATE migration_items SET mail_restore = 0, status = ?, step = ?, progress = 100, error = ?, report = ? WHERE id = ?')->execute([
             $problems || $error !== null ? 'completed_with_errors' : 'completed',
-            $error === null ? "Mail restored: $created mailbox(es) created" : ($error === 'Cancelled.' ? 'Mail restore cancelled' : 'Mail restore failed'),
+            $error === null ? "Mail restored: $created mailbox(es)" : ($error === 'Cancelled.' ? 'Mail restore cancelled' : 'Mail restore failed'),
             $error === 'Cancelled.' ? null : $error,
             $this->reportJson(),
             (int) $item['id'],
         ]);
-        $this->log("--- $user: mail restore " . ($error === null ? "done ($created mailbox(es) created)" : 'stopped'));
+        $this->log("--- $user: mail restore " . ($error === null ? "done ($created mailbox(es) restored)" : 'stopped'));
     }
 
     private function hasFailures(): bool
@@ -822,7 +825,7 @@ final class MigrationRunner
         $withData = (bool) $this->opt['email_data'];
         $preserve = $this->opt['mail_passwords'] !== 'generate';
         $insert = $this->pdo->prepare('INSERT INTO email_accounts (user_id, domain_id, local_part, mail_account_id) VALUES (?, ?, ?, ?)');
-        $exists = $this->pdo->prepare('SELECT COUNT(*) FROM email_accounts WHERE domain_id = ? AND local_part = ?');
+        $exists = $this->pdo->prepare('SELECT mail_account_id FROM email_accounts WHERE domain_id = ? AND local_part = ?');
         foreach ($domains as $domain) {
             $accounts = $r->mailAccounts($domain);
             if (!$accounts) {
@@ -844,32 +847,40 @@ final class MigrationRunner
             foreach ($accounts as $local => $hash) {
                 $this->checkpoint();
                 $address = "$local@$domain";
-                $exists->execute([$domainRow['id'], $local]);
-                if ((int) $exists->fetchColumn() > 0) {
-                    continue; // already here (a mail restore of an earlier migration)
-                }
                 $this->setItem(['step' => "Mailbox $address", 'progress' => 80]);
+                $maildir = $withData ? $r->maildir($domain, $local) : null;
+                $exists->execute([$domainRow['id'], $local]);
+                $existingId = $exists->fetchColumn();
+                if ($existingId !== false) {
+                    // Already here (a mail restore after an earlier run): only
+                    // add the stored messages it doesn't have yet.
+                    $old = $this->previousEmail[$address] ?? ['address' => $address, 'status' => 'ok', 'password' => 'unchanged', 'note' => ''];
+                    if ($maildir === null) {
+                        continue;
+                    }
+                    $entry = array_merge($old, ['status' => 'ok', 'note' => '']);
+                    $this->importMail($entry, (string) $existingId, $address, $maildir, true);
+                    $entry['messages'] = (int) ($old['messages'] ?? 0) + (int) ($entry['messages'] ?? 0);
+                    $this->report['email'][] = $entry;
+                    $this->log("{$r->username()}: mailbox $address already here, {$entry['status']} ({$entry['messages']} messages)");
+                    continue;
+                }
+
                 $generated = null;
                 $real = ($preserve && $hash !== null) ? $hash : ($generated = Crypto::randomPassword(16));
-                $maildir = $withData ? $r->maildir($domain, $local) : null;
-                $temp = $maildir ? bin2hex(random_bytes(24)) : null;
                 $entry = ['address' => $address, 'status' => 'ok', 'password' => $generated ? 'generated' : 'preserved', 'generated_password' => $generated, 'note' => ''];
-
-                // Stalwart allows one password per mailbox: while stored mail
-                // is imported the mailbox has only the temporary one, and the
-                // real (imported) password replaces it afterwards.
                 try {
-                    $accountId = MailService::createMailbox($mailDomainId, $local, $temp ?? $real);
+                    $accountId = MailService::createMailbox($mailDomainId, $local, $real);
                 } catch (Throwable $e) {
-                    if ($temp !== null || $generated !== null) {
+                    if ($generated !== null) {
                         $this->report['email'][] = ['address' => $address, 'status' => 'failed', 'note' => $e->getMessage()];
                         continue;
                     }
                     // Mail server didn't accept the imported hash - fall back to a new password.
-                    $real = $generated = Crypto::randomPassword(16);
+                    $generated = Crypto::randomPassword(16);
                     $entry = array_merge($entry, ['password' => 'generated', 'generated_password' => $generated, 'note' => 'The original password hash was not accepted by the mail server; a new password was set.']);
                     try {
-                        $accountId = MailService::createMailbox($mailDomainId, $local, $real);
+                        $accountId = MailService::createMailbox($mailDomainId, $local, $generated);
                     } catch (Throwable $e2) {
                         $this->report['email'][] = ['address' => $address, 'status' => 'failed', 'note' => $e2->getMessage()];
                         continue;
@@ -877,50 +888,50 @@ final class MigrationRunner
                 }
                 $insert->execute([$userId, $domainRow['id'], $local, $accountId]);
 
-                if ($maildir && $temp) {
-                    try {
-                        $stats = (new MailImportService($address, $temp))->importMaildir(
-                            $maildir,
-                            function (array $s) use ($address) {
-                                $this->setItem(['step' => "Mailbox $address: {$s['imported']} messages imported"]);
-                            },
-                            fn() => $this->cancelRequested(),
-                        );
-                        $entry['messages'] = $stats['imported'];
-                        $entry['folders'] = $stats['folders'];
-                        if ($stats['failed'] > 0) {
-                            $entry['status'] = 'partial';
-                            $entry['note'] = trim($entry['note'] . " {$stats['failed']} message(s) failed to import: " . implode('; ', array_slice($stats['errors'], 0, 3)));
-                        }
-                        if ($stats['skipped'] > 0) {
-                            $entry['note'] = trim($entry['note'] . " {$stats['skipped']} deleted/oversized message(s) skipped.");
-                        }
-                    } catch (Throwable $e) {
-                        $entry['status'] = 'partial';
-                        $entry['note'] = trim($entry['note'] . ' Stored mail was not imported: ' . $e->getMessage());
-                    } finally {
-                        try {
-                            MailService::setPassword($accountId, $real);
-                        } catch (Throwable $e) {
-                            try {
-                                if ($generated !== null) {
-                                    throw $e;
-                                }
-                                $real = $generated = Crypto::randomPassword(16);
-                                MailService::setPassword($accountId, $real);
-                                $entry = array_merge($entry, ['password' => 'generated', 'generated_password' => $generated, 'note' => trim('The original password hash was not accepted by the mail server; a new password was set. ' . $entry['note'])]);
-                            } catch (Throwable) {
-                                $entry['status'] = 'partial';
-                                $this->report['warnings'][] = "Could not set the password of $address after importing its mail - reset that mailbox's password now.";
-                            }
-                        }
-                    }
-                } elseif ($withData && !$maildir) {
+                if ($maildir) {
+                    $this->importMail($entry, $accountId, $address, $maildir, false);
+                } elseif ($withData) {
                     $entry['messages'] = 0;
                 }
                 $this->report['email'][] = $entry;
                 $this->log("{$r->username()}: mailbox $address {$entry['status']}" . (isset($entry['messages']) ? " ({$entry['messages']} messages)" : ''));
             }
+        }
+    }
+
+    /**
+     * Imports a Maildir into $address (logged in as the mail admin, so the
+     * mailbox's password stays as it is) and records the outcome in $entry.
+     */
+    private function importMail(array &$entry, string $mailAccountId, string $address, string $maildir, bool $skipExisting): void
+    {
+        try {
+            $stats = MailService::withImportLimitsLifted($mailAccountId, fn() => MailImportService::asAdmin($address)->importMaildir(
+                $maildir,
+                function (array $s) use ($address) {
+                    $this->setItem(['step' => "Mailbox $address: {$s['imported']} messages imported"]);
+                },
+                fn() => $this->cancelRequested(),
+                $skipExisting,
+            ));
+            $entry['messages'] = $stats['imported'];
+            $entry['folders'] = $stats['folders'];
+            if ($stats['failed'] > 0) {
+                $entry['status'] = 'partial';
+                $entry['note'] = trim($entry['note'] . " {$stats['failed']} message(s) failed to import: " . implode('; ', array_slice($stats['errors'], 0, 3)));
+            }
+            if ($stats['skipped'] > 0) {
+                $entry['note'] = trim($entry['note'] . " {$stats['skipped']} deleted/oversized message(s) skipped.");
+            }
+            if ($stats['existing'] > 0) {
+                $entry['note'] = trim($entry['note'] . " {$stats['existing']} message(s) were already in the mailbox.");
+            }
+        } catch (Throwable $e) {
+            if ($e->getMessage() === 'Cancelled.') {
+                throw $e;
+            }
+            $entry['status'] = 'partial';
+            $entry['note'] = trim($entry['note'] . ' Stored mail was not imported: ' . $e->getMessage());
         }
     }
 
