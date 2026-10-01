@@ -560,7 +560,9 @@ CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
 UNIT
 SFTPGO_RESTART=${SFTPGO_BIN_CHANGED:-0}
 if ! cmp -s /tmp/sftpgo-jinnpanel.conf /etc/systemd/system/sftpgo.service.d/jinnpanel.conf; then
-    mv /tmp/sftpgo-jinnpanel.conf /etc/systemd/system/sftpgo.service.d/jinnpanel.conf
+    # install, not mv: a file moved from /tmp keeps its user_tmp_t label, which systemd refuses.
+    install -m 0644 /tmp/sftpgo-jinnpanel.conf /etc/systemd/system/sftpgo.service.d/jinnpanel.conf
+    restorecon /etc/systemd/system/sftpgo.service.d/jinnpanel.conf
     SFTPGO_RESTART=1
 fi
 rm -f /tmp/sftpgo-jinnpanel.conf
