@@ -195,12 +195,15 @@ DEALLOCATE PREPARE dbuser_stmt;
 -- that creates the real administrator account interactively. Baking a
 -- fixed username/password into a script or repo is exactly the kind of
 -- thing this is meant to avoid.
+-- Only into an empty table (a fresh install): this file runs on every
+-- install.sh, and packages has no unique key for ON DUPLICATE KEY to hit.
 INSERT INTO packages (owner_id, name, disk_quota_mb, bandwidth_mb, max_domains, max_databases, max_email_accounts, max_ftp_accounts)
-VALUES
-    (NULL, 'Starter', 1024, 10240, 1, 1, 5, 1),
-    (NULL, 'Business', 5120, 51200, 5, 5, 25, 3),
-    (NULL, 'Reseller', 20480, 204800, 50, 50, 250, 10)
-ON DUPLICATE KEY UPDATE name = VALUES(name);
+SELECT * FROM (
+    SELECT NULL AS owner_id, 'Starter' AS name, 1024 AS disk, 10240 AS bw, 1 AS d, 1 AS db, 5 AS em, 1 AS ftp
+    UNION ALL SELECT NULL, 'Business', 5120, 51200, 5, 5, 25, 3
+    UNION ALL SELECT NULL, 'Reseller', 20480, 204800, 50, 50, 250, 10
+) seed
+WHERE NOT EXISTS (SELECT 1 FROM packages);
 
 -- DNS zones and records live in the panel DB; Knot zone files are rendered
 -- from these rows by DnsService and written by hostpanel-worker.php.
