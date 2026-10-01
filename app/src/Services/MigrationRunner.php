@@ -15,6 +15,9 @@ declare(strict_types=1);
  *             single-use SFTPGo user on this server (port 2022)
  *       pull: Backup::fullbackup_to_homedir, then download it over a cPanel
  *             session (create_user_session / login)
+ *       file: no source server - use an archive already on this server in
+ *             MigrationService::importDir() (e.g. from cPanel's scheduled
+ *             backups, copied from offsite storage); it is left in place
  *  2. Verify (gzip -t) and extract as an unprivileged user
  *  3. Restore: account (same username + password hash) -> domains + vhosts
  *     + DNS -> site files -> databases (same names, users, password hashes)
@@ -33,6 +36,12 @@ final class MigrationRunner
     private string $work = '';
     private int $lastBeat = 0;
     private ?array $creatorCache = null;
+    /** Set while restoring only the mail of a finished item: its status must not change. */
+    private bool $mailOnly = false;
+    /** The restoring account's main domain (parked domains become its aliases). */
+    private ?string $mainDomain = null;
+    /** @var array<string,array> address => report entry from before a mail restore */
+    private array $previousEmail = [];
 
     public function __construct(private int $migrationId)
     {
@@ -61,10 +70,12 @@ final class MigrationRunner
 
         try {
             $this->preflight();
-            if (empty($m['secret_enc'])) {
-                throw new RuntimeException('Source credentials were discarded - start a new migration.');
+            if ($m['transfer_mode'] !== 'file') {
+                if (empty($m['secret_enc'])) {
+                    throw new RuntimeException('Source credentials were discarded - start a new migration.');
+                }
+                $this->api = CpanelApiClient::fromMigration($m, Crypto::decrypt($m['secret_enc']));
             }
-            $this->api = CpanelApiClient::fromMigration($m, Crypto::decrypt($m['secret_enc']));
 
             $stmt = $this->pdo->prepare("SELECT * FROM migration_items WHERE migration_id = ? AND selected = 1 AND status = 'pending' ORDER BY is_reseller DESC, id");
             $stmt->execute([$this->migrationId]);
@@ -73,6 +84,15 @@ final class MigrationRunner
                     break;
                 }
                 $this->processItem($item);
+            }
+
+            $stmt = $this->pdo->prepare('SELECT * FROM migration_items WHERE migration_id = ? AND selected = 1 AND mail_restore = 1 ORDER BY id');
+            $stmt->execute([$this->migrationId]);
+            foreach ($stmt->fetchAll() as $item) {
+                if ($this->cancelRequested()) {
+                    break;
+                }
+                $this->restoreMailItem($item);
             }
         } catch (Throwable $e) {
             $this->log('FATAL: ' . $e->getMessage());
@@ -116,6 +136,8 @@ final class MigrationRunner
         if ($cancelled) {
             $this->pdo->prepare("UPDATE migration_items SET status = 'cancelled', step = 'Cancelled' WHERE migration_id = ? AND status = 'pending'")->execute([$this->migrationId]);
         }
+        $this->pdo->prepare("UPDATE migration_items SET mail_restore = 0, step = ? WHERE migration_id = ? AND mail_restore = 1")
+            ->execute([$cancelled ? 'Mail restore cancelled' : 'Mail restore did not run', $this->migrationId]);
         $failed = ($counts['failed'] ?? 0);
         $ok = ($counts['completed'] ?? 0) + ($counts['completed_with_errors'] ?? 0);
         $status = match (true) {
@@ -162,9 +184,11 @@ final class MigrationRunner
 
         $sftpUser = null;
         try {
-            $archive = $this->m['transfer_mode'] === 'push'
-                ? $this->pushBackup($user, $sftpUser)
-                : $this->pullBackup($user);
+            $archive = match ($this->m['transfer_mode']) {
+                'push' => $this->pushBackup($user, $sftpUser),
+                'file' => $this->localBackup($user),
+                default => $this->pullBackup($user),
+            };
             if ($sftpUser) {
                 $this->deleteSftpUser($sftpUser);
                 $sftpUser = null;
@@ -172,7 +196,9 @@ final class MigrationRunner
 
             $this->setItem(['status' => 'restoring', 'step' => 'Extracting the backup', 'progress' => 45]);
             $this->extract($archive, $this->work . '/extract');
-            @unlink($archive);
+            if ($this->m['transfer_mode'] !== 'file') {
+                @unlink($archive); // our own download; a file-mode archive belongs to the operator
+            }
 
             $reader = new CpanelBackupReader($this->work . '/extract', $user);
             $this->restore($reader);
@@ -206,10 +232,105 @@ final class MigrationRunner
         }
     }
 
+    /**
+     * "Restore mail" for an item that already finished: fetches the backup
+     * again, extracts only the mail parts of the home directory, and creates
+     * the mailboxes (with their stored mail) that aren't on this server yet.
+     * The account, its sites and databases are never touched or rolled
+     * back, and the item keeps its completed status even if this fails.
+     */
+    private function restoreMailItem(array $item): void
+    {
+        $this->item = $item;
+        $this->mailOnly = true;
+        $user = (string) $item['source_username'];
+        $previous = json_decode((string) $item['report'], true) ?: [];
+        $this->report = array_merge(['email' => [], 'warnings' => [], 'info' => []], $previous);
+        $oldEmail = (array) $this->report['email'];
+        $this->previousEmail = array_column($oldEmail, null, 'address');
+        $this->report['email'] = [];
+        $this->log("--- $user: restoring mail");
+        $this->setItem(['step' => 'Fetching the backup', 'progress' => 5, 'error' => null]);
+
+        $this->work = MigrationService::workDir() . '/' . $this->migrationId . '/' . (int) $item['id'];
+        self::rrmdir($this->work);
+        @mkdir($this->work . '/incoming', 02770, true);
+        @mkdir($this->work . '/extract', 02770, true);
+
+        $sftpUser = null;
+        $error = null;
+        try {
+            $owner = $this->pdo->prepare('SELECT username FROM users WHERE id = ?');
+            $owner->execute([(int) $item['target_user_id']]);
+            if ($owner->fetchColumn() !== $user) {
+                throw new RuntimeException("The JinnPanel account \"$user\" this item restored no longer exists.");
+            }
+            $archive = match ($this->m['transfer_mode']) {
+                'push' => $this->pushBackup($user, $sftpUser),
+                'file' => $this->localBackup($user),
+                default => $this->pullBackup($user),
+            };
+            if ($sftpUser) {
+                $this->deleteSftpUser($sftpUser);
+                $sftpUser = null;
+            }
+            $this->setItem(['step' => 'Extracting mail from the backup', 'progress' => 45]);
+            $this->extract($archive, $this->work . '/extract', ['*/cp/*', '*/shadow', '*/va/*', '*/userdata/*', '*/proftpdpasswd', '*/cron/*', '*/homedir/etc/*', '*/homedir/mail/*', '*/homedir/.autorespond/*', '*/homedir.tar']);
+            if ($this->m['transfer_mode'] !== 'file') {
+                @unlink($archive);
+            }
+
+            $domains = $this->pdo->prepare('SELECT domain_name FROM domains WHERE user_id = ? ORDER BY id');
+            $domains->execute([(int) $item['target_user_id']]);
+            $opt = $this->opt;
+            $this->opt['email_data'] = true; // the point of a mail restore, whatever the original run chose
+            $reader = new CpanelBackupReader($this->work . '/extract', $user);
+            $here = $domains->fetchAll(PDO::FETCH_COLUMN);
+            try {
+                $this->restoreEmail((int) $item['target_user_id'], $reader, $here);
+                // Extras that older migrations didn't bring over (idempotent).
+                $this->setItem(['step' => 'FTP accounts and cron jobs', 'progress' => 95]);
+                $this->mainDomain = $reader->mainDomain();
+                $this->restoreFtpAccounts((int) $item['target_user_id'], $reader, $reader->domains(), $here);
+                $this->restoreCron((int) $item['target_user_id'], $reader, $reader->domains(), $here);
+            } finally {
+                $this->opt = $opt;
+            }
+        } catch (Throwable $e) {
+            $error = $e->getMessage();
+            $this->log("--- $user: mail restore FAILED - $error");
+        } finally {
+            if ($sftpUser) {
+                $this->deleteSftpUser($sftpUser);
+            }
+            self::rrmdir($this->work);
+            $this->mailOnly = false;
+        }
+
+        // Mailboxes this run skipped (already on the server) keep their old entry.
+        $done = array_column($this->report['email'], 'address');
+        $kept = array_filter($oldEmail, fn($e) => !in_array($e['address'] ?? '', $done, true));
+        $created = count(array_filter($this->report['email'], fn($e) => ($e['status'] ?? '') !== 'failed'));
+        $this->report['email'] = array_values(array_merge($kept, $this->report['email']));
+        $this->report['info'][] = date('Y-m-d H:i') . ': mail restored again from the backup - '
+            . ($error === null ? "$created mailbox(es) restored." : "stopped: $error");
+
+        $this->report['info'] = array_values(array_unique($this->report['info']));
+        $problems = $this->report['warnings'] || $this->hasFailures();
+        $this->pdo->prepare('UPDATE migration_items SET mail_restore = 0, status = ?, step = ?, progress = 100, error = ?, report = ? WHERE id = ?')->execute([
+            $problems || $error !== null ? 'completed_with_errors' : 'completed',
+            $error === null ? "Mail restored: $created mailbox(es)" : ($error === 'Cancelled.' ? 'Mail restore cancelled' : 'Mail restore failed'),
+            $error === 'Cancelled.' ? null : $error,
+            $this->reportJson(),
+            (int) $item['id'],
+        ]);
+        $this->log("--- $user: mail restore " . ($error === null ? "done ($created mailbox(es) restored)" : 'stopped'));
+    }
+
     private function hasFailures(): bool
     {
-        foreach (['domains', 'databases', 'db_users', 'email'] as $k) {
-            foreach ($this->report[$k] as $r) {
+        foreach (['domains', 'databases', 'db_users', 'email', 'forwarders', 'ftp'] as $k) {
+            foreach ($this->report[$k] ?? [] as $r) {
                 if (in_array($r['status'] ?? '', ['failed', 'partial'], true)) {
                     return true;
                 }
@@ -246,7 +367,8 @@ final class MigrationRunner
         $sftpUser = 'jpmig' . $this->migrationId . 'x' . (int) $this->item['id'];
         $pass = bin2hex(random_bytes(16));
         $this->deleteSftpUser($sftpUser); // leftover from a crashed attempt
-        SftpService::createUser($sftpUser, $pass, $incoming, 0);
+        $fp = posix_getpwnam('frankenphp'); // the backup is read by this runner
+        SftpService::createUser($sftpUser, $pass, $incoming, 0, [(int) $fp['uid'], (int) $fp['gid']]);
 
         $host = trim((string) $this->opt['public_host']) ?: Config::SERVER_IP;
         $port = (int) $this->opt['public_port'] ?: 2022;
@@ -352,6 +474,21 @@ final class MigrationRunner
         return $local;
     }
 
+    private function localBackup(string $user): string
+    {
+        $this->setItem(['status' => 'transferring', 'step' => 'Verifying the backup file', 'progress' => 20]);
+        $file = MigrationService::backupFile($user);
+        if ($file === null) {
+            throw new RuntimeException("No backup file for \"$user\" in " . MigrationService::importDir() . '.');
+        }
+        if (!is_readable($file) || !self::gzipOk($file)) {
+            throw new RuntimeException(basename($file) . ' is not readable or not a valid gzip archive.');
+        }
+        $this->log("$user: using " . basename($file) . ' (' . self::mb((int) filesize($file)) . ')');
+        $this->report['info'][] = 'Restored from ' . basename($file) . ' in ' . MigrationService::importDir() . ' - delete it there once you\'ve checked the migration.';
+        return $file;
+    }
+
     private function remoteHome(string $user): string
     {
         try {
@@ -391,7 +528,8 @@ final class MigrationRunner
     // Step 2: extract
     // ------------------------------------------------------------------
 
-    private function extract(string $archive, string $dest): void
+    /** @param string[] $members only these (wildcard) members, e.g. just the mail; all if empty */
+    private function extract(string $archive, string $dest, array $members = []): void
     {
         $size = (int) filesize($archive);
         $free = (int) @disk_free_space($dest);
@@ -400,7 +538,16 @@ final class MigrationRunner
         }
         // GNU tar already refuses absolute and ".." member names; running as
         // an unprivileged user means it also can't set owners or devices.
-        $code = CpanelBackupReader::run(['tar', '-xzf', $archive, '-C', $dest, '--no-same-owner', '--no-same-permissions', '--delay-directory-restore'], $out);
+        $cmd = ['tar', '-xzf', $archive, '-C', $dest, '--no-same-owner', '--no-same-permissions', '--delay-directory-restore'];
+        if ($members) {
+            array_push($cmd, '--wildcards', ...$members);
+        }
+        $code = CpanelBackupReader::run($cmd, $out);
+        // With member patterns, tar exits 2 when one of them matched nothing
+        // (e.g. no homedir.tar) - fine as long as something was extracted.
+        if ($members && $code === 2 && preg_match('/Not found in archive/', (string) $out) && count(scandir($dest) ?: []) > 2) {
+            $code = 0;
+        }
         if ($code > 1) {
             throw new RuntimeException('Extracting the backup failed: ' . substr(trim((string) $out), 0, 400));
         }
@@ -424,6 +571,9 @@ final class MigrationRunner
         $chk->execute([$user]);
         if ((int) $chk->fetchColumn() > 0) {
             throw new RuntimeException("A JinnPanel account named \"$user\" already exists. Rename or delete it, then retry.");
+        }
+        if (($problem = Usernames::problem($user)) !== null) {
+            throw new RuntimeException("Can't recreate the account \"$user\" here: $problem");
         }
 
         $domains = $r->domains();
@@ -458,6 +608,7 @@ final class MigrationRunner
 
         // Domains + site files
         $home = ($this->opt['files'] || $this->opt['email_accounts']) ? $r->homedir() : null;
+        $this->mainDomain = $r->mainDomain();
         $migratedDomains = [];
         foreach ($domains as $i => $d) {
             $this->checkpoint();
@@ -466,6 +617,7 @@ final class MigrationRunner
                 $migratedDomains[] = $d['name'];
             }
         }
+        $this->importDnsRecords($r, $migratedDomains);
         $this->setItem(['report' => $this->reportJson()]);
 
         if ($this->opt['databases']) {
@@ -478,16 +630,62 @@ final class MigrationRunner
             $this->setItem(['report' => $this->reportJson()]);
         }
 
-        $this->setItem(['step' => 'Final checks', 'progress' => 97]);
+        $this->setItem(['step' => 'Final checks', 'progress' => 94]);
         $this->postChecks($userId, $r, $migratedDomains, $packageId);
+
+        // The account's Linux user takes over its site files and its PHP
+        // pool starts (the root worker); SFTP logins write as that user, so
+        // they're created once it exists.
+        $this->setItem(['step' => 'Handing the files to the account', 'progress' => 96]);
+        AccountRuntime::sync($userId);
+        $this->waitForRuntime($user, $migratedDomains);
+        if ($this->opt['files']) {
+            $this->setItem(['step' => 'FTP accounts and cron jobs', 'progress' => 98]);
+            $this->restoreFtpAccounts($userId, $r, $domains, $migratedDomains);
+            $this->restoreCron($userId, $r, $domains, $migratedDomains);
+        }
         $this->relinkChildren($user);
+    }
+
+    /**
+     * Waits for the root worker to set the account up (Linux user, files
+     * handed over, PHP pool) - at most two minutes, then carries on and
+     * says so in the report.
+     *
+     * @param list<string> $domains
+     */
+    private function waitForRuntime(string $user, array $domains): void
+    {
+        $until = time() + 120;
+        do {
+            clearstatcache();
+            $ready = posix_getpwnam(Usernames::linuxUser($user)) !== false
+                && ($domains === [] || AccountRuntime::ready($user));
+            if ($ready) {
+                return;
+            }
+            sleep(1);
+        } while (time() < $until);
+        $this->report['warnings'][] = 'The account\'s server-side setup (its Linux user and PHP) took longer than expected - check WHM > Accounts; it finishes on its own.';
     }
 
     private function restoreDomain(int $userId, array $d, ?string $home): bool
     {
         $name = $d['name'];
         if ($d['type'] === 'parked') {
-            $this->report['domains'][] = ['name' => $name, 'type' => 'parked', 'status' => 'skipped', 'note' => 'Parked (alias) domains aren\'t supported yet - add it as its own domain if you need it.'];
+            // A parked domain shows the main site: an alias of the main domain.
+            $main = $this->pdo->prepare('SELECT * FROM domains WHERE user_id = ? AND domain_name = ?');
+            $main->execute([$userId, (string) $this->mainDomain]);
+            $mainRow = $main->fetch();
+            try {
+                if (!$mainRow) {
+                    throw new RuntimeException('the main domain was not restored');
+                }
+                DomainAliasService::add($mainRow, $name);
+                $this->report['domains'][] = ['name' => $name, 'type' => 'parked', 'status' => 'ok', 'note' => "Alias of {$mainRow['domain_name']} (serves the same site)."];
+            } catch (Throwable $e) {
+                $this->report['domains'][] = ['name' => $name, 'type' => 'parked', 'status' => 'failed', 'note' => 'Not added as an alias: ' . $e->getMessage()];
+            }
             return false;
         }
         $chk = $this->pdo->prepare('SELECT COUNT(*) FROM domains WHERE domain_name = ?');
@@ -497,12 +695,21 @@ final class MigrationRunner
             return false;
         }
 
+        if (($problem = DomainPolicy::problem($name, $userId)) !== null) {
+            $this->report['domains'][] = ['name' => $name, 'type' => $d['type'], 'status' => 'failed', 'note' => $problem];
+            return false;
+        }
+
         $siteDir = rtrim(Config::VHOSTS_DOCROOT_BASE, '/') . '/' . $name;
         $existed = is_dir($siteDir);
-        try {
-            $docroot = VhostService::create($name, 'default', $this->opt['ssl_mode'] === 'letsencrypt' ? 'letsencrypt' : 'self_signed');
-        } catch (Throwable $e) {
-            $this->report['domains'][] = ['name' => $name, 'type' => $d['type'], 'status' => 'failed', 'note' => 'Vhost: ' . $e->getMessage()];
+        if ($existed && !is_writable($siteDir)) {
+            $this->report['domains'][] = ['name' => $name, 'type' => $d['type'], 'status' => 'failed', 'note' => "$siteDir already exists and belongs to someone else."];
+            return false;
+        }
+        $ssl = SslService::resolveMode((string) $this->opt['ssl_mode'], $name);
+        $docroot = VhostService::docroot($name);
+        if (!is_dir($docroot) && !@mkdir($docroot, 0755, true)) {
+            $this->report['domains'][] = ['name' => $name, 'type' => $d['type'], 'status' => 'failed', 'note' => "Could not create $docroot."];
             return false;
         }
         if (!$existed) {
@@ -514,8 +721,14 @@ final class MigrationRunner
         } catch (Throwable $e) {
             $dnsOk = false;
         }
+        // The row first: the vhost names the owning account's PHP pool.
         $this->pdo->prepare("INSERT INTO domains (user_id, domain_name, docroot, dns_provisioned, php_version, php_port, ssl_mode) VALUES (?, ?, ?, ?, 'default', NULL, ?)")
-            ->execute([$userId, $name, $docroot, $dnsOk ? 1 : 0, $this->opt['ssl_mode'] === 'letsencrypt' ? 'letsencrypt' : 'self_signed']);
+            ->execute([$userId, $name, $docroot, $dnsOk ? 1 : 0, $ssl]);
+        try {
+            VhostService::create($name, 'default', $ssl);
+        } catch (Throwable $e) {
+            $this->report['warnings'][] = "$name: vhost: " . $e->getMessage();
+        }
 
         $entry = ['name' => $name, 'type' => $d['type'], 'status' => 'ok', 'note' => $dnsOk ? '' : 'DNS zone provisioning failed (site works; re-provision from cPanel > DNS).'];
         if ($existed) {
@@ -540,11 +753,166 @@ final class MigrationRunner
                     $entry['note'] = trim($entry['note'] . ' Copying files: ' . substr(trim((string) $out), -300));
                 }
                 $entry['source_docroot'] = '~/' . $d['docroot_rel'];
+                // MultiPHP INI Editor settings (FrankenPHP ignores .user.ini).
+                try {
+                    $row = $this->pdo->prepare('SELECT * FROM domains WHERE domain_name = ?');
+                    $row->execute([$name]);
+                    foreach (PhpSettingsService::importCpanelIni($row->fetch(), $docroot) as $n) {
+                        $this->report['info'][] = "$name: $n.";
+                    }
+                } catch (Throwable $e) {
+                    $this->report['warnings'][] = "$name: PHP settings from cPanel not imported: " . $e->getMessage();
+                }
             }
         }
         $this->report['domains'][] = $entry;
         $this->log("{$this->item['source_username']}: domain $name {$entry['status']}");
         return true;
+    }
+
+    /**
+     * cPanel's extra FTP accounts become SFTP accounts (same password - the
+     * crypt hash is kept). Their home maps from /home/<user>/... onto the
+     * new layout; a folder that wasn't part of a site is created empty.
+     */
+    private function restoreFtpAccounts(int $userId, CpanelBackupReader $r, array $domains, array $migrated): void
+    {
+        $accounts = $r->ftpAccounts();
+        if (!$accounts) {
+            return;
+        }
+        $this->report['ftp'] = [];
+        $user = $r->username();
+        $roots = [];
+        foreach ($domains as $d) {
+            if (in_array($d['name'], $migrated, true) && $d['docroot_rel']) {
+                $roots[rtrim((string) $d['docroot_rel'], '/')] = $d['name'];
+            }
+        }
+        uksort($roots, fn($a, $b) => strlen($b) <=> strlen($a));
+        $mainDir = $this->mainDomain && in_array($this->mainDomain, $migrated, true) ? VhostService::siteDir($this->mainDomain) : null;
+        $ins = $this->pdo->prepare('INSERT INTO ftp_accounts (user_id, domain_id, username, home_dir) VALUES (?, ?, ?, ?)');
+        $dom = $this->pdo->prepare('SELECT id FROM domains WHERE domain_name = ?');
+        foreach ($accounts as $a) {
+            $entry = ['name' => $a['name'], 'status' => 'ok', 'note' => ''];
+            try {
+                if ($a['locked'] || $a['hash'] === null) {
+                    throw new RuntimeException($a['locked'] ? 'disabled on cPanel - not recreated' : 'no usable password hash - create it again in cPanel > FTP');
+                }
+                [$home, $domainName, $created] = [null, null, false];
+                foreach ($roots as $rel => $domainName) {
+                    if ($a['home_rel'] === $rel || str_starts_with($a['home_rel'], "$rel/")) {
+                        $home = rtrim(VhostService::effectiveDocroot($domainName) . substr($a['home_rel'], strlen($rel)), '/');
+                        break;
+                    }
+                    $domainName = null;
+                }
+                if ($home === null) {
+                    if ($mainDir === null) {
+                        throw new RuntimeException('its folder has no place on this server (main domain not migrated)');
+                    }
+                    $domainName = $this->mainDomain;
+                    $home = rtrim($mainDir . '/' . $a['home_rel'], '/');
+                    if (str_contains($a['home_rel'], '..') || !preg_match('#^[A-Za-z0-9._/ -]*$#', $a['home_rel'])) {
+                        throw new RuntimeException("unusual home folder ~/{$a['home_rel']}");
+                    }
+                }
+                // A missing folder is made by SFTPGo at first login, as the account.
+                $created = !is_dir($home);
+                $label = preg_replace('/[^a-z0-9_]/', '_', strtolower(strstr($a['name'] . '@', '@', true)));
+                $label = preg_match('/^[a-z]/', $label) ? $label : 'ftp_' . $label;
+                $name = substr($user . '_' . $label, 0, 31);
+                $exists = $this->pdo->prepare('SELECT user_id FROM ftp_accounts WHERE username = ?');
+                $exists->execute([$name]);
+                $owner = $exists->fetchColumn();
+                if ($owner !== false && (int) $owner === $userId) {
+                    $entry['status'] = 'ok';
+                    $entry['note'] = "SFTP login $name is already here";
+                    $this->report['ftp'][] = $entry;
+                    continue; // a mail/extras restore running again
+                }
+                if ($owner !== false) {
+                    $name = substr($user . '_' . $label, 0, 26) . '_' . substr(md5($a['name']), 0, 4);
+                }
+                SftpService::createUser($name, (string) $a['hash'], $home, 0, $user);
+                $dom->execute([$domainName]);
+                $ins->execute([$userId, $dom->fetchColumn() ?: null, $name, $home]);
+                $entry['note'] = "SFTP login $name (same password), folder $home" . ($created && !in_array($a['home_rel'], array_keys($roots), true) && $home !== $mainDir ? ' - created empty: it wasn\'t part of the sites\' files' : '');
+            } catch (Throwable $e) {
+                $entry['status'] = str_contains($e->getMessage(), 'not recreated') ? 'skipped' : 'failed';
+                $entry['note'] = $e->getMessage();
+            }
+            $this->report['ftp'][] = $entry;
+        }
+    }
+
+    /** Cron jobs that run a PHP script of the account's sites, or fetch a URL. */
+    private function restoreCron(int $userId, CpanelBackupReader $r, array $domains, array $migrated): void
+    {
+        $tab = $r->crontab();
+        if (trim($tab) === '') {
+            return;
+        }
+        $map = [];
+        foreach ($domains as $d) {
+            if (in_array($d['name'], $migrated, true) && $d['docroot_rel']) {
+                $map[rtrim((string) $d['docroot_rel'], '/')] = $d['name'];
+            }
+        }
+        uksort($map, fn($a, $b) => strlen($b) <=> strlen($a));
+        $res = CronService::fromCpanel($tab, $r->username(), $map);
+        $dom = $this->pdo->prepare('SELECT id FROM domains WHERE domain_name = ? AND user_id = ?');
+        foreach ($res['jobs'] as $j) {
+            try {
+                $in = ['schedule' => $j['schedule'], 'kind' => $j['kind'], 'url' => $j['url'] ?? '', 'args' => $j['args'] ?? ''];
+                if ($j['kind'] === 'php') {
+                    $dom->execute([$j['domain'], $userId]);
+                    $in['domain_id'] = (int) $dom->fetchColumn();
+                    $abs = VhostService::effectiveDocroot($j['domain']) . '/' . $j['docroot_path'];
+                    $in['target'] = substr($abs, strlen(VhostService::siteDir($j['domain'])) + 1);
+                }
+                $same = $this->pdo->prepare('SELECT COUNT(*) FROM cron_jobs WHERE user_id = ? AND schedule = ? AND kind = ? AND (target = ? OR target = ?) AND args = ?');
+                $same->execute([$userId, $j['schedule'], $j['kind'], $j['url'] ?? '', isset($j['domain']) ? VhostService::effectiveDocroot($j['domain']) . '/' . $j['docroot_path'] : '', $in['args']]);
+                if ((int) $same->fetchColumn() > 0) {
+                    continue;
+                }
+                CronService::create(['id' => $userId], $in);
+                $this->report['info'][] = 'Cron job recreated: ' . $j['schedule'] . ' ' . ($j['kind'] === 'php' ? 'php ' . ($in['target'] ?? '') : $j['url']) . '.';
+            } catch (Throwable $e) {
+                $this->report['warnings'][] = 'Cron job not recreated (' . $e->getMessage() . '): ' . $j['schedule'];
+            }
+        }
+        foreach ($res['skipped'] as $line) {
+            $this->report['warnings'][] = "Cron job not recreated: $line";
+        }
+    }
+
+    /** Custom DNS records from the backup's zone files (CpanelZoneImporter decides what's kept). */
+    private function importDnsRecords(CpanelBackupReader $r, array $domains): void
+    {
+        $all = $this->pdo->query('SELECT domain_name FROM domains')->fetchAll(PDO::FETCH_COLUMN);
+        foreach ($domains as $domain) {
+            $file = $r->path("dnszones/$domain.db");
+            $zone = DnsService::findZoneByName($domain);
+            if ($file === null || !is_file($file) || $zone === null) {
+                continue;
+            }
+            try {
+                $rep = CpanelZoneImporter::import((int) $zone['id'], (string) file_get_contents($file), $all);
+                DnsService::publish((int) $zone['id']);
+                foreach ($this->report['domains'] as &$entry) {
+                    if ($entry['name'] === $domain) {
+                        $entry['dns_records'] = count($rep['added']) . ' imported' . ($rep['external_mail'] ? ', external mail kept' : '');
+                    }
+                }
+                unset($entry);
+                foreach ($rep['failed'] as $f) {
+                    $this->report['warnings'][] = "DNS record not imported for $domain: $f";
+                }
+            } catch (Throwable $e) {
+                $this->report['warnings'][] = "DNS records for $domain weren't imported: " . $e->getMessage();
+            }
+        }
     }
 
     private function restoreDatabases(int $userId, CpanelBackupReader $r): void
@@ -650,6 +1018,7 @@ final class MigrationRunner
                 }
             }
             $row->execute([$userId, $db, $dbUser]);
+            $this->pdo->prepare('INSERT IGNORE INTO db_user_accounts (user_id, db_user) VALUES (?, ?)')->execute([$userId, $dbUser]);
         }
         $this->log("$owner: " . count($migrated) . ' database(s) restored');
     }
@@ -659,8 +1028,32 @@ final class MigrationRunner
         $withData = (bool) $this->opt['email_data'];
         $preserve = $this->opt['mail_passwords'] !== 'generate';
         $insert = $this->pdo->prepare('INSERT INTO email_accounts (user_id, domain_id, local_part, mail_account_id) VALUES (?, ?, ?, ?)');
+        $exists = $this->pdo->prepare('SELECT mail_account_id FROM email_accounts WHERE domain_id = ? AND local_part = ?');
+
+        // The cPanel account's own default mailbox becomes <user>@<main
+        // domain>, logging in with the cPanel account password like cPanel
+        // webmail's default account did.
+        $user = $r->username();
+        $main = $r->mainDomain();
+        $defaultMaildir = ($withData && $main !== null && in_array($main, $domains, true)) ? $r->defaultMaildir() : null;
+        $catchAll = $r->catchAllDomains();
+        if ($catchAll) {
+            $this->report['info'][] = 'On cPanel, mail to unknown addresses at ' . implode(', ', $catchAll)
+                . " went to the account's default mailbox (catch-all)."
+                . (($this->opt['catch_all'] ?? 'reject') === 'keep' ? '' : ' Not kept: unknown addresses are rejected (cPanel > Email > Default address to change it).');
+        }
+
         foreach ($domains as $domain) {
             $accounts = $r->mailAccounts($domain);
+            if ($defaultMaildir !== null && $domain === $main) {
+                if (isset($accounts[$user])) {
+                    $this->report['warnings'][] = "The account's default mailbox (system mail) wasn't migrated: $user@$main is already a regular mailbox.";
+                    $defaultMaildir = null;
+                } else {
+                    $accounts[$user] = $r->accountPasswordHash();
+                }
+            }
+            $isDefault = fn(string $local) => $defaultMaildir !== null && $domain === $main && $local === $user;
             if (!$accounts) {
                 continue;
             }
@@ -670,6 +1063,7 @@ final class MigrationRunner
             try {
                 $mailDomainId = MailService::ensureDomain($domain);
                 $this->pdo->prepare('UPDATE domains SET mail_domain_id = ? WHERE id = ?')->execute([$mailDomainId, $domainRow['id']]);
+                MailDnsService::syncAfterMailDomain((int) $domainRow['id']);
             } catch (Throwable $e) {
                 foreach (array_keys($accounts) as $local) {
                     $this->report['email'][] = ['address' => "$local@$domain", 'status' => 'failed', 'note' => 'Mail domain: ' . $e->getMessage()];
@@ -681,24 +1075,40 @@ final class MigrationRunner
                 $this->checkpoint();
                 $address = "$local@$domain";
                 $this->setItem(['step' => "Mailbox $address", 'progress' => 80]);
+                $maildir = $withData ? ($isDefault($local) ? $defaultMaildir : $r->maildir($domain, $local)) : null;
+                $exists->execute([$domainRow['id'], $local]);
+                $existingId = $exists->fetchColumn();
+                if ($existingId !== false) {
+                    // Already here (a mail restore after an earlier run): only
+                    // add the stored messages it doesn't have yet.
+                    $old = $this->previousEmail[$address] ?? ['address' => $address, 'status' => 'ok', 'password' => 'unchanged', 'note' => ''];
+                    if ($maildir === null) {
+                        continue;
+                    }
+                    $entry = array_merge($old, ['status' => 'ok', 'note' => '']);
+                    $this->importMail($entry, (string) $existingId, $address, $maildir, true);
+                    $entry['messages'] = (int) ($old['messages'] ?? 0) + (int) ($entry['messages'] ?? 0);
+                    $this->report['email'][] = $entry;
+                    $this->log("{$r->username()}: mailbox $address already here, {$entry['status']} ({$entry['messages']} messages)");
+                    continue;
+                }
+
                 $generated = null;
                 $real = ($preserve && $hash !== null) ? $hash : ($generated = Crypto::randomPassword(16));
-                $maildir = $withData ? $r->maildir($domain, $local) : null;
-                $temp = $maildir ? bin2hex(random_bytes(24)) : null;
-                $entry = ['address' => $address, 'status' => 'ok', 'password' => $generated ? 'generated' : 'preserved', 'generated_password' => $generated, 'note' => ''];
-
+                $entry = ['address' => $address, 'status' => 'ok', 'password' => $generated ? 'generated' : 'preserved', 'generated_password' => $generated,
+                    'note' => $isDefault($local) ? "The cPanel account's default mailbox (system mail, catch-all); same password as the cPanel account." : ''];
                 try {
-                    $accountId = MailService::createMailboxWithSecrets($mailDomainId, $local, array_values(array_filter([$real, $temp])));
+                    $accountId = MailService::createMailbox($mailDomainId, $local, $real);
                 } catch (Throwable $e) {
                     if ($generated !== null) {
                         $this->report['email'][] = ['address' => $address, 'status' => 'failed', 'note' => $e->getMessage()];
                         continue;
                     }
                     // Mail server didn't accept the imported hash - fall back to a new password.
-                    $real = $generated = Crypto::randomPassword(16);
+                    $generated = Crypto::randomPassword(16);
                     $entry = array_merge($entry, ['password' => 'generated', 'generated_password' => $generated, 'note' => 'The original password hash was not accepted by the mail server; a new password was set.']);
                     try {
-                        $accountId = MailService::createMailboxWithSecrets($mailDomainId, $local, array_values(array_filter([$real, $temp])));
+                        $accountId = MailService::createMailbox($mailDomainId, $local, $generated);
                     } catch (Throwable $e2) {
                         $this->report['email'][] = ['address' => $address, 'status' => 'failed', 'note' => $e2->getMessage()];
                         continue;
@@ -706,41 +1116,122 @@ final class MigrationRunner
                 }
                 $insert->execute([$userId, $domainRow['id'], $local, $accountId]);
 
-                if ($maildir && $temp) {
-                    try {
-                        $stats = (new MailImportService($address, $temp))->importMaildir(
-                            $maildir,
-                            function (array $s) use ($address) {
-                                $this->setItem(['step' => "Mailbox $address: {$s['imported']} messages imported"]);
-                            },
-                            fn() => $this->cancelRequested(),
-                        );
-                        $entry['messages'] = $stats['imported'];
-                        $entry['folders'] = $stats['folders'];
-                        if ($stats['failed'] > 0) {
-                            $entry['status'] = 'partial';
-                            $entry['note'] = trim($entry['note'] . " {$stats['failed']} message(s) failed to import: " . implode('; ', array_slice($stats['errors'], 0, 3)));
-                        }
-                        if ($stats['skipped'] > 0) {
-                            $entry['note'] = trim($entry['note'] . " {$stats['skipped']} deleted/oversized message(s) skipped.");
-                        }
-                    } catch (Throwable $e) {
-                        $entry['status'] = 'partial';
-                        $entry['note'] = trim($entry['note'] . ' Stored mail was not imported: ' . $e->getMessage());
-                    } finally {
-                        try {
-                            MailService::setSecrets($accountId, [$real]);
-                        } catch (Throwable $e) {
-                            $entry['status'] = 'partial';
-                            $this->report['warnings'][] = "Could not remove the temporary import credential from $address - reset that mailbox's password now.";
-                        }
-                    }
-                } elseif ($withData && !$maildir) {
+                if ($maildir) {
+                    $this->importMail($entry, $accountId, $address, $maildir, false);
+                } elseif ($withData) {
                     $entry['messages'] = 0;
                 }
                 $this->report['email'][] = $entry;
                 $this->log("{$r->username()}: mailbox $address {$entry['status']}" . (isset($entry['messages']) ? " ({$entry['messages']} messages)" : ''));
             }
+        }
+        $this->restoreMailRules($userId, $r, $domains);
+    }
+
+    /**
+     * cPanel forwarders and autoresponders, and - when the migration keeps
+     * them - the domains' default addresses. Idempotent (a mail restore runs
+     * it again): forwarders merge their destinations, autoresponders are
+     * overwritten.
+     */
+    private function restoreMailRules(int $userId, CpanelBackupReader $r, array $domains): void
+    {
+        $this->report['forwarders'] ??= [];
+        $dRow = $this->pdo->prepare('SELECT * FROM domains WHERE domain_name = ? AND user_id = ?');
+        $box = $this->pdo->prepare('SELECT e.id FROM email_accounts e JOIN domains d ON d.id = e.domain_id WHERE d.user_id = ? AND d.domain_name = ? AND e.local_part = ?');
+        $keepDefault = ($this->opt['catch_all'] ?? 'reject') === 'keep';
+        $main = $r->mainDomain();
+
+        foreach ($domains as $domain) {
+            $dRow->execute([$domain, $userId]);
+            $row = $dRow->fetch();
+            if (!$row) {
+                continue;
+            }
+            $fw = $r->forwarders($domain);
+            foreach ($fw['forwarders'] as $local => $dests) {
+                $address = "$local@$domain";
+                $this->report['forwarders'] = array_values(array_filter($this->report['forwarders'], fn($e) => ($e['address'] ?? '') !== $address));
+                try {
+                    MailRulesService::addForwarder($userId, $row, $local, implode(',', $dests));
+                    $this->report['forwarders'][] = ['address' => $address, 'status' => 'ok', 'note' => 'to ' . implode(', ', $dests)];
+                } catch (Throwable $e) {
+                    $this->report['forwarders'][] = ['address' => $address, 'status' => 'failed', 'note' => $e->getMessage()];
+                }
+                $dRow->execute([$domain, $userId]);
+                $row = $dRow->fetch(); // mail_domain_id may have been set
+            }
+            foreach ($fw['skipped'] as $s) {
+                $this->report['warnings'][] = "Forwarder not recreated (pipes to programs and :fail:/:blackhole: rules aren't supported): $s";
+            }
+
+            if ($keepDefault && ($target = $r->defaultAddress($domain)) !== null && $target[0] !== ':') {
+                $address = str_contains($target, '@') ? strtolower($target) : ($main !== null ? strtolower("$target@$main") : null);
+                try {
+                    if ($address === null || !filter_var($address, FILTER_VALIDATE_EMAIL)) {
+                        throw new RuntimeException("unsupported target \"$target\"");
+                    }
+                    $mailDomainId = $row['mail_domain_id'] ?: MailService::ensureDomain($domain);
+                    $this->pdo->prepare('UPDATE domains SET mail_domain_id = ? WHERE id = ?')->execute([$mailDomainId, $row['id']]);
+                    MailService::setCatchAll((string) $mailDomainId, $address);
+                    $this->pdo->prepare('UPDATE domains SET catch_all = ? WHERE id = ?')->execute([$address, $row['id']]);
+                    $this->report['info'][] = "Default address of $domain kept: mail to unknown addresses goes to $address.";
+                } catch (Throwable $e) {
+                    $this->report['warnings'][] = "Default address of $domain not kept: " . $e->getMessage();
+                }
+            }
+        }
+
+        foreach ($r->autoresponders() as $address => $ar) {
+            [$local, $domain] = explode('@', $address, 2);
+            $box->execute([$userId, $domain, $local]);
+            $id = $box->fetchColumn();
+            if ($id === false) {
+                $this->report['warnings'][] = "Autoresponder for $address not recreated: it isn't a mailbox here (JinnPanel autoresponders belong to a mailbox).";
+                continue;
+            }
+            try {
+                MailRulesService::saveAutoresponder($userId, (int) $id, $ar);
+                $this->report['info'][] = "Autoresponder of $address recreated (\"{$ar['subject']}\").";
+            } catch (Throwable $e) {
+                $this->report['warnings'][] = "Autoresponder for $address not recreated: " . $e->getMessage();
+            }
+        }
+    }
+
+    /**
+     * Imports a Maildir into $address (logged in as the mail admin, so the
+     * mailbox's password stays as it is) and records the outcome in $entry.
+     */
+    private function importMail(array &$entry, string $mailAccountId, string $address, string $maildir, bool $skipExisting): void
+    {
+        try {
+            $stats = MailService::withImportLimitsLifted($mailAccountId, fn() => MailImportService::asAdmin($address)->importMaildir(
+                $maildir,
+                function (array $s) use ($address) {
+                    $this->setItem(['step' => "Mailbox $address: {$s['imported']} messages imported"]);
+                },
+                fn() => $this->cancelRequested(),
+                $skipExisting,
+            ));
+            $entry['messages'] = $stats['imported'];
+            $entry['folders'] = $stats['folders'];
+            if ($stats['failed'] > 0) {
+                $entry['status'] = 'partial';
+                $entry['note'] = trim($entry['note'] . " {$stats['failed']} message(s) failed to import: " . implode('; ', array_slice($stats['errors'], 0, 3)));
+            }
+            if ($stats['skipped'] > 0) {
+                $entry['note'] = trim($entry['note'] . " {$stats['skipped']} deleted/oversized message(s) skipped.");
+            }
+            if ($stats['existing'] > 0) {
+                $entry['note'] = trim($entry['note'] . " {$stats['existing']} message(s) were already in the mailbox.");
+            }
+        } catch (Throwable $e) {
+            if ($e->getMessage() === 'Cancelled.') {
+                throw $e;
+            }
+            $entry['status'] = 'partial';
+            $entry['note'] = trim($entry['note'] . ' Stored mail was not imported: ' . $e->getMessage());
         }
     }
 
@@ -749,7 +1240,9 @@ final class MigrationRunner
         $user = $r->username();
         $htaccess = [];
         $hardcoded = [];
-        $candidates = ['wp-config.php', 'configuration.php', '.env', 'config.php', 'app/etc/env.php', 'sites/default/settings.php', '.user.ini', 'php.ini'];
+        // (.user.ini/php.ini aren't listed: their settings are imported and
+        // their error_log path replaced - see PhpSettingsService.)
+        $candidates = ['wp-config.php', 'configuration.php', '.env', 'config.php', 'app/etc/env.php', 'sites/default/settings.php'];
         foreach ($domains as $domain) {
             $docroot = VhostService::docroot($domain);
             if (is_file("$docroot/.htaccess")) {
@@ -762,8 +1255,39 @@ final class MigrationRunner
                 }
             }
         }
+        // .htaccess -> Caddy routes (cPanel > Domains > domain > Routes).
+        $review = [];
+        foreach ($htaccess as $domain) {
+            try {
+                $row = $this->pdo->prepare('SELECT * FROM domains WHERE domain_name = ? AND user_id = ?');
+                $row->execute([$domain, $userId]);
+                $d = $row->fetch();
+                $g = RoutesService::overview($d)['generated'];
+                $errors = RoutesService::queueSave($d, (string) $g['route'], (string) $g['site'], (bool) $g['needs_review']);
+                if ($errors) {
+                    $this->report['warnings'][] = "$domain: the rules translated from .htaccess didn't pass the checks (" . implode(' ', array_slice($errors, 0, 2)) . ') - set them in cPanel > Domains > Routes.';
+                } elseif ($g['needs_review']) {
+                    $review[] = $domain;
+                }
+            } catch (Throwable $e) {
+                $this->report['warnings'][] = "$domain: .htaccess not translated - " . $e->getMessage();
+            }
+        }
         if ($htaccess) {
-            $this->report['warnings'][] = '.htaccess files found (' . implode(', ', $htaccess) . '). FrankenPHP doesn\'t read Apache .htaccess: "pretty URL" routing to index.php works automatically, but custom redirects, deny rules and auth need re-creating.';
+            $this->report['info'][] = '.htaccess rules translated for ' . implode(', ', $htaccess) . ' (this server doesn\'t read .htaccess).';
+        }
+        if ($review) {
+            $this->report['warnings'][] = 'Routes need review for ' . implode(', ', $review) . ': some .htaccess rules couldn\'t be translated exactly - see cPanel > Domains > (domain) > Routes.';
+        }
+        // Leftovers anyone can download (archives, dumps, logs, backups).
+        foreach ($domains as $domain) {
+            $found = ExposureService::scan(VhostService::effectiveDocroot($domain))['items'];
+            if ($found) {
+                $kinds = array_count_values(array_column($found, 'kind'));
+                $this->report['warnings'][] = "$domain: " . count($found) . ' file(s) in the web folder anyone can download ('
+                    . implode(', ', array_map(fn($k, $n) => "$n $k", array_keys($kinds), $kinds))
+                    . ', e.g. ' . implode(', ', array_slice(array_column($found, 'path'), 0, 3)) . ') - review in cPanel > Domains > ' . $domain . ' > Exposed files.';
+            }
         }
         if ($hardcoded) {
             $this->report['warnings'][] = 'These files contain the old /home/' . $user . '/ path and may need updating: ' . implode(', ', $hardcoded) . '.';
@@ -784,7 +1308,7 @@ final class MigrationRunner
                 $this->report['warnings'][] = "The account exceeds its \"{$p['name']}\" package (" . implode(', ', $over) . '). Everything was migrated, but the user can\'t add more until you assign a bigger package.';
             }
         }
-        $this->report['info'][] = 'Not migrated (re-create if needed): email forwarders & autoresponders, cron jobs, custom DNS records, SSL certificates (AutoSSL issues new ones), FTP accounts.';
+        $this->report['info'][] = 'Not migrated: SSL certificates (new ones are issued automatically once DNS points here).';
         $this->report['info'][] = 'The sites go live once DNS for each domain points at this server (' . Config::SERVER_IP . ').';
     }
 
@@ -959,6 +1483,12 @@ final class MigrationRunner
     {
         $allowed = ['status', 'step', 'progress', 'report', 'error', 'started_at', 'finished_at', 'target_user_id'];
         $fields = array_intersect_key($fields, array_flip($allowed));
+        if ($this->mailOnly) {
+            unset($fields['status'], $fields['started_at'], $fields['finished_at']);
+            if (isset($fields['step'])) {
+                $fields['step'] = 'Restoring mail: ' . $fields['step'];
+            }
+        }
         if (isset($fields['step'])) {
             $fields['step'] = mb_substr((string) $fields['step'], 0, 250);
         }

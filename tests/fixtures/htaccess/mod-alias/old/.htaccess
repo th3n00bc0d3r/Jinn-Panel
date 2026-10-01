@@ -1,0 +1,4 @@
+# Redirect in a subfolder: the path is still the full URL path.
+Redirect 302 /old/here /moved-here
+# This one can never match: requests seen by this file all start with /old/.
+RedirectMatch 404 ^/private/

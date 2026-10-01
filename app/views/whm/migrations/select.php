@@ -9,9 +9,14 @@ $hasResellers = (bool) array_filter($items, fn($i) => (int) $i['is_reseller'] ==
     <?= Csrf::field() ?>
 
     <div class="bg-white rounded-xl border border-slate-200 shadow-sm px-5 py-4 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
+        <?php if ($m['transfer_mode'] === 'file'): ?>
+        <div><span class="text-slate-400">Source</span> <span class="font-medium text-slate-800">cPanel backup files in <span class="font-mono"><?= e(MigrationService::importDir()) ?></span></span></div>
+        <div class="text-slate-500">Disk = size of the backup archive.</div>
+        <?php else: ?>
         <div><span class="text-slate-400">Source</span> <span class="font-medium text-slate-800"><?= e($m['source_user']) ?>@<?= e($m['source_host']) ?>:<?= (int) $m['source_port'] ?></span></div>
         <div><span class="text-slate-400">Type</span> <span class="font-medium text-slate-800"><?= e(migration_source_label($m['source_type'])) ?></span></div>
         <div><span class="text-slate-400">Transfer</span> <span class="font-medium text-slate-800"><?= $m['transfer_mode'] === 'push' ? 'Push (source uploads over SFTP)' : 'Pull (this server downloads)' ?></span></div>
+        <?php endif; ?>
     </div>
 
     <!-- Accounts -->
@@ -84,6 +89,13 @@ $hasResellers = (bool) array_filter($items, fn($i) => (int) $i['is_reseller'] ==
                     <option value="generate" <?= $opt['mail_passwords'] === 'generate' ? 'selected' : '' ?>>Generate new passwords (shown in the report)</option>
                 </select>
             </div>
+            <div class="pt-2">
+                <label class="block text-xs font-medium text-slate-600 mb-1.5">Default addresses (catch-all)</label>
+                <select name="catch_all" class="<?= $input ?>">
+                    <option value="reject" <?= ($opt['catch_all'] ?? 'reject') !== 'keep' ? 'selected' : '' ?>>Reject mail to unknown addresses (recommended)</option>
+                    <option value="keep" <?= ($opt['catch_all'] ?? '') === 'keep' ? 'selected' : '' ?>>Keep them as on cPanel</option>
+                </select>
+            </div>
         </div>
 
         <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-5 space-y-4">
@@ -122,8 +134,9 @@ $hasResellers = (bool) array_filter($items, fn($i) => (int) $i['is_reseller'] ==
             <div>
                 <label class="block text-xs font-medium text-slate-600 mb-1.5">HTTPS certificates for migrated domains</label>
                 <select name="ssl_mode" class="<?= $input ?>">
-                    <option value="self_signed" <?= $opt['ssl_mode'] !== 'letsencrypt' ? 'selected' : '' ?>>Self-signed for now (switch to AutoSSL per domain after DNS moves)</option>
-                    <option value="letsencrypt" <?= $opt['ssl_mode'] === 'letsencrypt' ? 'selected' : '' ?>>AutoSSL / Let's Encrypt (DNS already points here)</option>
+                    <option value="auto" <?= !in_array($opt['ssl_mode'], ['letsencrypt', 'self_signed'], true) ? 'selected' : '' ?>>Automatic - Let's Encrypt for domains that point here, the rest once their DNS moves</option>
+                    <option value="letsencrypt" <?= $opt['ssl_mode'] === 'letsencrypt' ? 'selected' : '' ?>>Let's Encrypt for all (DNS already points here)</option>
+                    <option value="self_signed" <?= $opt['ssl_mode'] === 'self_signed' ? 'selected' : '' ?>>Self-signed only</option>
                 </select>
             </div>
         </div>

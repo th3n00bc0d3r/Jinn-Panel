@@ -76,8 +76,9 @@ JinnPanel/
   hosting packages with quotas, and a full **Server Config** area - direct
   control of Stalwart's ~150 settings objects, SFTPGo/PHP/MariaDB tuning,
   one-click performance profiles (Balanced/Performance/Extreme) computed off
-  the box's actual CPU/RAM, install/remove additional PHP versions as fully
-  isolated instances, AutoSSL, and live service logs on the dashboard.
+  the box's actual CPU/RAM, install/remove additional PHP versions (PHP-FPM), AutoSSL, backups (local and
+  S3), an activity log, and live service logs on the dashboard. Each hosting
+  account's PHP runs as its own Linux user in its own PHP-FPM pool.
 - **cPanel Migration**: one-click move from cPanel & WHM - a single
   account, a reseller's accounts, or a whole server via WHM root - with
   site files, databases, email accounts and stored mail

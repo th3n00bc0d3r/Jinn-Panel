@@ -1,0 +1,2 @@
+# ...except this folder, which re-opens access (Apache 2.4 merging).
+Require all granted

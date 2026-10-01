@@ -1,0 +1,5 @@
+Redirect 301 /old-page /new-page
+Redirect permanent /docs/ https://docs.example.com/
+RedirectMatch 301 ^/blog/(\d{4})/(.*)$ /articles/$2?year=$1
+Redirect gone /removed
+RedirectMatch 404 /\.git

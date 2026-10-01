@@ -6,7 +6,7 @@ require __DIR__ . '/../src/bootstrap.php';
 $router = new Router();
 
 $router->get('/', function () {
-    header('Location: ' . (Auth::check() ? '/whm' : '/login'));
+    header('Location: ' . (Auth::check() ? (Auth::role() === 'user' ? '/cpanel' : '/whm') : '/login'));
     exit;
 });
 
@@ -14,8 +14,20 @@ $router->get('/setup', ['SetupController', 'index']);
 $router->post('/setup', ['SetupController', 'store']);
 
 $router->get('/login', ['AuthController', 'showLogin']);
+$router->get('/login/handoff', ['AuthController', 'handoff']);
 $router->post('/login', ['AuthController', 'login']);
-$router->get('/logout', ['AuthController', 'logout']);
+$router->get('/login/2fa', ['AuthController', 'showTwoFactor']);
+$router->post('/login/2fa', ['AuthController', 'twoFactor']);
+$router->post('/logout', ['AuthController', 'logout']);
+
+// Login security (password, two-factor) for every role.
+foreach (['/whm/security', '/cpanel/security'] as $sec) {
+    $router->get($sec, ['SecurityController', 'index']);
+    $router->post("$sec/password", ['SecurityController', 'password']);
+    $router->post("$sec/2fa/start", ['SecurityController', 'twoFactorStart']);
+    $router->post("$sec/2fa/confirm", ['SecurityController', 'twoFactorConfirm']);
+    $router->post("$sec/2fa/disable", ['SecurityController', 'twoFactorDisable']);
+}
 
 // WHM (admin + reseller)
 $router->get('/whm', ['WhmDashboardController', 'index']);
@@ -25,6 +37,14 @@ $router->post('/whm/accounts', ['AccountController', 'store']);
 $router->post('/whm/accounts/{id}/suspend', ['AccountController', 'suspend']);
 $router->post('/whm/accounts/{id}/unsuspend', ['AccountController', 'unsuspend']);
 $router->post('/whm/accounts/{id}/delete', ['AccountController', 'destroy']);
+$router->post('/whm/accounts/{id}/reset-2fa', ['SecurityController', 'resetTwoFactor']);
+$router->post('/whm/accounts/{id}/php-exec', ['AccountController', 'phpExec']);
+$router->get('/whm/activity', ['ActivityController', 'index']);
+$router->get('/whm/backups', ['BackupController', 'whm']);
+$router->post('/whm/backups/settings', ['BackupController', 'whmSettings']);
+$router->post('/whm/backups/run', ['BackupController', 'whmRun']);
+$router->post('/whm/backups/{id}/restore', ['BackupController', 'whmRestore']);
+$router->get('/whm/backups/{id}/download', ['BackupController', 'whmDownload']);
 $router->get('/whm/packages', ['PackageController', 'index']);
 $router->get('/whm/packages/create', ['PackageController', 'create']);
 $router->post('/whm/packages', ['PackageController', 'store']);
@@ -34,12 +54,15 @@ $router->post('/whm/packages/{id}/delete', ['PackageController', 'destroy']);
 $router->get('/whm/migrations', ['MigrationController', 'index']);
 $router->get('/whm/migrations/create', ['MigrationController', 'create']);
 $router->post('/whm/migrations/connect', ['MigrationController', 'connect']);
+$router->post('/whm/migrations/from-files', ['MigrationController', 'fromFiles']);
+$router->post('/whm/migrations/s3-fetch', ['MigrationController', 's3Fetch']);
 $router->get('/whm/migrations/{id}', ['MigrationController', 'show']);
 $router->get('/whm/migrations/{id}/select', ['MigrationController', 'select']);
 $router->get('/whm/migrations/{id}/status', ['MigrationController', 'status']);
 $router->post('/whm/migrations/{id}/start', ['MigrationController', 'start']);
 $router->post('/whm/migrations/{id}/cancel', ['MigrationController', 'cancel']);
 $router->post('/whm/migrations/{id}/retry', ['MigrationController', 'retry']);
+$router->post('/whm/migrations/{id}/restore-mail', ['MigrationController', 'restoreMail']);
 $router->post('/whm/migrations/{id}/delete', ['MigrationController', 'destroy']);
 $router->post('/whm/migrations/{id}/discard-secret', ['MigrationController', 'discardSecret']);
 
@@ -55,6 +78,8 @@ $router->get('/whm/server-config/database', ['ServerConfigController', 'database
 $router->post('/whm/server-config/database', ['ServerConfigController', 'databaseUpdate']);
 $router->get('/whm/server-config/tuning', ['ServerConfigController', 'tuningIndex']);
 $router->post('/whm/server-config/tuning', ['ServerConfigController', 'tuningApply']);
+$router->get('/whm/server-config/php-extensions', ['ServerConfigController', 'phpExtensions']);
+$router->post('/whm/server-config/php-extensions', ['ServerConfigController', 'phpExtensionChange']);
 $router->get('/whm/server-config/php-versions', ['PhpVersionController', 'index']);
 $router->post('/whm/server-config/php-versions', ['PhpVersionController', 'install']);
 $router->post('/whm/server-config/php-versions/{version}/remove', ['PhpVersionController', 'remove']);
@@ -74,28 +99,74 @@ $router->post('/whm/dns/{id}/delete', ['WhmDnsController', 'destroyZone']);
 // cPanel (end user)
 $router->get('/cpanel', ['CpanelDashboardController', 'index']);
 $router->get('/cpanel/domains', ['DomainController', 'index']);
+$router->get('/cpanel/domains/{id}', ['DomainController', 'show']);
+$router->post('/cpanel/domains/{id}/docroot', ['DomainController', 'docroot']);
+$router->post('/cpanel/domains/{id}/autossl', ['DomainController', 'autossl']);
+$router->post('/cpanel/domains/{id}/clear-cache', ['DomainController', 'clearCache']);
+$router->post('/cpanel/domains/{id}/php', ['DomainController', 'phpSettings']);
+$router->post('/cpanel/domains/{id}/aliases', ['DomainController', 'aliasAdd']);
+$router->post('/cpanel/domains/{id}/aliases/delete', ['DomainController', 'aliasRemove']);
+$router->get('/cpanel/domains/{id}/routes', ['DomainController', 'routes']);
+$router->get('/cpanel/domains/{id}/exposed', ['DomainController', 'exposed']);
+$router->post('/cpanel/domains/{id}/exposed', ['DomainController', 'makePrivate']);
+$router->post('/cpanel/domains/{id}/routes', ['DomainController', 'routesSave']);
 $router->post('/cpanel/domains', ['DomainController', 'store']);
 $router->post('/cpanel/domains/{id}/delete', ['DomainController', 'destroy']);
 $router->post('/cpanel/domains/{id}/settings', ['DomainController', 'updateSettings']);
 $router->get('/cpanel/databases', ['DatabaseController', 'index']);
 $router->post('/cpanel/databases', ['DatabaseController', 'store']);
 $router->post('/cpanel/databases/{id}/delete', ['DatabaseController', 'destroy']);
+$router->post('/cpanel/databases/users', ['DatabaseController', 'userStore']);
+$router->post('/cpanel/databases/users/action', ['DatabaseController', 'userAction']);
+$router->post('/cpanel/databases/remote', ['DatabaseController', 'remote']);
+$router->post('/cpanel/databases/phpmyadmin', ['DatabaseController', 'phpmyadmin']);
 $router->get('/cpanel/email', ['EmailController', 'index']);
 $router->post('/cpanel/email', ['EmailController', 'store']);
 $router->post('/cpanel/email/{id}/delete', ['EmailController', 'destroy']);
+$router->post('/cpanel/email/{id}/password', ['EmailController', 'password']);
+$router->post('/cpanel/email/{id}/autoresponder', ['EmailController', 'autoresponderSave']);
+$router->post('/cpanel/email/{id}/autoresponder/delete', ['EmailController', 'autoresponderDestroy']);
+$router->post('/cpanel/email-forwarders', ['EmailController', 'forwarderStore']);
+$router->post('/cpanel/email-forwarders/{id}/delete', ['EmailController', 'forwarderDestroy']);
+$router->post('/cpanel/email-default-address', ['EmailController', 'defaultAddress']);
 $router->get('/cpanel/ftp', ['FtpController', 'index']);
 $router->post('/cpanel/ftp', ['FtpController', 'store']);
 $router->post('/cpanel/ftp/{id}/delete', ['FtpController', 'destroy']);
 $router->get('/cpanel/dns', ['DnsController', 'index']);
 $router->post('/cpanel/dns/{id}/reprovision', ['DnsController', 'reprovision']);
+$router->post('/cpanel/dns/{id}/records', ['DnsController', 'addRecord']);
+$router->post('/cpanel/dns/{id}/records/{record}', ['DnsController', 'updateRecord']);
+$router->post('/cpanel/dns/{id}/records/{record}/delete', ['DnsController', 'deleteRecord']);
+$router->get('/cpanel/cache', ['CacheController', 'index']);
+$router->post('/cpanel/cache/object', ['CacheController', 'objectCache']);
+$router->post('/cpanel/cache/domains/{id}', ['CacheController', 'pageCache']);
+$router->post('/cpanel/cache/static/{id}', ['CacheController', 'staticCache']);
+$router->get('/cpanel/cron', ['CronController', 'index']);
+$router->post('/cpanel/cron', ['CronController', 'store']);
+$router->post('/cpanel/cron/{id}/toggle', ['CronController', 'toggle']);
+$router->post('/cpanel/cron/{id}/run', ['CronController', 'runNow']);
+$router->post('/cpanel/cron/{id}/delete', ['CronController', 'destroy']);
+$router->get('/cpanel/backups', ['BackupController', 'cpanel']);
+$router->post('/cpanel/backups', ['BackupController', 'cpanelRun']);
+$router->post('/cpanel/backups/{id}/restore', ['BackupController', 'cpanelRestore']);
+$router->get('/cpanel/backups/{id}/download', ['BackupController', 'cpanelDownload']);
 $router->get('/cpanel/files', ['FileManagerController', 'index']);
 $router->post('/cpanel/files/upload', ['FileManagerController', 'upload']);
 $router->post('/cpanel/files/mkdir', ['FileManagerController', 'mkdir']);
 $router->post('/cpanel/files/delete', ['FileManagerController', 'delete']);
+$router->post('/cpanel/files/action', ['FileManagerController', 'action']);
 $router->get('/cpanel/files/download', ['FileManagerController', 'download']);
 
 try {
     $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) ?: '/';
+    // WHM (and the first-run setup) only on the panel's own hostname: on a
+    // customer's <domain>:2083 those pages would run in that domain's origin.
+    if ((str_starts_with($path, '/whm') || $path === '/setup') && !Auth::onPanelHost()) {
+        // Logged in here as admin/reseller: carry the session over (cookies are per host).
+        $to = Auth::check() && Auth::role() !== 'user' ? Auth::handoffUrl($path) : 'https://' . Auth::panelHost() . $_SERVER['REQUEST_URI'];
+        header('Location: ' . $to, true, 302);
+        exit;
+    }
     if ($path !== '/setup' && !SetupController::isComplete()) {
         header('Location: /setup');
         exit;

@@ -49,7 +49,7 @@
             <div>
                 <label class="block text-xs font-medium text-slate-600 mb-1.5">Restrict to domain (optional)</label>
                 <select name="domain_id" class="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-500 bg-white">
-                    <option value="">Account root</option>
+                    <option value="">All my sites (each as /                    <option value="">Account root</option>lt;domain                    <option value="">Account root</option>gt;)</option>
                     <?php foreach ($domains as $d): ?>
                     <option value="<?= (int) $d['id'] ?>"><?= e($d['domain_name']) ?></option>
                     <?php endforeach; ?>

@@ -50,24 +50,23 @@ final class WhmDashboardController
         exit;
     }
 
-    /** Services with a live log snapshot on disk - written every 5s by hostpanel-worker.php. */
+    /** Services with a live log snapshot - written every 5s by hostpanel-worker.php. */
     private static function logServices(): array
     {
-        $fixed = ['mariadb', 'frankenphp', 'stalwart', 'sftpgo', 'knot'];
-        $alt = [];
-        foreach (glob(__DIR__ . '/../../storage/logs/live-frankenphp-php*.log') ?: [] as $f) {
-            $alt[] = basename($f, '.log') !== '' ? str_replace('live-', '', basename($f, '.log')) : null;
+        $services = ['mariadb', 'frankenphp', 'stalwart', 'sftpgo', 'knot'];
+        foreach (glob(SystemWorkerService::OUT_DIR . '/live-jinnpanel-php-fpm_*.log') ?: [] as $f) {
+            $services[] = str_replace(['live-', '_'], ['', '@'], basename($f, '.log'));
         }
-        return array_values(array_filter(array_merge($fixed, $alt)));
+        return $services;
     }
 
     private static function readLog(string $service): string
     {
-        $file = __DIR__ . "/../../storage/logs/live-{$service}.log";
-        if (!is_file($file)) {
+        $log = SystemWorkerService::output('live-' . str_replace('@', '_', $service) . '.log');
+        if ($log === null) {
             return "No log data yet for \"$service\" - the background worker refreshes this every 5 seconds; it may not have run yet.";
         }
-        return (string) file_get_contents($file) ?: '(empty)';
+        return $log ?: '(empty)';
     }
 
     private static function serverStats(): array

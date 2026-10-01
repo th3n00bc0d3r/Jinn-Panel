@@ -1,0 +1,50 @@
+Options -Indexes
+
+RewriteEngine On
+
+RewriteRule ^index\.html$ / [R=301,NE,L]
+
+RewriteRule ^old-about(\.html)?$    /about    [R=301,NE,L]
+RewriteRule ^old-menu(\.html)?$     /menu     [R=301,NE,L]
+RewriteRule ^old-services(\.html)?$ /services [R=301,NE,L]
+RewriteRule ^old-gallery(\.html)?$  /gallery  [R=301,NE,L]
+RewriteRule ^old-reviews(\.html)?$  /reviews  [R=301,NE,L]
+RewriteRule ^old-contact(\.html)?$  /contact  [R=301,NE,L]
+
+RewriteRule ^about\.html$    /about    [R=301,NE,L]
+RewriteRule ^menu\.html$     /menu     [R=301,NE,L]
+RewriteRule ^services\.html$ /services [R=301,NE,L]
+RewriteRule ^gallery\.html$  /gallery  [R=301,NE,L]
+RewriteRule ^reviews\.html$  /reviews  [R=301,NE,L]
+RewriteRule ^contact\.html$  /contact  [R=301,NE,L]
+
+RewriteCond %{THE_REQUEST} \s/+(.+?)\.html[\s?] [NC]
+RewriteRule ^ /%1 [R=301,NE,L]
+
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME}.html -f
+RewriteRule ^([^.]+)$ $1.html [L]
+
+<IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set X-Frame-Options "SAMEORIGIN"
+  Header always set X-XSS-Protection "1; mode=block"
+  Header always set Referrer-Policy "strict-origin-when-cross-origin"
+</IfModule>
+
+<IfModule mod_expires.c>
+  ExpiresActive On
+  ExpiresByType image/jpeg "access plus 1 year"
+  ExpiresByType image/png  "access plus 1 year"
+  ExpiresByType image/webp "access plus 1 year"
+  ExpiresByType image/svg+xml "access plus 1 year"
+  ExpiresByType text/css   "access plus 1 month"
+  ExpiresByType application/javascript "access plus 1 month"
+</IfModule>
+
+<IfModule mod_deflate.c>
+  AddOutputFilterByType DEFLATE text/html text/css application/javascript
+</IfModule>
+
+ErrorDocument 404 /404.html

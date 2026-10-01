@@ -115,10 +115,14 @@ $lastFailed = $lastLog !== null && str_contains($lastLog, 'FAILED');
                         </td>
                         <td class="px-5 py-2.5 text-slate-500"><?= (int) $r['ttl'] ?></td>
                         <td class="px-5 py-2.5 text-right">
+                            <?php if (!empty($r['managed'])): ?>
+                            <span class="text-xs text-slate-400 whitespace-nowrap" title="Kept in sync by the panel. Add your own record with this name to replace it."><?= e(DnsService::managedLabel((string) $r['managed'])) ?></span>
+                            <?php else: ?>
                             <form method="post" action="/whm/dns/<?= $zid ?>/records/<?= (int) $r['id'] ?>/delete" data-confirm="Delete this <?= e($r['type']) ?> record for <?= e($r['name']) ?>?">
                                 <?= Csrf::field() ?>
                                 <button class="p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50"><?= icon('trash', 'h-4 w-4') ?></button>
                             </form>
+                            <?php endif; ?>
                         </td>
                     </tr>
                     <?php endforeach; ?>

@@ -33,9 +33,13 @@ final class Config
     public const SFTP_ADMIN_USER = 'panelapi';
     public const SFTP_ADMIN_PASS = '__SFTP_ADMIN_PASS__';
 
+    // Valkey (object cache) admin login - CacheService manages per-account users with it
+    public const VALKEY_ADMIN_PASS = '__VALKEY_ADMIN_PASS__';
+
     // Server / provisioning paths
     public const SERVER_HOSTNAME = '__SERVER_HOSTNAME__';
     public const SERVER_IP = '__SERVER_IP__';
+    public const SERVER_IPV6 = '__SERVER_IPV6__'; // '' when the server has no public IPv6
     public const VHOSTS_DOCROOT_BASE = '/var/www';
     public const VHOSTS_CADDY_DIR = '/var/lib/frankenphp/sites-enabled';
     public const FRANKENPHP_CONFIG = '/etc/frankenphp/Caddyfile';

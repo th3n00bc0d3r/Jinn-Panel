@@ -127,7 +127,7 @@ CREATE TABLE IF NOT EXISTS migrations (
     auth_type ENUM('token','password') NOT NULL DEFAULT 'token',
     secret_enc TEXT NULL,
     verify_tls TINYINT(1) NOT NULL DEFAULT 1,
-    transfer_mode ENUM('pull','push') NOT NULL DEFAULT 'pull',
+    transfer_mode ENUM('pull','push','file') NOT NULL DEFAULT 'pull',
     options TEXT NULL COMMENT 'JSON - see MigrationService::defaultOptions()',
     status VARCHAR(32) NOT NULL DEFAULT 'draft' COMMENT 'draft|queued|running|completed|completed_with_errors|failed|cancelled',
     cancel_requested TINYINT(1) NOT NULL DEFAULT 0,
@@ -195,12 +195,15 @@ DEALLOCATE PREPARE dbuser_stmt;
 -- that creates the real administrator account interactively. Baking a
 -- fixed username/password into a script or repo is exactly the kind of
 -- thing this is meant to avoid.
+-- Only into an empty table (a fresh install): this file runs on every
+-- install.sh, and packages has no unique key for ON DUPLICATE KEY to hit.
 INSERT INTO packages (owner_id, name, disk_quota_mb, bandwidth_mb, max_domains, max_databases, max_email_accounts, max_ftp_accounts)
-VALUES
-    (NULL, 'Starter', 1024, 10240, 1, 1, 5, 1),
-    (NULL, 'Business', 5120, 51200, 5, 5, 25, 3),
-    (NULL, 'Reseller', 20480, 204800, 50, 50, 250, 10)
-ON DUPLICATE KEY UPDATE name = VALUES(name);
+SELECT * FROM (
+    SELECT NULL AS owner_id, 'Starter' AS name, 1024 AS disk, 10240 AS bw, 1 AS d, 1 AS db, 5 AS em, 1 AS ftp
+    UNION ALL SELECT NULL, 'Business', 5120, 51200, 5, 5, 25, 3
+    UNION ALL SELECT NULL, 'Reseller', 20480, 204800, 50, 50, 250, 10
+) seed
+WHERE NOT EXISTS (SELECT 1 FROM packages);
 
 -- DNS zones and records live in the panel DB; Knot zone files are rendered
 -- from these rows by DnsService and written by hostpanel-worker.php.
@@ -267,3 +270,334 @@ SET @coll_sql = IF(
 PREPARE coll_stmt FROM @coll_sql;
 EXECUTE coll_stmt;
 DEALLOCATE PREPARE coll_stmt;
+
+-- `file` transfer mode: restore cPanel backups already on this server
+-- (MIGRATION_DIR/import) instead of fetching them from a source server.
+-- Also appended to schema.sql; conditional DDL so re-running install.sh stays safe.
+SET @tm_sql = IF(
+    (SELECT COLUMN_TYPE FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'migrations' AND COLUMN_NAME = 'transfer_mode') NOT LIKE '%''file''%',
+    'ALTER TABLE migrations MODIFY transfer_mode ENUM(''pull'',''push'',''file'') NOT NULL DEFAULT ''pull''',
+    'SELECT 1'
+);
+PREPARE tm_stmt FROM @tm_sql;
+EXECUTE tm_stmt;
+DEALLOCATE PREPARE tm_stmt;
+
+-- "Restore mail" on a finished migration item: re-reads the account's backup
+-- and creates only the mailboxes that are missing. A separate flag, not a
+-- status, so the item stays completed and Cancel/Retry never treat the
+-- account as a half-done restore (which they would roll back).
+-- Also appended to schema.sql; conditional DDL so re-running install.sh stays safe.
+SET @mr_sql = IF(
+    (SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'migration_items' AND COLUMN_NAME = 'mail_restore') = 0,
+    'ALTER TABLE migration_items ADD COLUMN mail_restore TINYINT(1) NOT NULL DEFAULT 0 AFTER selected',
+    'SELECT 1'
+);
+PREPARE mr_stmt FROM @mr_sql;
+EXECUTE mr_stmt;
+DEALLOCATE PREPARE mr_stmt;
+
+-- Records the panel keeps in sync by itself (tag = what manages them:
+-- 'mail' = Stalwart's DKIM/SPF/DMARC/SRV/autoconfig set, 'ipv6' = AAAA
+-- next to A records pointing at this server). NULL = the customer's own.
+-- Also appended to schema.sql; conditional DDL so re-running install.sh stays safe.
+SET @mg_sql = IF(
+    (SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'dns_records' AND COLUMN_NAME = 'managed') = 0,
+    'ALTER TABLE dns_records ADD COLUMN managed VARCHAR(16) NULL DEFAULT NULL',
+    'SELECT 1'
+);
+PREPARE mg_stmt FROM @mg_sql;
+EXECUTE mg_stmt;
+DEALLOCATE PREPARE mg_stmt;
+
+-- cPanel-style email forwarders and autoresponders, and each domain's
+-- "default address" (catch-all). Also appended to schema.sql; idempotent.
+CREATE TABLE IF NOT EXISTS email_forwarders (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    domain_id INT NOT NULL,
+    local_part VARCHAR(64) NOT NULL,
+    destinations TEXT NOT NULL COMMENT 'comma-separated addresses',
+    mail_list_id VARCHAR(64) NULL COMMENT 'Stalwart mailing list when the address is not a mailbox; NULL = Sieve redirect in the mailbox',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_forwarder (domain_id, local_part),
+    CONSTRAINT fk_fwd_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    CONSTRAINT fk_fwd_domain FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE IF NOT EXISTS email_autoresponders (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    email_account_id INT NOT NULL,
+    subject VARCHAR(255) NOT NULL,
+    body TEXT NOT NULL,
+    starts_on DATE NULL,
+    ends_on DATE NULL,
+    interval_days TINYINT UNSIGNED NOT NULL DEFAULT 1 COMMENT 'reply to the same sender at most once per N days',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_autoresponder (email_account_id),
+    CONSTRAINT fk_ar_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    CONSTRAINT fk_ar_account FOREIGN KEY (email_account_id) REFERENCES email_accounts(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+SET @ca_sql = IF(
+    (SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'domains' AND COLUMN_NAME = 'catch_all') = 0,
+    'ALTER TABLE domains ADD COLUMN catch_all VARCHAR(190) NULL DEFAULT NULL COMMENT ''default address: NULL = reject unknown recipients''',
+    'SELECT 1'
+);
+PREPARE ca_stmt FROM @ca_sql;
+EXECUTE ca_stmt;
+DEALLOCATE PREPARE ca_stmt;
+
+-- Per-site PHP settings (PhpSettingsService), as JSON. Also appended to
+-- schema.sql; conditional DDL so re-running install.sh stays safe.
+SET @ps_sql = IF(
+    (SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'domains' AND COLUMN_NAME = 'php_settings') = 0,
+    'ALTER TABLE domains ADD COLUMN php_settings TEXT NULL DEFAULT NULL',
+    'SELECT 1'
+);
+PREPARE ps_stmt FROM @ps_sql;
+EXECUTE ps_stmt;
+DEALLOCATE PREPARE ps_stmt;
+
+-- WHM > cPanel Migration > From backup files > Fetch from S3: downloads of
+-- backup archives into the import folder. The secret key is encrypted
+-- (Crypto, like migrations.secret_enc) and dropped when the fetch ends.
+-- Also appended to schema.sql; idempotent.
+CREATE TABLE IF NOT EXISTS s3_fetches (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    created_by INT NOT NULL,
+    endpoint VARCHAR(255) NOT NULL,
+    region VARCHAR(64) NOT NULL,
+    bucket VARCHAR(255) NOT NULL,
+    prefix VARCHAR(1024) NOT NULL DEFAULT '',
+    access_key VARCHAR(255) NOT NULL,
+    secret_enc TEXT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'queued' COMMENT 'queued|running|done|failed',
+    progress VARCHAR(255) NULL,
+    log TEXT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    finished_at DATETIME NULL,
+    CONSTRAINT fk_s3_user FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- Routes translated from .htaccess that need a human look (something
+-- couldn't be translated faithfully). Also appended to schema.sql; idempotent.
+SET @rr_sql = IF(
+    (SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'domains' AND COLUMN_NAME = 'routes_review') = 0,
+    'ALTER TABLE domains ADD COLUMN routes_review TINYINT(1) NOT NULL DEFAULT 0',
+    'SELECT 1'
+);
+PREPARE rr_stmt FROM @rr_sql;
+EXECUTE rr_stmt;
+DEALLOCATE PREPARE rr_stmt;
+
+-- Aliases (cPanel "parked domains"): extra names served by a domain's site.
+-- Also appended to schema.sql; idempotent.
+CREATE TABLE IF NOT EXISTS domain_aliases (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    domain_id INT NOT NULL,
+    alias_name VARCHAR(190) NOT NULL UNIQUE,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_alias_domain FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- cPanel > Cron Jobs: scheduled PHP scripts (inside the account's sites) and
+-- URL fetches, run by cron-run.php (systemd timer, every minute) as the web
+-- user. No free-form shell commands. Also appended to schema.sql; idempotent.
+CREATE TABLE IF NOT EXISTS cron_jobs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    domain_id INT NULL,
+    schedule VARCHAR(100) NOT NULL,
+    kind VARCHAR(8) NOT NULL COMMENT 'php|url',
+    target VARCHAR(1024) NOT NULL COMMENT 'php: absolute script path inside the site; url: http(s) URL',
+    args VARCHAR(255) NOT NULL DEFAULT '',
+    enabled TINYINT(1) NOT NULL DEFAULT 1,
+    last_run_at DATETIME NULL,
+    last_status INT NULL COMMENT 'exit code (php) or HTTP status (url); -1 = timed out',
+    last_output TEXT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_cron_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    CONSTRAINT fk_cron_domain FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- cPanel > Cache: each account's object-cache (Valkey) password, encrypted,
+-- and each domain's page cache TTL (NULL = off). Also appended to
+-- schema.sql; conditional DDL so re-running install.sh stays safe.
+SET @c1_sql = IF(
+    (SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'cache_secret_enc') = 0,
+    'ALTER TABLE users ADD COLUMN cache_secret_enc TEXT NULL DEFAULT NULL',
+    'SELECT 1'
+);
+PREPARE c1_stmt FROM @c1_sql;
+EXECUTE c1_stmt;
+DEALLOCATE PREPARE c1_stmt;
+SET @c2_sql = IF(
+    (SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'domains' AND COLUMN_NAME = 'page_cache_ttl') = 0,
+    'ALTER TABLE domains ADD COLUMN page_cache_ttl INT NULL DEFAULT NULL',
+    'SELECT 1'
+);
+PREPARE c2_stmt FROM @c2_sql;
+EXECUTE c2_stmt;
+DEALLOCATE PREPARE c2_stmt;
+
+-- One-time tokens that carry an admin/reseller login from a customer
+-- domain's :2083 panel to the panel hostname (WHM only runs there; cookies
+-- are per host). Single use, 60 s. Also appended to schema.sql; idempotent.
+CREATE TABLE IF NOT EXISTS login_handoffs (
+    token_hash CHAR(64) PRIMARY KEY,
+    user_id INT NOT NULL,
+    next_path VARCHAR(255) NOT NULL DEFAULT '/whm',
+    expires_at DATETIME NOT NULL,
+    CONSTRAINT fk_handoff_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- cPanel > MySQL Databases: users are their own objects (db_user_accounts is
+-- the account's list of MySQL users; grants are read live from MariaDB),
+-- remote access hosts per account, and phpMyAdmin's temporary logins.
+-- Also appended to schema.sql; idempotent.
+INSERT IGNORE INTO db_user_accounts (user_id, db_user)
+    SELECT user_id, db_user FROM db_instances WHERE db_user IS NOT NULL AND db_user <> '';
+
+CREATE TABLE IF NOT EXISTS mysql_remote_hosts (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    host VARCHAR(64) NOT NULL COMMENT 'IP, IPv4 CIDR or %',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_remote_host (user_id, host),
+    CONSTRAINT fk_remote_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE IF NOT EXISTS pma_logins (
+    mysql_user VARCHAR(32) PRIMARY KEY,
+    user_id INT NOT NULL,
+    expires_at DATETIME NOT NULL,
+    CONSTRAINT fk_pma_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- Security hardening: login throttling, two-factor (TOTP) logins, the audit
+-- trail (activity_log gets who/where), panel-wide settings for the setup
+-- token. Also appended to schema.sql; idempotent.
+CREATE TABLE IF NOT EXISTS login_attempts (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    ip VARCHAR(45) NOT NULL,
+    username VARCHAR(190) NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_attempt_ip (ip, created_at),
+    KEY idx_attempt_user (username, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+SET @s1_sql = IF(
+    (SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'totp_secret_enc') = 0,
+    'ALTER TABLE users ADD COLUMN totp_secret_enc TEXT NULL DEFAULT NULL COMMENT ''TOTP secret (Crypto), NULL = two-factor off'', ADD COLUMN totp_last_step BIGINT NULL DEFAULT NULL COMMENT ''last accepted TOTP time step (no replays)''',
+    'SELECT 1'
+);
+PREPARE s1_stmt FROM @s1_sql;
+EXECUTE s1_stmt;
+DEALLOCATE PREPARE s1_stmt;
+
+SET @s2_sql = IF(
+    (SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'activity_log' AND COLUMN_NAME = 'ip') = 0,
+    'ALTER TABLE activity_log ADD COLUMN ip VARCHAR(45) NULL DEFAULT NULL, ADD COLUMN target_user_id INT NULL DEFAULT NULL, ADD KEY idx_activity_created (created_at), ADD KEY idx_activity_target (target_user_id), MODIFY detail VARCHAR(1000) NULL, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci',
+    'SELECT 1'
+);
+PREPARE s2_stmt FROM @s2_sql;
+EXECUTE s2_stmt;
+DEALLOCATE PREPARE s2_stmt;
+
+-- Role/ownership changes take effect on the next request: the session holds
+-- this counter and is dropped when it no longer matches.
+SET @s3_sql = IF(
+    (SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'session_version') = 0,
+    'ALTER TABLE users ADD COLUMN session_version INT NOT NULL DEFAULT 1',
+    'SELECT 1'
+);
+PREPARE s3_stmt FROM @s3_sql;
+EXECUTE s3_stmt;
+DEALLOCATE PREPARE s3_stmt;
+
+-- Per-account PHP (PHP-FPM pools as the account's own Linux user): whether
+-- the account's PHP may run programs (exec, proc_open, ...). Off unless an
+-- admin turns it on in WHM > Accounts. Also appended to schema.sql; idempotent.
+SET @i1_sql = IF(
+    (SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'php_exec') = 0,
+    'ALTER TABLE users ADD COLUMN php_exec TINYINT(1) NOT NULL DEFAULT 0 COMMENT ''1 = the account''''s PHP may use exec(), proc_open() etc.''',
+    'SELECT 1'
+);
+PREPARE i1_stmt FROM @i1_sql;
+EXECUTE i1_stmt;
+DEALLOCATE PREPARE i1_stmt;
+
+-- Quotas that are enforced, not only counted: measured usage per account
+-- (disk = site files + databases + mail; bandwidth per month, from the web
+-- server's access log), reseller account limits, and backups.
+-- Also appended to schema.sql; idempotent.
+CREATE TABLE IF NOT EXISTS account_usage (
+    user_id INT NOT NULL PRIMARY KEY,
+    files_bytes BIGINT NOT NULL DEFAULT 0,
+    db_bytes BIGINT NOT NULL DEFAULT 0,
+    mail_bytes BIGINT NOT NULL DEFAULT 0,
+    bw_month CHAR(7) NOT NULL DEFAULT '' COMMENT 'YYYY-MM the bandwidth counter is for',
+    bw_bytes BIGINT NOT NULL DEFAULT 0,
+    over_disk TINYINT(1) NOT NULL DEFAULT 0,
+    over_bandwidth TINYINT(1) NOT NULL DEFAULT 0,
+    updated_at DATETIME NULL,
+    CONSTRAINT fk_usage_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+SET @u1_sql = IF(
+    (SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'packages' AND COLUMN_NAME = 'max_accounts') = 0,
+    'ALTER TABLE packages ADD COLUMN max_accounts INT NOT NULL DEFAULT 0 COMMENT ''resellers on this package: how many accounts they may create (0 = none)''',
+    'SELECT 1'
+);
+PREPARE u1_stmt FROM @u1_sql;
+EXECUTE u1_stmt;
+DEALLOCATE PREPARE u1_stmt;
+UPDATE packages SET max_accounts = 50 WHERE name = 'Reseller' AND owner_id IS NULL AND max_accounts = 0;
+
+-- One row per backup: an account's sites, databases and mail, or (user_id
+-- NULL, kind 'server') the panel database and server configuration.
+CREATE TABLE IF NOT EXISTS backups (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    kind VARCHAR(8) NOT NULL DEFAULT 'account' COMMENT 'account|server',
+    user_id INT NULL,
+    username VARCHAR(64) NOT NULL DEFAULT '',
+    status VARCHAR(16) NOT NULL DEFAULT 'queued' COMMENT 'queued|running|done|failed|restoring',
+    path VARCHAR(255) NULL,
+    size_bytes BIGINT NOT NULL DEFAULT 0,
+    parts TEXT NULL COMMENT 'JSON: what is in it (files, databases, mailboxes)',
+    remote VARCHAR(16) NULL COMMENT 'off-site copy: uploaded|failed|NULL',
+    log TEXT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    finished_at DATETIME NULL,
+    KEY idx_backup_user (user_id, created_at),
+    CONSTRAINT fk_backup_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- Static files are served by each account's own static server (nginx as the
+-- account's user) with a response cache in front: per domain, how long a
+-- static file stays in that cache (0 = cache off), and whether browsers are
+-- told to cache static files. Also appended to schema.sql; idempotent.
+SET @sc1_sql = IF(
+    (SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'domains' AND COLUMN_NAME = 'static_cache_ttl') = 0,
+    'ALTER TABLE domains ADD COLUMN static_cache_ttl INT NOT NULL DEFAULT 300 COMMENT ''seconds a static file stays in the server cache, 0 = off'', ADD COLUMN browser_cache TINYINT(1) NOT NULL DEFAULT 1 COMMENT ''1 = Cache-Control for static files''',
+    'SELECT 1'
+);
+PREPARE sc1_stmt FROM @sc1_sql;
+EXECUTE sc1_stmt;
+DEALLOCATE PREPARE sc1_stmt;

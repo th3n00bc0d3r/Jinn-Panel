@@ -14,10 +14,17 @@ if (PHP_SAPI !== 'cli') {
 error_reporting(E_ALL);
 ini_set('display_errors', 'stderr'); // -> the transient unit's journal
 ini_set('log_errors', '1');
-ini_set('error_log', __DIR__ . '/../storage/logs/app.log');
+// Root (the worker's backup jobs, cron-run) never writes into storage/,
+// which frankenphp can write: a link planted there would aim root's writes.
+if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+    @mkdir('/var/log/jinnpanel', 0750);
+    ini_set('error_log', '/var/log/jinnpanel/root-cli.log');
+} else {
+    ini_set('error_log', __DIR__ . '/../storage/logs/app.log');
+}
 ini_set('memory_limit', '1024M');
 set_time_limit(0);
-umask(0002); // files created for sites must stay group-writable for webusers
+umask(0022);
 
 spl_autoload_register(function (string $class): void {
     $dirs = [__DIR__, __DIR__ . '/Controllers', __DIR__ . '/Services', __DIR__ . '/Support'];

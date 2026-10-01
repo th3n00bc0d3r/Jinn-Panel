@@ -449,6 +449,183 @@ final class CpanelBackupReader
     }
 
     /** realpath($base/$rel) if it exists and is still inside $base. */
+    /** The account's main domain (cp/<user> DNS=), or null. */
+    public function mainDomain(): ?string
+    {
+        $d = strtolower((string) ($this->cpFile()['DNS'] ?? ''));
+        return preg_match(self::DOMAIN_RE, $d) ? $d : null;
+    }
+
+    /**
+     * The cPanel account's own "default" mailbox (~/mail/cur|new and its
+     * dot-folders): system mail for <user>@<server hostname>, plus whatever
+     * a domain's catch-all ("*: <user>") delivered. Null when it holds no
+     * messages.
+     */
+    public function defaultMaildir(): ?string
+    {
+        $dir = self::inside($this->homedir(), 'mail');
+        if ($dir === null || !is_dir($dir)) {
+            return null;
+        }
+        // Skips cPanel's ".<local>@<domain_tld>" entries: links to the
+        // address mailboxes under mail/<domain>/, not folders of this one.
+        $boxes = array_filter(glob("$dir/.[!.]*", GLOB_ONLYDIR) ?: [], fn($b) => !is_link($b) && !str_contains(basename($b), '@'));
+        foreach (array_merge([$dir], $boxes) as $box) {
+            foreach (['cur', 'new'] as $sub) {
+                foreach (scandir("$box/$sub") ?: [] as $f) {
+                    if ($f[0] !== '.' && is_file("$box/$sub/$f")) {
+                        return $dir;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * cPanel forwarders of $domain (va/<domain>: "local@domain: dest, dest").
+     *
+     * @return array{forwarders: array<string, list<string>>, skipped: list<string>}
+     *   skipped: entries JinnPanel can't recreate (pipes to programs, :fail:/:blackhole: on one address)
+     */
+    public function forwarders(string $domain): array
+    {
+        $out = ['forwarders' => [], 'skipped' => []];
+        $file = $this->root . '/va/' . $domain;
+        if (!preg_match(self::DOMAIN_RE, $domain) || !is_file($file)) {
+            return $out;
+        }
+        foreach (file($file, FILE_IGNORE_NEW_LINES) ?: [] as $line) {
+            if (!preg_match('/^([^:\s]+)@' . preg_quote($domain, '/') . ':\s*(.+)$/i', trim($line), $m)) {
+                continue;
+            }
+            $local = strtolower($m[1]);
+            $dests = [];
+            foreach (preg_split('/\s*,\s*/', trim($m[2])) as $d) {
+                $d = strtolower(trim($d, " \t\""));
+                if (filter_var($d, FILTER_VALIDATE_EMAIL)) {
+                    $dests[] = $d;
+                } elseif ($d !== '') {
+                    $out['skipped'][] = "$local@$domain -> $d";
+                }
+            }
+            if ($dests && preg_match(self::LOCALPART_RE, $local)) {
+                $out['forwarders'][$local] = array_values(array_unique(array_merge($out['forwarders'][$local] ?? [], $dests)));
+            }
+        }
+        return $out;
+    }
+
+    /** cPanel's default address for $domain: an address, a bare local user, ":fail: ...", ":blackhole:", or null. */
+    public function defaultAddress(string $domain): ?string
+    {
+        $file = $this->root . '/va/' . $domain;
+        if (!preg_match(self::DOMAIN_RE, $domain) || !is_file($file)) {
+            return null;
+        }
+        foreach (file($file, FILE_IGNORE_NEW_LINES) ?: [] as $line) {
+            if (preg_match('/^\*:\s*(.+)$/', trim($line), $m)) {
+                return trim($m[1], " \t\"");
+            }
+        }
+        return null;
+    }
+
+    /**
+     * cPanel autoresponders: homedir/.autorespond/<address> (headers, a
+     * blank line, the body) with <address>.json for interval/start/stop.
+     *
+     * @return array<string, array{subject:string, body:string, interval_days:int, starts_on:?string, ends_on:?string}>
+     */
+    public function autoresponders(): array
+    {
+        $dir = self::inside($this->homedir(), '.autorespond');
+        $out = [];
+        if ($dir === null || !is_dir($dir)) {
+            return $out;
+        }
+        foreach (scandir($dir) ?: [] as $f) {
+            $file = "$dir/$f";
+            if (str_ends_with($f, '.json') || !filter_var($f, FILTER_VALIDATE_EMAIL) || !is_file($file) || is_link($file)) {
+                continue;
+            }
+            $raw = str_replace("\r\n", "\n", (string) file_get_contents($file, false, null, 0, 65536));
+            [$head, $body] = array_pad(explode("\n\n", $raw, 2), 2, '');
+            $subject = preg_match('/^Subject:\s*(.*)$/mi', $head, $m) ? trim($m[1]) : 'Auto-reply';
+            $meta = json_decode((string) @file_get_contents("$file.json"), true) ?: [];
+            $day = fn($t) => is_numeric($t) && (int) $t > 0 ? gmdate('Y-m-d', (int) $t) : null;
+            $out[strtolower($f)] = [
+                'subject' => mb_substr($subject, 0, 200),
+                'body' => trim($body),
+                'interval_days' => max(1, (int) round(((int) ($meta['interval'] ?? 24)) / 24)),
+                'starts_on' => $day($meta['start'] ?? null),
+                'ends_on' => $day($meta['stop'] ?? null),
+            ];
+        }
+        return $out;
+    }
+
+    /** The account's crontab (cron/<user>), or ''. */
+    public function crontab(): string
+    {
+        $f = $this->path("cron/{$this->username}");
+        return ($f !== null && is_file($f) && filesize($f) < 262144) ? (string) file_get_contents($f) : '';
+    }
+
+    /**
+     * Extra FTP accounts (proftpdpasswd), not the account's own login or its
+     * "_logs" one.
+     *
+     * @return list<array{name:string, hash:?string, home_rel:string, locked:bool}> home_rel relative to the home directory
+     */
+    public function ftpAccounts(): array
+    {
+        $f = $this->path('proftpdpasswd');
+        if ($f === null || !is_file($f)) {
+            return [];
+        }
+        $out = [];
+        foreach (file($f, FILE_IGNORE_NEW_LINES) ?: [] as $line) {
+            $p = explode(':', $line);
+            if (count($p) < 7) {
+                continue;
+            }
+            [$name, $hash, , , , $home] = $p;
+            $name = strtolower($name);
+            if ($name === $this->username || $name === $this->username . '_logs' || !preg_match('/^[a-z0-9._@+-]{1,128}$/', $name)) {
+                continue;
+            }
+            $prefix = '#^/home\d*/' . preg_quote($this->username, '#') . '(?:/(.*))?$#';
+            if (!preg_match($prefix, rtrim($home, '/'), $m)) {
+                continue; // outside the home directory (e.g. the logs one)
+            }
+            $locked = str_starts_with($hash, '!');
+            $clean = ltrim($hash, '!');
+            $out[] = ['name' => $name, 'hash' => self::isCryptHash($clean) ? $clean : null, 'home_rel' => (string) ($m[1] ?? ''), 'locked' => $locked];
+        }
+        return $out;
+    }
+
+    /** Domains whose cPanel catch-all ("default address", va/<domain> "*:") delivered to this account. */
+    public function catchAllDomains(): array
+    {
+        $out = [];
+        foreach (glob($this->root . '/va/*') ?: [] as $file) {
+            $domain = basename($file);
+            if (!preg_match(self::DOMAIN_RE, $domain)) {
+                continue;
+            }
+            foreach (file($file, FILE_IGNORE_NEW_LINES) ?: [] as $line) {
+                if (preg_match('/^\*:\s*"?([^"\s]+)"?\s*$/', $line, $m) && strtolower($m[1]) === $this->username) {
+                    $out[] = $domain;
+                }
+            }
+        }
+        sort($out);
+        return $out;
+    }
+
     public static function inside(string $base, string $rel): ?string
     {
         $real = realpath($base . '/' . $rel);

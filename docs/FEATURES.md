@@ -53,8 +53,16 @@ Full guide: [`docs/MIGRATION.md`](MIGRATION.md).
   restarts the service automatically (within a few seconds, via the
   background worker).
 - **PHP Versions** - install or remove additional PHP versions (8.2/8.3/
-  8.4) as fully isolated instances. Shows install/active/failed/removing
-  status live.
+  8.4), each its own PHP-FPM service with common extensions. Shows
+  install/active/failed/removing status live.
+- **Backups** - daily backups of every account (site files, databases,
+  mail) and of the server (panel database, every service's configuration),
+  kept N days, optionally copied to S3-compatible storage; back up or
+  restore (files / databases / mail) any account on demand.
+- **Activity Log** - every sign-in and panel action: who, what, which
+  account, from where.
+- **Accounts** - suspend (sites 503, mail logins, SFTP, MySQL, cron off),
+  per-account "PHP may run programs" switch, reset someone's two-factor.
 - **Server Tweaks** - Balanced / Performance / Extreme profile selector.
   Reads the box's actual CPU/RAM/disk, shows the exact values it would
   apply to MariaDB, PHP/OPcache, Stalwart, and SFTPGo before you commit,
@@ -65,13 +73,26 @@ Full guide: [`docs/MIGRATION.md`](MIGRATION.md).
 ## cPanel (end user)
 
 **Dashboard** - package usage bars (domains/databases/email/FTP against
-the account's quota) and quick links.
+the account's quota, plus measured disk space and this month's bandwidth)
+and quick links. Over the disk quota, uploads and new databases/mailboxes/
+domains are refused; over the bandwidth, the sites pause until next month.
+
+**Cache** - per domain: a static file cache (compressed copies of HTML,
+CSS, JS, SVG, fonts... served without being compressed again; on/off,
+lifetime 1 minute to 1 week, clear - File Manager changes clear it
+automatically), browser caching on/off, the page cache for PHP pages, and
+an object cache (Valkey) login for WordPress/Laravel.
+
+**Backups** - download the account's backups (site files, each database,
+mail), back up now, restore any part.
+
+**Login security** (shield icon) - change the password, turn two-factor
+sign-in on or off.
 
 **Domains** - add a domain: creates a real FrankenPHP vhost (HTTP + HTTPS)
 and a DNS zone pointed at this server. Per domain, pick:
-  - **PHP version** - default, or any installed alt version (switches
-    between direct serving and reverse-proxying to that version's isolated
-    instance).
+  - **PHP version** - default, or any installed alt version (the account's
+    PHP-FPM pool in that version).
   - **SSL** - self-signed (instant) or AutoSSL/Let's Encrypt (real
     certificate, requires the domain to actually resolve here publicly).
 

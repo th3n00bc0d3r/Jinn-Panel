@@ -42,6 +42,16 @@
                        class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
             </div>
         </div>
+        <?php $reval = ($current['opcache.validate_timestamps'] ?? '1') === '0' ? 'never' : (string) ($current['opcache.revalidate_freq'] ?? '2'); ?>
+        <div>
+            <label class="block text-sm font-medium text-slate-700 mb-1">Check changed PHP files</label>
+            <select name="opcache_revalidate" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <?php foreach (['0' => 'On every request (development)', '2' => 'Every 2 seconds (default)', '60' => 'Every minute', '300' => 'Every 5 minutes', 'never' => 'Never - only after "Clear cache" or a restart (fastest)'] as $v => $l): ?>
+                <option value="<?= e((string) $v) ?>" <?= $reval === (string) $v ? 'selected' : '' ?>><?= e($l) ?></option>
+                <?php endforeach; ?>
+            </select>
+            <p class="text-xs text-slate-400 mt-1">How soon uploaded PHP changes take effect. Customers can clear their site's cache in cPanel > Cache.</p>
+        </div>
         <label class="flex items-center gap-2 text-sm text-slate-700">
             <input type="checkbox" name="jit_enabled" value="1" <?= ($current['opcache.jit'] ?? 'off') !== 'off' ? 'checked' : '' ?> class="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500">
             Enable JIT (tracing mode, 64MB buffer)

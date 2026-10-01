@@ -93,6 +93,44 @@ final class ServerConfigController
         exit;
     }
 
+    // ---- PHP extensions ----
+
+    public static function phpExtensions(): void
+    {
+        Auth::requireRole(['admin']);
+        $list = PhpExtensionService::list();
+        $last = PhpExtensionService::lastResult();
+        if ($list['updated'] === null || $list['updated'] < time() - 86400) {
+            PhpExtensionService::refresh();
+        }
+        View::render('whm/server_config/php_extensions', [
+            'title' => 'PHP Extensions',
+            'list' => $list,
+            'last' => $last,
+            'pending' => SystemWorkerService::pending('php-ext'),
+        ], 'whm');
+    }
+
+    public static function phpExtensionChange(): void
+    {
+        Auth::requireRole(['admin']);
+        Csrf::requireValid();
+        try {
+            if (($_POST['op'] ?? '') === 'refresh') {
+                PhpExtensionService::refresh();
+                Flash::ok('Refreshing the package list...');
+            } else {
+                $ext = (string) ($_POST['ext'] ?? '');
+                PhpExtensionService::change($ext, ($_POST['op'] ?? '') === 'install');
+                Flash::ok("Queued: php-zts-$ext - the web server restarts when it's done (a second or two).");
+            }
+        } catch (Throwable $e) {
+            Flash::error($e->getMessage());
+        }
+        header('Location: /whm/server-config/php-extensions');
+        exit;
+    }
+
     // ---- PHP / OPcache ----
 
     public static function phpIndex(): void
@@ -121,6 +159,9 @@ final class ServerConfigController
             'opcache.max_accelerated_files' => (int) $_POST['opcache_max_files'],
             'opcache.jit' => !empty($_POST['jit_enabled']) ? 'tracing' : 'off',
             'opcache.jit_buffer_size' => !empty($_POST['jit_enabled']) ? '64M' : '0',
+            // 0 = check every request; "never" = only on restart / Clear cache.
+            'opcache.validate_timestamps' => ($_POST['opcache_revalidate'] ?? '2') === 'never' ? '0' : '1',
+            'opcache.revalidate_freq' => (string) max(0, min(3600, (int) (($_POST['opcache_revalidate'] ?? '2') === 'never' ? 60 : $_POST['opcache_revalidate']))),
         ];
 
         SystemWorkerService::enqueue('php-settings', ['type' => 'set_ini', 'file' => '/etc/php-zts/php.ini', 'settings' => $ini]);
@@ -253,7 +294,7 @@ final class ServerConfigController
             }
         }
         foreach (@file('/etc/php-zts/conf.d/opcache.ini') ?: [] as $line) {
-            if (preg_match('/^;?\s*(opcache\.(memory_consumption|max_accelerated_files|jit|jit_buffer_size))\s*=\s*(.+)$/', trim($line), $m)) {
+            if (preg_match('/^;?\s*(opcache\.(memory_consumption|max_accelerated_files|jit|jit_buffer_size|validate_timestamps|revalidate_freq))\s*=\s*(.+)$/', trim($line), $m)) {
                 $out[$m[1]] = trim($m[3]);
             }
         }

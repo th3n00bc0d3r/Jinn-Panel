@@ -4,13 +4,16 @@ $navItems = [
     ['href' => '/whm/accounts', 'label' => 'Accounts', 'icon' => 'users'],
     ['href' => '/whm/packages', 'label' => 'Packages', 'icon' => 'box'],
     ['href' => '/whm/migrations', 'label' => 'cPanel Migration', 'icon' => 'transfer'],
+    ['href' => '/whm/activity', 'label' => 'Activity Log', 'icon' => 'clock'],
 ];
 if (Auth::isAdmin()) {
     $navItems[] = ['section' => 'Server Config'];
+    $navItems[] = ['href' => '/whm/backups', 'label' => 'Backups', 'icon' => 'download'];
     $navItems[] = ['href' => '/whm/dns', 'label' => 'DNS Zones', 'icon' => 'globe'];
     $navItems[] = ['href' => '/whm/server-config/mail', 'label' => 'Mail Settings', 'icon' => 'mail'];
     $navItems[] = ['href' => '/whm/server-config/sftp', 'label' => 'SFTP Settings', 'icon' => 'folder-up'];
     $navItems[] = ['href' => '/whm/server-config/php', 'label' => 'PHP Settings', 'icon' => 'settings'];
+    $navItems[] = ['href' => '/whm/server-config/php-extensions', 'label' => 'PHP Extensions', 'icon' => 'sliders'];
     $navItems[] = ['href' => '/whm/server-config/php-versions', 'label' => 'PHP Versions', 'icon' => 'box'];
     $navItems[] = ['href' => '/whm/server-config/database', 'label' => 'Database Settings', 'icon' => 'database'];
     $navItems[] = ['href' => '/whm/server-config/tuning', 'label' => 'Server Tweaks', 'icon' => 'sliders'];

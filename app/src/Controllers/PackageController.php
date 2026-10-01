@@ -40,8 +40,8 @@ final class PackageController
         }
 
         $stmt = Database::app()->prepare(
-            'INSERT INTO packages (owner_id, name, disk_quota_mb, bandwidth_mb, max_domains, max_databases, max_email_accounts, max_ftp_accounts)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+            'INSERT INTO packages (owner_id, name, disk_quota_mb, bandwidth_mb, max_domains, max_databases, max_email_accounts, max_ftp_accounts, max_accounts)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
         );
         $stmt->execute([
             $user['role'] === 'admin' ? null : $user['id'],
@@ -52,6 +52,8 @@ final class PackageController
             max(1, (int) ($_POST['max_databases'] ?? 1)),
             max(0, (int) ($_POST['max_email_accounts'] ?? 5)),
             max(0, (int) ($_POST['max_ftp_accounts'] ?? 1)),
+            // Only an admin's packages can carry reseller account limits.
+            $user['role'] === 'admin' ? max(0, (int) ($_POST['max_accounts'] ?? 0)) : 0,
         ]);
 
         Flash::ok("Package \"$name\" created.");

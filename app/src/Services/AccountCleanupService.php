@@ -19,13 +19,30 @@ final class AccountCleanupService
     public static function purge(int $userId, array $removeDirs = []): void
     {
         $pdo = Database::app();
+        $who = $pdo->prepare('SELECT username, role FROM users WHERE id = ?');
+        $who->execute([$userId]);
+        $account = $who->fetch() ?: null;
+        $siteNames = $pdo->prepare('SELECT domain_name FROM domains WHERE user_id = ?');
+        $siteNames->execute([$userId]);
+        $siteNames = $siteNames->fetchAll(PDO::FETCH_COLUMN);
 
         $domains = $pdo->prepare('SELECT * FROM domains WHERE user_id = ?');
         $domains->execute([$userId]);
         foreach ($domains->fetchAll() as $d) {
             try { VhostService::remove($d['domain_name'], $d['php_version']); } catch (Throwable $e) { error_log($e->getMessage()); }
             try { DnsService::removeZone($d['domain_name']); } catch (Throwable $e) { error_log($e->getMessage()); }
+            try { DomainAliasService::removeAll($d); } catch (Throwable $e) { error_log($e->getMessage()); }
+            PhpSettingsService::remove((string) $d['domain_name']);
+            CacheService::purgePages((string) $d['domain_name']);
         }
+        $u = $pdo->prepare('SELECT * FROM users WHERE id = ? AND cache_secret_enc IS NOT NULL');
+        $u->execute([$userId]);
+        if ($row = $u->fetch()) {
+            try { CacheService::disableObjectCache($row); } catch (Throwable $e) { error_log($e->getMessage()); }
+        }
+
+        // Remote (user@host) and phpMyAdmin logins, besides the @localhost ones below.
+        try { MysqlService::dropAccount($userId); } catch (Throwable $e) { error_log($e->getMessage()); }
 
         $droppedUsers = [];
         $dbs = $pdo->prepare('SELECT * FROM db_instances WHERE user_id = ?');
@@ -60,6 +77,13 @@ final class AccountCleanupService
             }
         }
 
+        // Forwarders and the mail domains themselves (with any DKIM keys).
+        $mailDomains = $pdo->prepare('SELECT mail_domain_id FROM domains WHERE user_id = ? AND mail_domain_id IS NOT NULL');
+        $mailDomains->execute([$userId]);
+        foreach ($mailDomains->fetchAll(PDO::FETCH_COLUMN) as $mailDomainId) {
+            try { MailService::deleteDomain((string) $mailDomainId); } catch (Throwable $e) { error_log($e->getMessage()); }
+        }
+
         $ftps = $pdo->prepare('SELECT * FROM ftp_accounts WHERE user_id = ?');
         $ftps->execute([$userId]);
         foreach ($ftps->fetchAll() as $row) {
@@ -67,9 +91,17 @@ final class AccountCleanupService
         }
 
         $pdo->prepare('DELETE FROM users WHERE id = ?')->execute([$userId]);
+        try { MysqlService::syncFirewall(); } catch (Throwable $e) { error_log($e->getMessage()); } // its Remote MySQL hosts went with it
 
         foreach ($removeDirs as $dir) {
             self::removeSiteDir($dir);
+            AccountRuntime::removeSite(basename((string) $dir)); // root removes what the panel can't
+        }
+        // Its PHP pools and Linux user (the worker re-checks the account is
+        // gone). Site folders not removed above are moved aside, root-only.
+        if ($account && $account['role'] === 'user') {
+            $archive = $removeDirs ? [] : array_values(array_map('strval', $siteNames));
+            SystemWorkerService::enqueue('account-remove-' . $account['username'], ['type' => 'account_remove', 'username' => (string) $account['username'], 'archive' => $archive]);
         }
     }
 

@@ -32,6 +32,9 @@ final class MigrationController
             $migrations = [];
         }
         View::render('whm/migrations/index', [
+            'backupFiles' => Auth::isAdmin() ? MigrationService::availableBackupFiles() : [],
+            'importDir' => MigrationService::importDir(),
+            's3Fetches' => Auth::isAdmin() ? S3FetchService::recent(5) : [],
             'title' => 'Migrations',
             'migrations' => $migrations,
             'me' => $me,
@@ -140,6 +143,37 @@ final class MigrationController
         exit;
     }
 
+    /** WHM > cPanel Migration > From backup files: a draft listing every archive in the import folder. */
+    public static function fromFiles(): void
+    {
+        Auth::requireRole(['admin']);
+        Csrf::requireValid();
+        try {
+            $id = MigrationService::draftFromFiles(Auth::user());
+        } catch (Throwable $e) {
+            Flash::error($e->getMessage());
+            header('Location: /whm/migrations');
+            exit;
+        }
+        header("Location: /whm/migrations/$id/select");
+        exit;
+    }
+
+    /** From backup files > Fetch from S3. */
+    public static function s3Fetch(): void
+    {
+        Auth::requireRole(['admin']);
+        Csrf::requireValid();
+        try {
+            $id = S3FetchService::create(Auth::user(), $_POST);
+            Flash::ok("Fetching the backups from S3 (#$id) - progress shows below; then choose the accounts.");
+        } catch (Throwable $e) {
+            Flash::error($e->getMessage());
+        }
+        header('Location: /whm/migrations');
+        exit;
+    }
+
     public static function select(array $params): void
     {
         Auth::requireRole(['admin', 'reseller']);
@@ -197,7 +231,8 @@ final class MigrationController
             'email_data' => !empty($_POST['email_accounts']) && !empty($_POST['email_data']),
             'match_packages' => !empty($_POST['match_packages']),
             'mail_passwords' => ($_POST['mail_passwords'] ?? 'preserve') === 'generate' ? 'generate' : 'preserve',
-            'ssl_mode' => ($_POST['ssl_mode'] ?? '') === 'letsencrypt' ? 'letsencrypt' : 'self_signed',
+            'catch_all' => ($_POST['catch_all'] ?? 'reject') === 'keep' ? 'keep' : 'reject',
+            'ssl_mode' => in_array($_POST['ssl_mode'] ?? '', ['letsencrypt', 'self_signed'], true) ? $_POST['ssl_mode'] : 'auto',
             'timeout_hours' => max(1, min(72, (int) ($_POST['timeout_hours'] ?? 12))),
             'first_byte_minutes' => max(10, min(720, (int) ($_POST['first_byte_minutes'] ?? 120))),
             'package_id' => null,
@@ -338,6 +373,20 @@ final class MigrationController
         try {
             $n = MigrationService::retry($m);
             $n > 0 ? Flash::ok("Retrying $n account" . ($n === 1 ? '' : 's') . '.') : Flash::error('There are no failed or cancelled accounts to retry.');
+        } catch (Throwable $e) {
+            Flash::error($e->getMessage());
+        }
+        self::redirectTo($m);
+    }
+
+    /** POST item=<id> for one account, or no item for every finished account. */
+    public static function restoreMail(array $params): void
+    {
+        [$m] = self::mutating($params);
+        $itemId = isset($_POST['item']) && $_POST['item'] !== '' ? (int) $_POST['item'] : null;
+        try {
+            $n = MigrationService::restoreMail($m, $itemId);
+            $n > 0 ? Flash::ok("Restoring mail for $n account" . ($n === 1 ? '' : 's') . ' - mailboxes already on this server are left as they are.') : Flash::error('There are no finished accounts to restore mail for.');
         } catch (Throwable $e) {
             Flash::error($e->getMessage());
         }

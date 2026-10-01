@@ -7,10 +7,14 @@ declare(strict_types=1);
  * as a blob, then attached to the right mailbox with Email/import, keeping
  * its flags (seen/answered/flagged/draft) and original received date.
  *
- * It authenticates AS the mailbox user, with a random one-off credential
- * the migration runner adds to the account just for the import and removes
- * again right after - so no admin impersonation is needed, and the user's
- * real (imported) password is never known in plaintext.
+ * It logs in to the mailbox with Stalwart's master-user login
+ * ("<address>%<admin>" + the admin password, see asAdmin()), so the
+ * mailbox keeps its real (imported) password throughout and the panel never
+ * needs to know it.
+ *
+ * With $skipExisting, messages the mailbox already holds (same Message-ID,
+ * or same received time and size when there is none) are skipped, so an
+ * import that stopped half-way can be run again without duplicates.
  *
  * Maildir++ layout: the mailbox root's cur/ + new/ are INBOX; every
  * ".Name" or ".Parent.Child" subdirectory is a folder (Dovecot's "."
@@ -19,6 +23,7 @@ declare(strict_types=1);
 final class MailImportService
 {
     private const BATCH = 25;
+    private const RETRIES = 8;
     private const ROLE_NAMES = [
         'sent' => ['sent', 'sent items', 'sent messages', 'sent mail'],
         'drafts' => ['drafts', 'draft'],
@@ -34,19 +39,31 @@ final class MailImportService
     /** @var array<string,string> role => mailboxId */
     private array $byRole = [];
 
+    /** @var array<string,true> "mailboxId dedupKey" of messages already in the mailbox */
+    private array $existing = [];
+
     public function __construct(private string $login, private string $password)
     {
+    }
+
+    /** Logs in to $address as the Stalwart admin (master user), not with the mailbox's own password. */
+    public static function asAdmin(string $address): self
+    {
+        return new self($address . '%' . Config::MAIL_ADMIN_USER, Config::MAIL_ADMIN_PASS);
     }
 
     /**
      * @return array{imported:int, failed:int, skipped:int, folders:int, errors:array<int,string>}
      */
-    public function importMaildir(string $maildir, ?callable $onProgress = null, ?callable $shouldStop = null): array
+    public function importMaildir(string $maildir, ?callable $onProgress = null, ?callable $shouldStop = null, bool $skipExisting = false): array
     {
         $this->openSession();
         $this->loadMailboxes();
+        if ($skipExisting) {
+            $this->loadExisting();
+        }
 
-        $stats = ['imported' => 0, 'failed' => 0, 'skipped' => 0, 'folders' => 0, 'errors' => []];
+        $stats = ['imported' => 0, 'failed' => 0, 'skipped' => 0, 'existing' => 0, 'folders' => 0, 'errors' => []];
         foreach ($this->folders($maildir) as $folderPath => $dir) {
             $mailboxId = $this->mailboxFor($folderPath);
             $stats['folders']++;
@@ -65,14 +82,19 @@ final class MailImportService
                         $stats['skipped']++; // Dovecot "T" flag: deleted, just not expunged yet
                         continue;
                     }
-                    $size = (int) filesize($file);
-                    if ($size === 0 || $size > $this->maxUpload) {
-                        $stats['skipped']++;
-                        $stats['errors'][] = basename($file) . ": skipped (size $size bytes)";
-                        continue;
-                    }
                     try {
-                        $blobId = $this->upload((string) file_get_contents($file));
+                        $message = self::readMessage($file);
+                        $size = strlen($message);
+                        if ($size === 0 || $size > $this->maxUpload) {
+                            $stats['skipped']++;
+                            $stats['errors'][] = basename($file) . ": skipped (size $size bytes)";
+                            continue;
+                        }
+                        if ($this->existing && isset($this->existing[$mailboxId . ' ' . self::dedupKey($message, self::receivedAt($f, $file))])) {
+                            $stats['existing']++;
+                            continue;
+                        }
+                        $blobId = $this->upload($message);
                     } catch (Throwable $e) {
                         $stats['failed']++;
                         self::note($stats, basename($file) . ': ' . $e->getMessage());
@@ -100,6 +122,36 @@ final class MailImportService
         return $stats;
     }
 
+    /**
+     * A message file's contents, decompressed: cPanel's Dovecot zlib plugin
+     * stores messages gzip-compressed (and can use bzip2/xz/zstd), while the
+     * plain ones are left as they are.
+     */
+    public static function readMessage(string $file): string
+    {
+        $raw = (string) file_get_contents($file);
+        $out = match (true) {
+            str_starts_with($raw, "\x1f\x8b") => @gzdecode($raw),
+            str_starts_with($raw, 'BZh') && function_exists('bzdecompress') => @bzdecompress($raw),
+            str_starts_with($raw, "\xfd7zXZ\x00") => self::decompressWith('xz', $file),
+            str_starts_with($raw, "\x28\xb5\x2f\xfd") => self::decompressWith('zstd', $file),
+            default => $raw,
+        };
+        if (!is_string($out)) {
+            throw new RuntimeException('compressed message could not be decompressed');
+        }
+        return $out;
+    }
+
+    private static function decompressWith(string $tool, string $file): string|false
+    {
+        if (trim((string) shell_exec('command -v ' . escapeshellarg($tool) . ' 2>/dev/null')) === '') {
+            throw new RuntimeException("message is $tool-compressed and $tool is not installed (dnf -y install $tool)");
+        }
+        $out = '';
+        return CpanelBackupReader::run([$tool, '-dc', $file], $out) === 0 ? $out : false;
+    }
+
     private static function note(array &$stats, string $msg): void
     {
         if (count($stats['errors']) < 20) {
@@ -123,6 +175,9 @@ final class MailImportService
                 continue;
             }
             $name = substr($entry, 1);
+            if ($name === 'mailbox_format.cpanel' || str_contains($name, '@')) {
+                continue; // cPanel's format-conversion marker / ".<local>@<domain_tld>" address links, not folders
+            }
             if (stripos($name, 'INBOX.') === 0) {
                 $name = substr($name, 6);
             }
@@ -170,6 +225,41 @@ final class MailImportService
             return (int) $m[1];
         }
         return (int) (@filemtime($path) ?: time());
+    }
+
+    /** Message-ID when the message has one, else received time + size (what Stalwart reports back). */
+    public static function dedupKey(string $message, int $receivedAt): string
+    {
+        $end = strpos($message, "\r\n\r\n");
+        $end = $end === false ? strpos($message, "\n\n") : $end;
+        $headers = substr($message, 0, $end === false ? 65536 : $end);
+        if (preg_match('/^Message-ID:[ \t]*(?:\r?\n[ \t]+)?<([^>\r\n]+)>/mi', $headers, $m)) {
+            return 'id:' . trim($m[1]); // Stalwart trims "<id >" too
+        }
+        return 'at:' . $receivedAt . ':' . strlen($message);
+    }
+
+    private function loadExisting(): void
+    {
+        for ($position = 0; ; $position += count($ids)) {
+            $resp = $this->call([
+                ['Email/query', ['accountId' => $this->accountId, 'position' => $position, 'limit' => 500], 'q'],
+                ['Email/get', ['accountId' => $this->accountId, 'properties' => ['mailboxIds', 'messageId', 'receivedAt', 'size'],
+                    '#ids' => ['resultOf' => 'q', 'name' => 'Email/query', 'path' => '/ids']], 'g'],
+            ]);
+            $ids = (array) ($resp[0][1]['ids'] ?? []);
+            foreach ((array) ($resp[1][1]['list'] ?? []) as $e) {
+                $key = !empty($e['messageId'][0])
+                    ? 'id:' . $e['messageId'][0]
+                    : 'at:' . strtotime((string) $e['receivedAt']) . ':' . (int) $e['size'];
+                foreach (array_keys((array) ($e['mailboxIds'] ?? [])) as $mb) {
+                    $this->existing[$mb . ' ' . $key] = true;
+                }
+            }
+            if (!$ids) {
+                return;
+            }
+        }
     }
 
     // ------------------------------------------------------------------
@@ -293,24 +383,42 @@ final class MailImportService
     }
 
     /** @return array{status:int, raw:string} */
+    /**
+     * One JMAP HTTP request. Stalwart rate-limits uploads and requests per
+     * account (HTTP 429), which a big mailbox hits within seconds - back off
+     * (Retry-After when given) and try again rather than losing the message.
+     */
     private function http(string $method, string $url, ?string $body, string $contentType): array
     {
-        $ch = curl_init($url);
-        curl_setopt_array($ch, [
-            CURLOPT_CUSTOMREQUEST => $method,
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_USERPWD => $this->login . ':' . $this->password,
-            CURLOPT_HTTPHEADER => ['Content-Type: ' . $contentType, 'Accept: application/json'],
-            CURLOPT_TIMEOUT => 120,
-            CURLOPT_ENCODING => '',
-        ]);
-        if ($body !== null) {
-            curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+        for ($attempt = 1; ; $attempt++) {
+            $retryAfter = null;
+            $ch = curl_init($url);
+            curl_setopt_array($ch, [
+                CURLOPT_CUSTOMREQUEST => $method,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_USERPWD => $this->login . ':' . $this->password,
+                CURLOPT_HTTPHEADER => ['Content-Type: ' . $contentType, 'Accept: application/json'],
+                CURLOPT_TIMEOUT => 120,
+                CURLOPT_ENCODING => '',
+                CURLOPT_HEADERFUNCTION => function ($ch, string $line) use (&$retryAfter): int {
+                    if (preg_match('/^retry-after:\s*(\d+)/i', $line, $m)) {
+                        $retryAfter = (int) $m[1];
+                    }
+                    return strlen($line);
+                },
+            ]);
+            if ($body !== null) {
+                curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+            }
+            $raw = curl_exec($ch);
+            if ($raw === false) {
+                throw new RuntimeException('Mail server request failed: ' . curl_error($ch));
+            }
+            $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            if (!in_array($status, [429, 503], true) || $attempt >= self::RETRIES) {
+                return ['status' => $status, 'raw' => (string) $raw];
+            }
+            sleep(min(60, max(1, $retryAfter ?? 2 ** ($attempt - 1))));
         }
-        $raw = curl_exec($ch);
-        if ($raw === false) {
-            throw new RuntimeException('Mail server request failed: ' . curl_error($ch));
-        }
-        return ['status' => (int) curl_getinfo($ch, CURLINFO_HTTP_CODE), 'raw' => (string) $raw];
     }
 }

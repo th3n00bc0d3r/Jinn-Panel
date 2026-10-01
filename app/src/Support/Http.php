@@ -10,7 +10,7 @@ final class Http
      * @param array<string,string> $headers
      * @return array{status:int, body:mixed, raw:string}
      */
-    public static function json(string $method, string $url, ?array $payload = null, array $headers = [], ?string $basicAuth = null): array
+    public static function json(string $method, string $url, array|stdClass|null $payload = null, array $headers = [], ?string $basicAuth = null): array
     {
         $ch = curl_init($url);
         $defaultHeaders = ['Content-Type: application/json', 'Accept: application/json'];
@@ -36,11 +36,9 @@ final class Http
         $raw = curl_exec($ch);
         if ($raw === false) {
             $err = curl_error($ch);
-            curl_close($ch);
             throw new RuntimeException("HTTP request failed: $err");
         }
         $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
 
         $body = json_decode($raw, true);
         return ['status' => $status, 'body' => $body, 'raw' => $raw];

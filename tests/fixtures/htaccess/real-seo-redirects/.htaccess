@@ -1,0 +1,74 @@
+RewriteEngine On
+
+RewriteRule ^post/([A-Za-z0-9_-]+)$ /post.php?id=$1 [END,QSA]
+
+RewriteCond %{HTTP_HOST} ^example\.org$ [NC]
+RewriteRule ^(.*)$ https://www.example.org/$1 [R=301,L]
+
+RewriteCond %{QUERY_STRING} (?:^|&)(?:slug|id)=([A-Za-z0-9_-]+)
+RewriteRule ^blog-view\.html$ /blog/%1? [R=301,L]
+
+RewriteRule ^blog/?$ /blog.html [R=301,L]
+
+RewriteRule ^terms-and-conditions\.html$ /terms.html [R=301,L]
+RewriteRule ^privacy-policy\.html$ /privacy.html [R=301,L]
+
+RewriteRule ^blood-donors-in-([a-z]+)\.html$ /blood-donors/pakistan/$1/ [R=301,L]
+
+RewriteCond %{THE_REQUEST} \s/+index\.(html|php)[\s?] [NC]
+RewriteRule ^ / [R=301,L]
+
+RewriteRule ^blog\.html$ /blog-index.php [END]
+
+RewriteRule ^blog/([A-Za-z0-9_-]+)/?$ /blog.php?slug=$1 [END,QSA]
+
+RewriteRule ^blog-view\.html$ /blog.html [R=301,L]
+
+<FilesMatch "^(header|footer)\.html$">
+  <IfModule mod_headers.c>
+    Header set X-Robots-Tag "noindex, nofollow"
+  </IfModule>
+</FilesMatch>
+
+RewriteRule ^sitemap\.xml$ /sitemap.php [END]
+
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteCond %{REQUEST_FILENAME}/index.html !-f
+RewriteCond %{REQUEST_FILENAME}/index.php !-f
+RewriteRule ^ - [F]
+
+<IfModule mod_headers.c>
+  <FilesMatch "\.(css|js|woff2?|ttf|otf|eot)$">
+    Header set Cache-Control "public, max-age=2592000, stale-while-revalidate=86400"
+  </FilesMatch>
+  <FilesMatch "\.(png|jpe?g|gif|webp|avif|svg|ico)$">
+    Header set Cache-Control "public, max-age=2592000, stale-while-revalidate=86400"
+  </FilesMatch>
+  <FilesMatch "\.html$">
+    Header set Cache-Control "public, max-age=3600, must-revalidate"
+  </FilesMatch>
+  Header always set X-Content-Type-Options "nosniff"
+
+  Header always set Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+
+  Header always set X-Frame-Options "SAMEORIGIN"
+
+  Header always set Cross-Origin-Opener-Policy "same-origin"
+
+  Header always set Referrer-Policy "strict-origin-when-cross-origin"
+
+  Header always set Permissions-Policy "camera=(), microphone=(), geolocation=(self), payment=(), usb=()"
+
+  Header always set Content-Security-Policy "object-src 'none'; base-uri 'self'; frame-ancestors 'self'"
+</IfModule>
+
+# BEGIN cPanel-generated php ini directives, do not edit
+<IfModule php8_module>
+   php_value error_log "/home/example/logs/php.error.log"
+   php_flag log_errors On
+</IfModule>
+<IfModule lsapi_module>
+   php_value error_log "/home/example/logs/php.error.log"
+   php_flag log_errors On
+</IfModule>
+# END cPanel-generated php ini directives

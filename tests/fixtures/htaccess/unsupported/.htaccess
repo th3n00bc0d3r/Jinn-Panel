@@ -1,0 +1,12 @@
+Options +Indexes
+SetEnvIf User-Agent "BadBot" bad_bot
+RewriteEngine On
+# Lookahead: RE2 (Caddy) can't do it.
+RewriteRule ^(?!api/)old/(.*)$ /new/$1 [R=301,L]
+# Proxying is never allowed.
+RewriteRule ^shop/(.*)$ http://127.0.0.1:8080/$1 [P]
+# Still translated: the rules around unsupported ones keep their order.
+RewriteRule ^about$ /about.php [L]
+<If "%{HTTP_HOST} == 'example.com'">
+  Header set X-If "yes"
+</If>

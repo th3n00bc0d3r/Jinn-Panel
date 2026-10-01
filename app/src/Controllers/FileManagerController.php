@@ -1,33 +1,16 @@
 <?php
 declare(strict_types=1);
 
+/**
+ * cPanel > File Manager, rooted at the domain's site folder (/var/www/<domain>:
+ * the document root, plus private/ and logs/ next to it). The work itself
+ * runs inside the account's own PHP-FPM pool, as the account's Linux user
+ * (PoolClient -> pool-agent -> FileManagerService), which keeps every path
+ * inside that folder - so files belong to the account, and the panel can't
+ * reach anything the account itself couldn't.
+ */
 final class FileManagerController
 {
-    /** Resolves an EXISTING directory inside the domain's docroot, refusing traversal. */
-    private static function safeDir(string $docroot, string $relPath): string
-    {
-        $base = realpath($docroot);
-        if ($base === false) {
-            throw new RuntimeException('Docroot missing.');
-        }
-        $target = realpath($docroot . '/' . ltrim($relPath, '/'));
-        $withinBase = $target !== false && ($target === $base || str_starts_with($target, $base . DIRECTORY_SEPARATOR));
-        if (!$withinBase || !is_dir($target)) {
-            return $base;
-        }
-        return $target;
-    }
-
-    /** Sanitizes a bare filename (no slashes, no traversal). */
-    private static function safeName(string $name): string
-    {
-        $name = basename(str_replace('\\', '/', $name));
-        if ($name === '' || $name === '.' || $name === '..') {
-            throw new InvalidArgumentException('Invalid file name.');
-        }
-        return $name;
-    }
-
     private static function myDomain(int $domainId, int $userId): ?array
     {
         $stmt = Database::app()->prepare('SELECT * FROM domains WHERE id = ? AND user_id = ?');
@@ -35,167 +18,203 @@ final class FileManagerController
         return $stmt->fetch() ?: null;
     }
 
+    /** @return array{0:array,1:string} domain, current directory relative to the site folder (POST + CSRF checked) */
+    private static function context(bool $post = true): array
+    {
+        Auth::requireRole(['user']);
+        if ($post) {
+            Csrf::requireValid();
+        }
+        $src = $post ? $_POST : $_GET;
+        $domain = self::myDomain((int) ($src['domain_id'] ?? 0), (int) Auth::user()['id']);
+        if (!$domain) {
+            Flash::error('Domain not found.');
+            header('Location: /cpanel/files');
+            exit;
+        }
+        return [$domain, trim((string) ($src['path'] ?? ''), '/')];
+    }
+
     public static function index(): void
     {
         Auth::requireRole(['user']);
         $me = Auth::user();
-        $pdo = Database::app();
-
-        $domainsStmt = $pdo->prepare('SELECT * FROM domains WHERE user_id = ? ORDER BY domain_name');
+        $domainsStmt = Database::app()->prepare('SELECT * FROM domains WHERE user_id = ? ORDER BY domain_name');
         $domainsStmt->execute([$me['id']]);
         $domains = $domainsStmt->fetchAll();
 
         $domainId = (int) ($_GET['domain_id'] ?? ($domains[0]['id'] ?? 0));
-        $relPath = (string) ($_GET['path'] ?? '');
-        $domain = self::myDomain($domainId, $me['id']);
-
+        $domain = self::myDomain($domainId, (int) $me['id']);
         $entries = [];
         $currentRel = '';
+        $docrootRel = '';
         if ($domain) {
-            $dir = self::safeDir($domain['docroot'], $relPath);
-            $currentRel = ltrim(str_replace(realpath($domain['docroot']), '', $dir), '/');
-            $items = @scandir($dir) ?: [];
-            foreach ($items as $item) {
-                if ($item === '.' || $item === '..') continue;
-                $full = $dir . '/' . $item;
-                $entries[] = [
-                    'name' => $item,
-                    'is_dir' => is_dir($full),
-                    'size' => is_file($full) ? filesize($full) : 0,
-                    'modified' => filemtime($full),
-                ];
+            $name = (string) $domain['domain_name'];
+            $docrootRel = ltrim(substr(VhostService::effectiveDocroot($name), strlen(VhostService::siteDir($name))), '/');
+            try {
+                $res = PoolClient::call($name, 'list', ['dir' => array_key_exists('path', $_GET) ? (string) $_GET['path'] : $docrootRel]);
+                $currentRel = (string) $res['dir'];
+                $entries = (array) $res['entries'];
+            } catch (Throwable $e) {
+                Flash::error($e->getMessage());
             }
-            usort($entries, fn($a, $b) => $b['is_dir'] <=> $a['is_dir'] ?: strcasecmp($a['name'], $b['name']));
         }
-
         View::render('cpanel/files', [
             'title' => 'File Manager',
             'domains' => $domains,
             'domain' => $domain,
             'domainId' => $domainId,
             'currentRel' => $currentRel,
+            'docrootRel' => $docrootRel,
             'entries' => $entries,
         ], 'cpanel');
     }
 
     public static function upload(): void
     {
-        Auth::requireRole(['user']);
-        Csrf::requireValid();
-        $me = Auth::user();
-        $domainId = (int) ($_POST['domain_id'] ?? 0);
-        $relPath = (string) ($_POST['path'] ?? '');
-        $domain = self::myDomain($domainId, $me['id']);
-
-        if (!$domain || empty($_FILES['file']['tmp_name']) || !is_uploaded_file($_FILES['file']['tmp_name'])) {
-            Flash::error('Upload failed.');
-            self::backTo($domainId, $relPath);
+        [$domain, $dir] = self::context();
+        self::needSpace($domain, $dir);
+        $files = $_FILES['file'] ?? null;
+        $n = 0;
+        $errors = [];
+        if (is_array($files) && is_array($files['name'] ?? null)) {
+            foreach ($files['name'] as $i => $name) {
+                $tmp = $files['tmp_name'][$i] ?? '';
+                if (($files['error'][$i] ?? 1) !== UPLOAD_ERR_OK || !is_uploaded_file($tmp)) {
+                    $errors[] = (string) $name . ($files['error'][$i] === UPLOAD_ERR_INI_SIZE ? ' (too large)' : '');
+                    continue;
+                }
+                $in = fopen($tmp, 'rb');
+                try {
+                    if ($in === false) {
+                        throw new RuntimeException('unreadable');
+                    }
+                    PoolClient::call((string) $domain['domain_name'], 'upload', ['dir' => $dir, 'name' => (string) $name], $in);
+                    $n++;
+                } catch (Throwable $e) {
+                    $errors[] = (string) $name . ' (' . $e->getMessage() . ')';
+                } finally {
+                    is_resource($in) && fclose($in);
+                    @unlink($tmp);
+                }
+            }
         }
-
-        $dir = self::safeDir($domain['docroot'], $relPath);
-        try {
-            $name = self::safeName($_FILES['file']['name']);
-        } catch (Throwable $e) {
-            Flash::error('Invalid file name.');
-            self::backTo($domainId, $relPath);
-            return;
-        }
-
-        if (!move_uploaded_file($_FILES['file']['tmp_name'], $dir . '/' . $name)) {
-            Flash::error('Could not save the uploaded file.');
-        } else {
-            Flash::ok("Uploaded \"$name\".");
-        }
-        self::backTo($domainId, $relPath);
+        $n > 0 && CacheService::purgeStatic((string) $domain['domain_name']); // visitors get the new files right away
+        $n > 0 && Flash::ok("Uploaded $n file" . ($n === 1 ? '' : 's') . '.');
+        $errors && Flash::error('Not uploaded: ' . implode(', ', array_slice($errors, 0, 10)));
+        self::backTo($domain, $dir);
     }
 
     public static function mkdir(): void
     {
-        Auth::requireRole(['user']);
-        Csrf::requireValid();
-        $me = Auth::user();
-        $domainId = (int) ($_POST['domain_id'] ?? 0);
-        $relPath = (string) ($_POST['path'] ?? '');
-        $domain = self::myDomain($domainId, $me['id']);
-
-        if ($domain) {
-            $dir = self::safeDir($domain['docroot'], $relPath);
-            try {
-                $name = self::safeName((string) ($_POST['name'] ?? ''));
-                if (!is_dir($dir . '/' . $name)) {
-                    mkdir($dir . '/' . $name, 02775);
-                    Flash::ok("Folder \"$name\" created.");
-                }
-            } catch (Throwable $e) {
-                Flash::error('Invalid folder name.');
-            }
+        [$domain, $dir] = self::context();
+        self::needSpace($domain, $dir);
+        try {
+            PoolClient::call((string) $domain['domain_name'], 'mkdir', ['dir' => $dir, 'name' => (string) ($_POST['name'] ?? '')]);
+            Flash::ok('Folder created.');
+        } catch (Throwable $e) {
+            Flash::error($e->getMessage());
         }
-        self::backTo($domainId, $relPath);
+        self::backTo($domain, $dir);
     }
 
-    public static function delete(): void
+    /** Bulk actions on the selected names[] in the current folder. */
+    public static function action(): void
     {
-        Auth::requireRole(['user']);
-        Csrf::requireValid();
-        $me = Auth::user();
-        $domainId = (int) ($_POST['domain_id'] ?? 0);
-        $relPath = (string) ($_POST['path'] ?? '');
-        $domain = self::myDomain($domainId, $me['id']);
-
-        if ($domain) {
-            $dir = self::safeDir($domain['docroot'], $relPath);
-            try {
-                $name = self::safeName((string) ($_POST['name'] ?? ''));
-                $target = $dir . '/' . $name;
-                if (is_dir($target) && !is_link($target)) {
-                    @rmdir($target); // only removes if empty - safety over convenience
-                } elseif (is_file($target) || is_link($target)) {
-                    @unlink($target);
-                }
-                Flash::ok("\"$name\" deleted.");
-            } catch (Throwable $e) {
-                Flash::error('Invalid file name.');
-            }
+        [$domain, $dir] = self::context();
+        $op = (string) ($_POST['op'] ?? '');
+        $names = array_values(array_filter(array_map('strval', (array) ($_POST['names'] ?? []))));
+        $name = (string) $domain['domain_name'];
+        $args = ['dir' => $dir, 'names' => array_slice($names, 0, 500)];
+        if (in_array($op, ['copy', 'compress', 'extract'], true)) {
+            self::needSpace($domain, $dir);
         }
-        self::backTo($domainId, $relPath);
+        try {
+            if (!$names) {
+                throw new InvalidArgumentException('Select at least one file or folder.');
+            }
+            $msg = match ($op) {
+                'delete' => (function () use ($name, $args) {
+                    PoolClient::call($name, 'delete', $args);
+                    return count($args['names']) . ' deleted.';
+                })(),
+                'move', 'copy' => (function () use ($name, $args, $op) {
+                    $res = PoolClient::call($name, $op, $args + ['dest' => (string) ($_POST['dest'] ?? '')]);
+                    return count($args['names']) . ($op === 'copy' ? ' copied' : ' moved') . ' to /' . $res['dest'] . '.';
+                })(),
+                'chmod' => 'Permissions changed on ' . (int) PoolClient::call($name, 'chmod', $args + [
+                    'file_mode' => (string) ($_POST['file_mode'] ?? '644'), 'dir_mode' => (string) ($_POST['dir_mode'] ?? '755'), 'recursive' => !empty($_POST['recursive']),
+                ])['count'] . ' item(s).',
+                'compress' => 'Created ' . PoolClient::call($name, 'compress', $args + ['dest' => trim((string) ($_POST['dest'] ?? ''))])['name'] . '.',
+                'extract' => 'Extracted ' . (int) PoolClient::call($name, 'extract', $args)['count'] . ' file(s).',
+                'rename' => (function () use ($name, $args) {
+                    PoolClient::call($name, 'rename', $args + ['dest' => (string) ($_POST['dest'] ?? '')]);
+                    return 'Renamed.';
+                })(),
+                default => throw new InvalidArgumentException('Unknown action.'),
+            };
+            CacheService::purgeStatic($name); // visitors get the changed files right away
+            Flash::ok($msg);
+        } catch (Throwable $e) {
+            Flash::error($e->getMessage());
+        }
+        self::backTo($domain, $dir);
     }
 
+    /** One file as-is; several (or a folder) as a zip. Streamed from the pool. */
     public static function download(): void
     {
-        Auth::requireRole(['user']);
-        $me = Auth::user();
-        $domainId = (int) ($_GET['domain_id'] ?? 0);
-        $relPath = (string) ($_GET['path'] ?? '');
-        $name = (string) ($_GET['name'] ?? '');
-        $domain = self::myDomain($domainId, $me['id']);
-
-        if (!$domain) {
-            http_response_code(404);
-            exit;
-        }
-        $dir = self::safeDir($domain['docroot'], $relPath);
+        [$domain, $dir] = self::context(false);
+        $names = array_values(array_filter(array_map('strval', (array) ($_GET['names'] ?? ($_GET['name'] ?? [])))));
         try {
-            $safeName = self::safeName($name);
+            if (!$names) {
+                throw new InvalidArgumentException('Nothing selected.');
+            }
+            $zipName = $domain['domain_name'] . '-files.zip';
+            PoolClient::stream((string) $domain['domain_name'], 'download', ['dir' => $dir, 'names' => $names], function (array $h) use ($zipName): void {
+                $file = rawurldecode((string) ($h['x-jp-name'] ?? 'download'));
+                $file = $file === 'download.zip' ? $zipName : basename($file);
+                header('Content-Type: ' . ($h['content-type'] ?? 'application/octet-stream'));
+                header('Content-Disposition: attachment; filename="' . addcslashes($file, '"\\') . '"');
+                if (isset($h['content-length'])) {
+                    header('Content-Length: ' . (int) $h['content-length']);
+                }
+            }, function (string $chunk): void {
+                echo $chunk;
+                flush();
+            });
+            exit;
         } catch (Throwable $e) {
-            http_response_code(400);
-            exit;
+            if (headers_sent()) {
+                exit;
+            }
+            Flash::error($e->getMessage());
+            self::backTo($domain, $dir);
         }
-        $file = $dir . '/' . $safeName;
-        if (!is_file($file)) {
-            http_response_code(404);
-            exit;
-        }
-
-        header('Content-Type: application/octet-stream');
-        header('Content-Disposition: attachment; filename="' . $safeName . '"');
-        header('Content-Length: ' . filesize($file));
-        readfile($file);
-        exit;
     }
 
-    private static function backTo(int $domainId, string $relPath): void
+    /** Old single-item delete form (kept for bookmarks/older views). */
+    public static function delete(): void
     {
-        header('Location: /cpanel/files?domain_id=' . $domainId . '&path=' . rawurlencode($relPath));
+        $_POST['op'] = 'delete';
+        $_POST['names'] = [(string) ($_POST['name'] ?? '')];
+        self::action();
+    }
+
+    /** Over the disk quota nothing new may be written (deleting and moving still work). */
+    private static function needSpace(array $domain, string $dir): void
+    {
+        try {
+            Quota::requireDiskSpace((int) $domain['user_id']);
+        } catch (RuntimeException $e) {
+            Flash::error($e->getMessage());
+            self::backTo($domain, $dir);
+        }
+    }
+
+    private static function backTo(array $domain, string $relPath): never
+    {
+        header('Location: /cpanel/files?domain_id=' . (int) $domain['id'] . '&path=' . rawurlencode($relPath));
         exit;
     }
 }

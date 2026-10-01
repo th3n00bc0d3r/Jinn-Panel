@@ -51,6 +51,11 @@ if ($explicit || !DnsService::hasStoredNameservers()) {
 
 DnsService::ensureServerZone();
 
+// Subdomain sites used to get a zone of their own (see DnsService::createZone).
+foreach (DnsService::mergeSubdomainZones() as $line) {
+    fwrite(STDERR, "DNS: $line\n");
+}
+
 $legacy = Database::app()->query(
     'SELECT d.domain_name FROM domains d LEFT JOIN dns_zones z ON z.zone_name = d.domain_name WHERE z.id IS NULL'
 )->fetchAll(PDO::FETCH_COLUMN);

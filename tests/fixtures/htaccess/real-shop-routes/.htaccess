@@ -1,0 +1,98 @@
+RewriteEngine On
+RewriteBase /
+
+ErrorDocument 404 /404.php
+
+<IfModule LiteSpeed>
+  CacheLookup on
+
+  RewriteRule ^(login|logout|checkout|thank-you|payment-(success|cancel|failure)|myaccount|myadmin|api)(/.*)?$ - [E=Cache-Control:no-cache]
+
+  RewriteRule \.php$ - [E=Cache-Control:no-cache]
+</IfModule>
+
+<IfModule mod_expires.c>
+    ExpiresActive On
+
+    ExpiresByType font/otf             "access plus 1 year"
+    ExpiresByType font/woff            "access plus 1 year"
+    ExpiresByType font/woff2           "access plus 1 year"
+    ExpiresByType application/font-woff "access plus 1 year"
+
+    ExpiresByType text/css             "access plus 1 year"
+    ExpiresByType application/javascript "access plus 1 year"
+    ExpiresByType text/javascript      "access plus 1 year"
+
+    ExpiresByType image/jpeg           "access plus 1 year"
+    ExpiresByType image/png            "access plus 1 year"
+    ExpiresByType image/webp           "access plus 1 year"
+    ExpiresByType image/svg+xml        "access plus 1 year"
+    ExpiresByType image/x-icon         "access plus 1 year"
+
+    ExpiresByType text/html            "access plus 1 hour"
+</IfModule>
+
+<IfModule mod_headers.c>
+    <FilesMatch "\.(otf|woff|woff2|ttf|eot)$">
+        Header set Cache-Control "public, max-age=31536000, immutable"
+    </FilesMatch>
+    <FilesMatch "\.(css|js)$">
+        Header set Cache-Control "public, max-age=31536000, immutable"
+    </FilesMatch>
+    <FilesMatch "\.(jpg|jpeg|png|webp|gif|svg|ico)$">
+        Header set Cache-Control "public, max-age=31536000, immutable"
+    </FilesMatch>
+</IfModule>
+
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+RewriteRule ^myadmin/([a-zA-Z0-9_-]+)$ myadmin/$1.php [L,QSA]
+
+RewriteRule ^api/(.*)$ includes/api.php [L,QSA]
+
+RewriteRule ^collection/?$ collection.php [L,QSA]
+RewriteRule ^collection/categories/([a-zA-Z0-9\-]+)$ collection.php?categories[]=$1 [L,QSA]
+RewriteRule ^collection/([a-zA-Z0-9\-]+)$ product.php?slug=$1 [L,QSA]
+
+RewriteRule ^cart/?$ cart.php [L,QSA]
+
+RewriteRule ^auth/google-callback$ auth/google-callback.php [L,QSA]
+
+RewriteRule ^login/?$ login.php [L,QSA]
+RewriteRule ^checkout/?$ checkout.php [L,QSA]
+RewriteRule ^thank-you/([0-9]+)$ order-confirm.php?order_id=$1 [L,QSA]
+
+RewriteRule ^payment-success/([0-9]+)$ ziina-payment-success.php?order_id=$1 [L,QSA]
+RewriteRule ^payment-cancel/([0-9]+)$ ziina-payment-cancel.php?order_id=$1 [L,QSA]
+RewriteRule ^payment-failure/([0-9]+)$ ziina-payment-failure.php?order_id=$1 [L,QSA]
+
+RewriteRule ^myaccount/?$ myaccount.php [L,QSA]
+RewriteRule ^myaccount/update-profile/?$ update-profile.php [L,QSA]
+RewriteRule ^logout/?$ logout.php [L,QSA]
+RewriteRule ^myaccount/orders/?$ orders.php [L,QSA]
+RewriteRule ^myaccount/orders/([0-9]+)$ order-details.php?order_id=$1 [L,QSA]
+RewriteRule ^order-details/?$ order-details.php [L,QSA]
+RewriteRule ^order-details/([0-9]+)$ order-details.php?order_id=$1 [L,QSA]
+
+RewriteRule ^blog/?$ blog.php [L,QSA]
+RewriteRule ^blog/([a-zA-Z0-9-_]+)/?$ blog-detail.php?slug=$1 [L,QSA]
+
+RewriteRule ^contact/?$ contact.php [L,QSA]
+
+RewriteRule ^careers/?$ careers.php [L,QSA]
+
+RewriteRule ^testimonials/?$ testimonials.php [L,QSA]
+RewriteRule ^reviews/?$ testimonials.php [L,QSA]
+RewriteRule ^submit-testimonial/?$ submit-testimonial.php [L,QSA]
+
+RewriteRule ^terms-conditions/?$ page.php?slug=terms-conditions [L,QSA]
+RewriteRule ^privacy-policy/?$ page.php?slug=privacy-policy [L,QSA]
+RewriteRule ^returns-refunds/?$ page.php?slug=returns-refunds [L,QSA]
+RewriteRule ^shipping-delivery/?$ page.php?slug=shipping-delivery [L,QSA]
+RewriteRule ^faq/?$ page.php?slug=faq [L,QSA]
+RewriteRule ^about/?$ page.php?slug=about [L,QSA]
+RewriteRule ^contact-us/?$ page.php?slug=contact-us [L,QSA]
+
+RewriteRule ^([a-zA-Z0-9-]+)/?$ page.php?slug=$1 [L,QSA]

@@ -17,8 +17,10 @@
                 <?php foreach ($domains as $d): ?>
                 <tr class="hover:bg-slate-50/70">
                     <td class="px-5 py-3">
-                        <a href="https://<?= e($d['domain_name']) ?>" target="_blank" class="font-medium text-sky-700 hover:underline"><?= e($d['domain_name']) ?></a>
+                        <a href="/cpanel/domains/<?= (int) $d['id'] ?>" class="font-medium text-sky-700 hover:underline"><?= e($d['domain_name']) ?></a>
+                        <a href="https://<?= e($d['domain_name']) ?>" target="_blank" rel="noopener" class="ml-1 text-xs text-slate-400 hover:text-sky-700" title="Open the site">&#8599;</a>
                         <p class="text-xs text-slate-400 font-mono mt-0.5"><?= e($d['docroot']) ?></p>
+                        <p class="text-xs text-slate-400 mt-0.5">Panel: <span class="font-mono"><?= e($d['domain_name']) ?>/jpanel</span></p>
                     </td>
                     <td class="px-5 py-3">
                         <span class="text-xs font-medium <?= $d['dns_provisioned'] ? 'text-emerald-700' : 'text-amber-700' ?>"><?= $d['dns_provisioned'] ? 'Provisioned' : 'Pending' ?></span>
@@ -44,6 +46,11 @@
                                 <option value="letsencrypt" <?= $d['ssl_mode'] === 'letsencrypt' ? 'selected' : '' ?>>AutoSSL (Let's Encrypt)</option>
                             </select>
                         </form>
+                        <?php $st = $d['ssl']['state']; ?>
+                        <p class="mt-1 text-xs font-medium <?= $st === 'ok' ? 'text-emerald-700' : ($st === 'no_dns' ? 'text-red-700' : 'text-amber-700') ?>" title="<?= e($d['ssl']['detail']) ?>">
+                            <?= e($d['ssl']['label']) ?>
+                        </p>
+                        <p class="text-xs text-slate-400 max-w-xs"><?= e($d['ssl']['detail']) ?></p>
                     </td>
                     <td class="px-5 py-3 text-right">
                         <form method="post" action="/cpanel/domains/<?= (int) $d['id'] ?>/delete" data-confirm="Remove <?= e($d['domain_name']) ?>? Files on disk are kept.">
@@ -81,8 +88,9 @@
             <div>
                 <label class="block text-xs font-medium text-slate-600 mb-1">SSL</label>
                 <select name="ssl_mode" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sky-500">
-                    <option value="self_signed">Self-signed (works immediately, browser warns once)</option>
-                    <option value="letsencrypt">AutoSSL - Let's Encrypt (needs public DNS + port 80/443)</option>
+                    <option value="auto" selected>Automatic - Let's Encrypt once the domain points here</option>
+                    <option value="letsencrypt">Let's Encrypt now (the domain must already point here)</option>
+                    <option value="self_signed">Self-signed only (browsers warn)</option>
                 </select>
             </div>
 

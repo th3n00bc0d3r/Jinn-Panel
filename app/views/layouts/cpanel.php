@@ -7,6 +7,9 @@ $navItems = [
     ['href' => '/cpanel/ftp', 'label' => 'FTP / SFTP', 'icon' => 'folder-up'],
     ['href' => '/cpanel/dns', 'label' => 'DNS Zones', 'icon' => 'server'],
     ['href' => '/cpanel/files', 'label' => 'File Manager', 'icon' => 'folder'],
+    ['href' => '/cpanel/cron', 'label' => 'Cron Jobs', 'icon' => 'clock'],
+    ['href' => '/cpanel/cache', 'label' => 'Cache', 'icon' => 'bolt'],
+    ['href' => '/cpanel/backups', 'label' => 'Backups', 'icon' => 'download'],
 ];
 $badge = 'cPanel';
 $accent = 'sky';

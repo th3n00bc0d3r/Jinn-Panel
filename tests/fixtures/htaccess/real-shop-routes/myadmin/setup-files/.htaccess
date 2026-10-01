@@ -1,0 +1,16 @@
+Order Deny,Allow
+Deny from all
+
+<RequireAll>
+    Require all denied
+</RequireAll>
+
+<Files "*.php">
+    Order Deny,Allow
+    Deny from all
+</Files>
+
+<Files "*.sql">
+    Order Deny,Allow  
+    Deny from all
+</Files>

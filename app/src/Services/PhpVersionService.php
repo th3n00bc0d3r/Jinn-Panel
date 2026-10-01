@@ -2,25 +2,23 @@
 declare(strict_types=1);
 
 /**
- * Manages additional PHP versions as fully isolated FrankenPHP instances,
- * installed/removed via hostpanel-worker.php (each version's shared lib has
- * a version-specific SONAME, so they coexist without touching the default
- * install). Domains on a non-default version get reverse-proxied to their
- * instance's loopback port by the main FrankenPHP - see VhostService.
+ * Additional PHP versions for sites: each is its own PHP-FPM master
+ * (jinnpanel-php-fpm@<82|83|84>) with its binaries and extensions in
+ * /opt/php-versions/<version>, installed/removed by hostpanel-worker.php
+ * from the static-php repo's packages without touching the default
+ * install. A domain on a version gets its account's pool in that master -
+ * see VhostService and AccountRuntime.
  */
 final class PhpVersionService
 {
-    /** 8.5 is the default/main instance already running; 8.6 is still beta upstream. */
+    /** 8.5 is the default (the packaged php-zts); 8.6 is still beta upstream. */
     public const SUPPORTED = ['8.2', '8.3', '8.4'];
+    public const DIR = '/opt/php-versions';
 
-    public static function port(string $version): int
+    /** php_versions.port is NOT NULL UNIQUE; it no longer means anything (no TCP listeners). */
+    private static function placeholderPort(string $version): int
     {
         return 9000 + (int) str_replace('.', '', $version);
-    }
-
-    public static function adminPort(string $version): int
-    {
-        return 2000 + (int) str_replace('.', '', $version);
     }
 
     public static function installed(): array
@@ -47,17 +45,10 @@ final class PhpVersionService
             throw new RuntimeException('That version is already installed or installing.');
         }
 
-        $port = self::port($version);
-        $adminPort = self::adminPort($version);
         $stmt = $pdo->prepare("INSERT INTO php_versions (version, port, status) VALUES (?, ?, 'installing')");
-        $stmt->execute([$version, $port]);
+        $stmt->execute([$version, self::placeholderPort($version)]);
 
-        SystemWorkerService::enqueue("phpver-install-{$version}", [
-            'type' => 'install_php_version',
-            'version' => $version,
-            'port' => $port,
-            'admin_port' => $adminPort,
-        ]);
+        SystemWorkerService::enqueue("phpver-install-{$version}", ['type' => 'install_php_version', 'version' => $version]);
     }
 
     public static function remove(string $version): void

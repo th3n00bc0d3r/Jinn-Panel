@@ -5,7 +5,7 @@ working on the codebase: what JinnPanel is, how it's put together, the
 conventions to follow, and where it stands. Deeper detail lives in `docs/`
 (ARCHITECTURE, FEATURES, INSTALL, MIGRATION, TROUBLESHOOTING, ICONS).
 
-Last reviewed: 2026-09-30.
+Last reviewed: 2026-10-01.
 
 ## What it is
 
@@ -14,14 +14,16 @@ AlmaLinux 10 server:
 
 - **WHM side** (`/whm/*`, roles `admin` and `reseller`): accounts, packages,
   resellers, cPanel migration, server config (mail, SFTP, PHP, MariaDB,
-  tuning), multi-PHP versions, service status and logs.
+  tuning), multi-PHP versions, backups, activity log, service status and logs.
 - **cPanel side** (`/cpanel/*`, role `user`): domains (vhost + DNS +
   SSL mode + PHP version), MySQL databases, mailboxes, SFTP accounts, file
-  manager, DNS zone view, quota bars.
+  manager, DNS zone editor, cron, cache, backups, quota bars.
 
-The stack is FrankenPHP (Caddy + embedded PHP 8.5) serving both the panel
-and every customer site, MariaDB, Stalwart Mail (JMAP admin API), SFTPGo
-(REST API), and Knot DNS. It is installed by `installer/install.sh`.
+The stack is FrankenPHP (Caddy + embedded PHP 8.5) serving the panel and
+every site's TLS/static files, PHP-FPM running each hosting account's PHP
+as that account's own Linux user, MariaDB, Stalwart Mail (JMAP admin API),
+SFTPGo (REST API), Knot DNS and Valkey. It is installed by
+`installer/install.sh`.
 
 ## Code layout
 
@@ -39,9 +41,14 @@ app/
   views/                    plain PHP templates; layouts/ (whm, cpanel, auth, blank)
   migrations/               schema.sql (idempotent, re-applied by install.sh) + upgrade scripts
   worker/hostpanel-worker.php  root worker, run every 5s by a systemd timer
+                               (also: `sync-accounts`, `backup <id>`, `restore`, `backup-all`)
   worker/migration-runner.php  cPanel migration runner (transient systemd unit)
-  storage/config-queue/     job files for the root worker
-  storage/logs/             app.log, worker-*.log, live-*.log, migration-<id>.log
+  runtime/pool-agent.php    file work run inside an account's PHP-FPM pool (PoolClient)
+  runtime/dispatch.php      per-site PHP settings + page cache (auto_prepend_file)
+  storage/config-queue/     signed job files for the root worker
+  storage/logs/             app.log, reload.log, migration-<id>.log
+/var/lib/jinnpanel/worker/  what the root worker writes back: worker-*.log, live-*.log
+tests/                      UnitTest.php (no deps), HtaccessTranslatorTest.php (needs frankenphp)
 installer/install.sh        full server install; safe to re-run (re-deploys the app)
 docs/                       user/operator documentation
 ```
@@ -69,21 +76,37 @@ Scoping rules used everywhere: a `user` only ever touches rows with
 
 ## Privilege model (important)
 
-- The panel **and all customer sites** run inside the same FrankenPHP
-  process as the `frankenphp` user (group `webusers`). Sites are
-  `php_server` blocks in `/var/lib/frankenphp/sites-enabled/*.caddyfile`;
-  alternative PHP versions are separate FrankenPHP instances on loopback
-  ports (9082, 9083, ...) that the main instance reverse-proxies to.
-- Anything that needs root (writing `/etc`, `systemctl`, `knotc`, installing
-  PHP versions, starting migration runners) goes through a **job file** in
-  `storage/config-queue/` that `hostpanel-worker.php` (root) validates and
-  executes. Enqueue with `SystemWorkerService::enqueue($label, $job)`.
+- The **panel** runs in FrankenPHP as `frankenphp`. Static files of a site
+  come from its account's own nginx (`jinnpanel-static@<username>`, as the
+  account, per-domain response cache) - Caddy only routes to it. Each **hosting account**
+  is a Linux user `jp_<username>` that owns `/var/www/<domain>` (0750 + an
+  ACL for frankenphp) and whose sites' PHP runs in its own PHP-FPM pool
+  (`jinnpanel-php-fpm@<default|82|...>`, socket
+  `/run/jinnpanel-php/<tag>/<username>.sock`, open_basedir to its own
+  folders, exec & co. disabled unless WHM allows it). Vhosts in
+  `/var/lib/frankenphp/sites-enabled/` say `php_fastcgi <socket>` +
+  `file_server`. Built by the worker's `accountSync` (`AccountRuntime::sync()`
+  after any account/domain change). Details: docs/ARCHITECTURE.md
+  "Customer isolation".
+- The panel **can only read** customer files. File work on them goes
+  through `PoolClient::call($domain, $op, $args)` -> the account's pool ->
+  `runtime/pool-agent.php` (as the account). Don't write into site folders
+  from panel code; add an agent op instead.
+- Anything that needs root (writing `/etc`, `systemctl`, `knotc`, accounts'
+  users/pools/folders, installing PHP versions, starting migration runners
+  and backups) goes through a **signed job file** in `storage/config-queue/`
+  that `hostpanel-worker.php` (root) validates and executes. Enqueue with
+  `SystemWorkerService::enqueue($label, $job)`; the worker writes results to
+  `/var/lib/jinnpanel/worker/` (`SystemWorkerService::lastLog()/output()`).
+  New job types: carry ids, read the rest from the DB, validate every value.
 - Why the queue exists: FrankenPHP is sandboxed (`ProtectSystem=full`,
   SELinux denies D-Bus), and forking from FrankenPHP to connect to Knot's
   Unix socket fails with EPERM. Never call privileged commands directly
   from a request.
 - Config reloads: `VhostService::reload()` fires a detached
-  `frankenphp reload` (a synchronous reload from inside a request deadlocks).
+  `frankenphp reload --address unix//run/frankenphp/admin.sock` (a
+  synchronous reload from inside a request deadlocks; Caddy's admin API is
+  only on that socket).
 - Databases: `Database::app()` = `hostpanel_app` (panel schema only);
   `Database::provisioning()` = `hostpanel_prov` (creates/drops customer
   databases and users; it can only grant `ProvisioningService::GRANT_SET`).
@@ -99,7 +122,9 @@ ssl_mode, `mail_domain_id`), `db_instances` (db_name unique, db_user not
 unique), `db_user_accounts` (extra MySQL users an account owns),
 `email_accounts` (`mail_account_id` = Stalwart id), `ftp_accounts`,
 `php_versions`, `migrations` + `migration_items` (cPanel migration),
-`activity_log` (present but not written to yet).
+`activity_log` (audit trail: `Audit::log()`, and every flashed POST outcome
+automatically - see `Flash::set`), `login_attempts`, `account_usage`
+(UsageService, hourly), `backups`, `panel_settings`.
 
 Schema changes: add them to `schema.sql` **idempotently** (`CREATE TABLE IF
 NOT EXISTS`, conditional DDL through `information_schema` + `PREPARE`, as in
@@ -132,8 +157,11 @@ the `db_user` index change) and also ship an upgrade file in
   `/root/.jinnpanel/app_key`), re-applies the schema, rebuilds Tailwind, and
   re-deploys the worker to `/usr/local/bin/hostpanel-worker.php` (worker
   changes only take effect after a re-run).
-- First run: `/setup` creates the first admin account; it disables itself
-  once an admin exists.
+- First run: `/setup` creates the first admin account with the one-time
+  token install.sh prints (also `/root/.jinnpanel/setup_token`); it disables
+  itself once an admin exists.
+- Tests: `php tests/UnitTest.php`, `php tests/HtaccessTranslatorTest.php`;
+  CI (`.github/workflows/ci.yml`) lints every PHP file and runs both.
 - Logs: `app/storage/logs/` on the server (`/var/www/hostpanel/storage/logs`),
   `journalctl -u frankenphp|stalwart|sftpgo|knot|mariadb`,
   `journalctl -u jinnpanel-migration-<id>`.
@@ -147,6 +175,35 @@ the `db_user` index change) and also ship an upgrade file in
   `AccountCleanupService`). Tested against a real MariaDB with a synthetic
   cPanel backup; **not yet run against a real cPanel server**.
 - Account deletion and migration rollback share `AccountCleanupService::purge()`.
+
+## Moving parts added on 2026-10-01 (TODO.md has the why)
+
+- **Timers/units** (installer): `hostpanel-worker.timer` (root jobs, 5 s),
+  `jinnpanel-mail-dns.timer` (daily: `mail-dns-sync.php` - mail DNS records,
+  autoconfig/MTA-STS site, Stalwart's TLS cert from Caddy's, 587 listener,
+  pending mail-domain deletes - and `ssl-sync.php`, Let's Encrypt up/down),
+  `jinnpanel-cron.timer` (customer cron jobs, every minute, `KillMode=process`),
+  `jinnpanel-webmail.service` (Cypht, own FrankenPHP as user `webmail` on
+  127.0.0.1:8009 - Cypht putenv()s, which would leak into shared sites),
+  `valkey` (object cache, loopback, ACL user per account), transient
+  `jinnpanel-s3-fetch-<id>` units.
+- **Per-site runtime**: server-wide `auto_prepend_file`
+  (`app/runtime/dispatch.php` -> `/var/lib/frankenphp/site-ini/_dispatch.php`)
+  includes `site-ini/<domain>.php` (PhpSettingsService: ini_set()s, returns
+  the page-cache TTL) and `_pagecache.php`. CLI (cron) passes
+  `JINNPANEL_DOCROOT` because the CLI blanks DOCUMENT_ROOT.
+- **Routes**: `site-rules/<domain>.caddy` / `.site.caddy` are root-owned and
+  written only by the worker's `routes_apply` (re-validates with
+  `HtaccessTranslator::validate`, `frankenphp validate`, restores on failure).
+  Tests: `php tests/HtaccessTranslatorTest.php` (needs frankenphp).
+- **Mail**: Stalwart 0.16 takes no credentials in an Account create (create,
+  then patch `credentials/0`; one password per account). Panel acts as a
+  mailbox via the master login `<address>%<admin>`. Forwarders = mailing
+  lists (non-mailbox) or the mailbox's single panel Sieve script, which also
+  holds the autoresponder (Stalwart runs one active script).
+- **Domains**: `domains.docroot` is honoured (VhostService::effectiveDocroot),
+  aliases in `domain_aliases`, `<domain>/jpanel` -> `<domain>:2083` (panel per
+  domain; site blocks strip the panel session cookie).
 
 ## DNS zones (branch `dns-management`)
 
@@ -167,6 +224,14 @@ the `db_user` index change) and also ship an upgrade file in
   `/var/lib/knot` (knot:knot 0755). Don't use `knotc zone-check` as a
   validator either - on Knot 3.5 it reports "no such zone" even for loaded
   zones.
+- Zones are registered with `knotc conf-set`, which only changes Knot's
+  memory (knot.conf is a text file, not a confdb). After every conf-*
+  transaction the worker writes the live zone list to `/etc/knot/zones.conf`,
+  which knot.conf includes (`include: "zones.conf"`, added by the installer).
+  Without it a Knot restart or a reboot loads 0 zones and every hosted domain
+  - the server hostname too - stops resolving (it happened on 2026-10-01).
+  `knotc conf-export` is no substitute: it exports knotc's view of the file,
+  not the running server's zones.
 - UI: WHM > DNS Zones (`WhmDnsController`, `views/whm/dns.php`,
   `views/whm/dns_zone.php`), admin only. cPanel > DNS is read-only and
   renders from the DB.
@@ -199,101 +264,52 @@ publicly, WHM > DNS Zones renders):
   the const was declared after the job loop (top-level `const` isn't hoisted
   like functions). It now sits with the other constants at the top.
 
-Still open:
+Since done (2026-10-01): cPanel > DNS is an editor for the customer's own
+zones (the server's own names in the server zone stay WHM-only); AAAA
+records next to every A record pointing here; DNS records are imported from
+cPanel zone files during migration; subdomain sites are records in their
+parent zone. Records the panel keeps in sync itself carry
+`dns_records.managed` ('mail', 'ipv6', 'site') - `DnsService::syncManaged()`
+replaces a tag's set, and a customer record with the same name wins.
 
-1. Not yet: record editing for cPanel users (own domains), AAAA for the
-   server's own names, importing DNS records during cPanel migration.
+## Production readiness
 
-## Production readiness (review of 2026-09-30)
+The security review of 2026-09-30 listed 19 items. Status after the work of
+2026-10-01 (branch `migration-file-import`):
 
-Verdict: **not ready for production with untrusted customers.** It is a
-solid, well-structured beta that works for a single operator hosting their
-own sites. The blockers below are architectural, not cosmetic; fix the
-Critical ones before any customer (or reseller) gets an account.
+| # | Item | Status |
+|---|---|---|
+| 1 | No isolation between customers / customers and the panel | **Fixed**: per-account Linux users + PHP-FPM pools, panel file work inside the pool, Config.php 0640 root:frankenphp, panel code root-owned (docs/ARCHITECTURE.md "Customer isolation") |
+| 2 | Root worker trusts a customer-writable queue | **Fixed**: customers no longer run as frankenphp; jobs are HMAC-signed, plain files of frankenphp/root only, every job type validates its input (settings: fixed key list + value shapes); root writes only to root-owned `/var/lib/jinnpanel/worker/`; root's PHP runs with `auto_prepend_file=` empty |
+| 3 | Reserved usernames | **Fixed**: `Usernames` (reserved names, `hostpanel*`/`mysql*`/`pma*` prefixes, lowercase, existing system users) - accounts, resellers, migrations |
+| 4 | Admin APIs on the internet (8080/8090) | **Open by the owner's choice** (2026-10-01: leave 8080/8090/9090 open). Caddy's admin API (127.0.0.1:2019, unauthenticated) moved to a Unix socket |
+| 5 | Panel over http://, tls internal | **Fixed**: http:// redirects to https (308), real certificate once DNS resolves (already the case here), cookies always Secure, HSTS on the panel host |
+| 6 | No throttling/2FA, 8-char passwords | **Fixed**: `LoginThrottle`, TOTP two-factor for all roles (WHM/cPanel > shield icon; admins can reset), 10+ chars and no common passwords (`Passwords`) |
+| 7 | /setup open until the first admin | **Fixed**: one-time setup token from install.sh |
+| 8 | Suspension only blocks login | **Fixed**: `SuspensionService` - sites 503 + pools stopped, mail logins off (Stalwart `authenticate` permission), SFTP off, MySQL users locked, Valkey login off, cron skipped, sessions ended |
+| 9 | Quotas counted, not enforced; resellers unlimited | **Fixed (soft) / hard with XFS quotas**: `UsageService` measures files+DBs+mail and monthly bandwidth hourly; over disk -> uploads/new DBs/mailboxes/domains refused; over bandwidth -> sites 509; resellers limited by `packages.max_accounts`. Hard per-user limits: XFS user quotas (`JINNPANEL_XFS_QUOTA=1` adds `rootflags=uquota`; on this server since 2026-10-01, active after the next reboot), applied at boot (`jinnpanel-usage-boot`) and hourly as each account's package disk quota on its Linux user (files; DBs/mail are counted softly) |
+| 10 | Domains not verified | **Fixed (policy)**: `DomainPolicy` refuses the server's names, names under/above another account's domain, public suffixes and the most impersonated domains. Ownership is proven by DNS (Let's Encrypt only issues when it points here) |
+| 11 | No backups | **Fixed**: `BackupService` - daily per-account (files, DBs, mail via IMAP) + server (panel DB, configs), retention, optional S3 copy, restore per part, customer downloads (WHM/cPanel > Backups) |
+| 12 | DNS: ns1.<domain>, one NS, no SPF/DKIM/DMARC | **Fixed** earlier (DNS work): ns1/ns2 of the server zone, SPF, DKIM (RSA + Ed25519), DMARC on every mail domain |
+| 13 | Role cached in the session | **Fixed**: role read from the DB on every request; `session_version` ends other sessions on password/2FA changes and suspension |
+| 14 | No security headers; GET logout; / for users | **Fixed**: CSP, X-Frame-Options, nosniff, Referrer-Policy, Permissions-Policy, COOP; logout is a POST; / already sent users to /cpanel |
+| 15 | No audit trail | **Fixed**: `activity_log` written for sign-ins and every panel action (`Flash::set` records each POST outcome, `Audit::log` the rest); WHM > Activity Log |
+| 16 | File manager follows symlinks | **Was already fixed** (realpath containment); now also runs as the account |
+| 17 | Dynamic Tailwind classes | **Was already fixed** (safelist in tailwind.config.js) |
+| 18 | No tests/CI | **Fixed**: tests/UnitTest.php (TOTP RFC vectors, archives, FastCGI, rules rewrite, cron, ...), tests/HtaccessTranslatorTest.php, GitHub Actions CI |
+| 19 | Migration vs a real cPanel server; Stalwart hashes; SFTPGo SCP | **Partly**: Stalwart verified to accept imported `$6$`, `$1$` and bcrypt hashes; SFTPGo has `scp` enabled; a live cPanel source server was not available to test against |
 
-### Critical - customer code can take over the server
+Known limits of the isolation (worth knowing before letting strangers host):
 
-1. **No isolation between customers, or between customers and the panel.**
-   All sites execute as `frankenphp`, the same user that owns the panel code
-   and `src/Config.php` (mode 664). Any customer PHP script can read
-   `Config.php` (DB provisioning credentials with `CREATE USER`/`GRANT`,
-   Stalwart and SFTPGo admin passwords, `APP_KEY`), read every other
-   customer's files and sessions (hijack an admin session), rewrite panel
-   code, write Caddy fragments in `sites-enabled/`, and drop job files into
-   `config-queue/`. Needed: per-account Linux users with per-account PHP
-   workers (e.g. separate FrankenPHP instances or PHP-FPM pools running as
-   the account user), `open_basedir`/`disable_functions` as defence in depth,
-   the panel on its own instance/user, `Config.php` 0640 root:frankenphp.
-2. **Root worker trusts a directory customers can write to.**
-   `hostpanel-worker.php` (root) executes whatever job files appear in
-   `storage/config-queue/` and writes `worker-<label>.log` / `live-*.log` into
-   `storage/logs/` - both writable by `frankenphp`, i.e. by customer code.
-   A planted symlink in `storage/logs/` makes root write attacker-controlled
-   text to any file (e.g. `/etc/cron.d/*`), and `set_ini` accepts any ini key
-   and unvalidated values (`auto_prepend_file`, newline injection), which
-   also reaches the root worker's own PHP CLI if it reads the same php.ini.
-   Needed: root-owned queue/log dirs written via a root-owned setgid helper
-   or a Unix socket with peer-credential checks, `O_NOFOLLOW`/no symlinks for
-   root writes, strict per-key value validation for every job type, and
-   authenticated jobs (HMAC with a key customers can't read).
-3. **Reserved usernames aren't blocked.** An account named `hostpanel`
-   gets `/var/www/hostpanel` (the panel itself) as its SFTP home, and its
-   database `app` would be user `hostpanel_app` - the panel's own DB user,
-   which deleting that database then drops (panel outage). Block
-   `hostpanel`, `root`, `mysql`, `admin`, service/system user names, and
-   any name whose `<name>_...` prefix collides with `hostpanel_*`; make
-   usernames lowercase only.
-4. **Admin APIs exposed to the internet over plain HTTP.** `install.sh`
-   opens 8080 (Stalwart HTTP: web admin + JMAP) and 8090 (SFTPGo web admin +
-   REST API) in the firewall. Keep both on 127.0.0.1 (or behind the panel's
-   TLS with an allow-list); expose only real mail/SFTP ports.
+- (Fixed 2026-10-01) Static files used to be served by Caddy as
+  `frankenphp`, which can read every account's files; they now come from
+  each account's own static server (nginx as the account, links to others'
+  files refused), so a symlink reaches nothing the account can't read.
+- SFTPGo now holds CAP_DAC_OVERRIDE/CHOWN/FOWNER (to write as the account),
+  so its admin API (8090, open on the internet by the owner's choice) is
+  close to root on files. Binding it to 127.0.0.1 is strongly recommended.
 
-### High
-
-5. The panel itself is also served on `http://` (login in clear text) and
-   uses `tls internal` (untrusted certificate). Redirect HTTP to HTTPS and use
-   a real certificate for the panel hostname; set `Secure` cookies always.
-6. No login throttling or lockout, no 2FA, 8-character minimum passwords.
-7. `/setup` is open to anyone until the first admin is created - the
-   installer should print a one-time setup token and require it.
-8. Suspending an account only blocks panel login: its sites, mailboxes and
-   SFTP keep working.
-9. Quotas are counted, not enforced: disk limits apply only to SFTP uploads;
-   web, database and mail usage are unlimited; bandwidth is not metered.
-   Resellers have no limit on how many accounts they create.
-10. Domains are not verified: a customer can add any domain (another
-   customer's subdomain, a well-known domain, even the panel hostname, which
-   produces a duplicate Caddy site and breaks reloads).
-11. No backups of customer data or of the panel database, and no restore.
-12. DNS zones use a per-domain `ns1.<domain>` (needs glue records at every
-   registrar), a single NS, and no SPF/DKIM/DMARC records even though
-   Stalwart generates DKIM keys - expect mail deliverability problems.
-
-### Medium / low
-
-13. `Auth::requireRole()` checks the role cached in the session; a role or
-    ownership change applies only after the user logs in again.
-14. No security headers (HSTS, CSP, X-Frame-Options, nosniff); logout is a
-    GET (CSRF-able); `/` sends logged-in `user` accounts to `/whm` (403).
-15. `activity_log` exists but nothing is written - no audit trail of
-    admin/reseller actions.
-16. File manager downloads follow symlinks (only harmful once #1 is fixed;
-    then it becomes the next escape - resolve and contain the file path too).
-17. Dynamic Tailwind classes in `views/partials/shell.php` (`$accent`) and
-    `whm/server_config/php_versions.php` (`$color`) may be purged from the
-    built CSS unless safelisted.
-18. No automated tests and no CI (only issue/PR templates in `.github/`).
-19. The cPanel migration has not been exercised against a real cPanel server,
-    Stalwart's acceptance of imported password hashes is unverified, and
-    SFTPGo's SCP support for push mode should be confirmed on the deployed
-    version.
-
-### Suggested order of work
-
-1. Isolation redesign (#1) together with the worker hardening (#2) - they
-   shape each other; decide the per-account runtime model first.
-2. Quick wins that are independent of that: #3, #4, #5, #7, #13, #14.
-3. Real multi-tenant features: suspension (#8), quota enforcement (#9),
-   domain verification (#10), backups (#11), DNS/mail records (#12),
-   audit log (#15).
-4. Test suite + CI (#18), then a real-server migration trial (#19).
+Still open (owner's side): rotating the root password, SSH password logins
+(kept on by choice; fail2ban added), restricting 8080/8090/9090, IPv6 rDNS
+at the provider, the reboot that turns XFS user quotas on, a migration trial
+against a real cPanel server.

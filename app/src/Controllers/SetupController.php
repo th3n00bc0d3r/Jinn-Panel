@@ -33,21 +33,40 @@ final class SetupController
         }
         Csrf::requireValid();
 
-        $username = trim((string) ($_POST['username'] ?? ''));
+        // The page is reachable by anyone until the admin exists: only the
+        // person who ran install.sh has the token it printed.
+        if (($wait = LoginThrottle::blockedFor('setup')) > 0) {
+            self::fail(["Too many wrong setup tokens. Try again in $wait minute(s)."], []);
+            return;
+        }
+        $expected = self::tokenHash();
+        $token = trim((string) ($_POST['setup_token'] ?? ''));
+        if ($expected === null) {
+            self::fail(['No setup token is set on this server - re-run installer/install.sh as root; it prints one.'], $_POST);
+            return;
+        }
+        if (!hash_equals($expected, hash('sha256', $token))) {
+            LoginThrottle::fail('setup');
+            Audit::log('setup.token_failed');
+            self::fail(['That setup token is not right. It was printed at the end of install.sh, and is saved in /root/.jinnpanel/setup_token.'], $_POST);
+            return;
+        }
+
+        $username = strtolower(trim((string) ($_POST['username'] ?? '')));
         $email = trim((string) ($_POST['email'] ?? ''));
         $fullName = trim((string) ($_POST['full_name'] ?? ''));
         $password = (string) ($_POST['password'] ?? '');
         $passwordConfirm = (string) ($_POST['password_confirm'] ?? '');
 
         $errors = [];
-        if (!preg_match('/^[a-z][a-z0-9_]{2,31}$/i', $username)) {
-            $errors[] = 'Username must be 3-32 characters: letters, numbers, underscore, starting with a letter.';
+        if (!preg_match('/^[a-z][a-z0-9_]{2,31}$/', $username)) {
+            $errors[] = 'Username must be 3-32 characters: lowercase letters, numbers, underscore, starting with a letter.';
         }
         if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
             $errors[] = 'Enter a valid admin email address.';
         }
-        if (strlen($password) < 10) {
-            $errors[] = 'Password must be at least 10 characters - this account controls the whole server.';
+        if (($problem = Passwords::problem($password, $username)) !== null) {
+            $errors[] = $problem . ' This account controls the whole server.';
         }
         if ($password !== $passwordConfirm) {
             $errors[] = 'Passwords do not match.';
@@ -66,10 +85,36 @@ final class SetupController
             'INSERT INTO users (username, email, password_hash, full_name, role, status) VALUES (?, ?, ?, ?, \'admin\', \'active\')'
         );
         $stmt->execute([$username, $email, password_hash($password, PASSWORD_BCRYPT), $fullName ?: null]);
+        $adminId = (int) Database::app()->lastInsertId();
+        Database::app()->exec("DELETE FROM panel_settings WHERE setting_key = 'setup_token_hash'");
+        LoginThrottle::clear('setup');
+        Audit::log('setup.admin_created', $username, $adminId, $adminId);
 
         Flash::ok('JinnPanel is set up. Sign in with the administrator account you just created.');
         header('Location: /login');
         exit;
+    }
+
+    /** sha256 of the one-time setup token install.sh generated, if any. */
+    private static function tokenHash(): ?string
+    {
+        try {
+            $s = Database::app()->query("SELECT setting_value FROM panel_settings WHERE setting_key = 'setup_token_hash'");
+            $v = $s->fetchColumn();
+            return is_string($v) && preg_match('/^[0-9a-f]{64}$/', $v) ? $v : null;
+        } catch (Throwable) {
+            return null;
+        }
+    }
+
+    /** @param array<string,mixed> $old */
+    private static function fail(array $errors, array $old): void
+    {
+        View::render('auth/setup', [
+            'server' => self::serverInfo(),
+            'errors' => $errors,
+            'old' => ['username' => (string) ($old['username'] ?? ''), 'email' => (string) ($old['email'] ?? ''), 'full_name' => (string) ($old['full_name'] ?? '')],
+        ], 'auth');
     }
 
     /** True once at least one admin account exists - the wizard never runs again after that. */

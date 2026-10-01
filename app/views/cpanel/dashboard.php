@@ -21,4 +21,24 @@
         <p class="font-medium text-slate-800">FTP / SFTP</p>
         <p class="text-xs text-slate-400 mt-0.5">File transfer accounts</p>
     </a>
+    <a href="/cpanel/files" class="bg-white rounded-xl border border-slate-200 shadow-sm p-5 hover:border-sky-300 hover:shadow transition-all">
+        <?= icon('folder', 'h-6 w-6 text-sky-500 mb-3') ?>
+        <p class="font-medium text-slate-800">File Manager</p>
+        <p class="text-xs text-slate-400 mt-0.5">Upload, edit, zip and unzip files</p>
+    </a>
+    <a href="/cpanel/dns" class="bg-white rounded-xl border border-slate-200 shadow-sm p-5 hover:border-sky-300 hover:shadow transition-all">
+        <?= icon('server', 'h-6 w-6 text-sky-500 mb-3') ?>
+        <p class="font-medium text-slate-800">DNS Zones</p>
+        <p class="text-xs text-slate-400 mt-0.5">Records for your domains</p>
+    </a>
+    <a href="/cpanel/cron" class="bg-white rounded-xl border border-slate-200 shadow-sm p-5 hover:border-sky-300 hover:shadow transition-all">
+        <?= icon('clock', 'h-6 w-6 text-sky-500 mb-3') ?>
+        <p class="font-medium text-slate-800">Cron Jobs</p>
+        <p class="text-xs text-slate-400 mt-0.5">Scheduled scripts and URLs</p>
+    </a>
+    <a href="/cpanel/cache" class="bg-white rounded-xl border border-slate-200 shadow-sm p-5 hover:border-sky-300 hover:shadow transition-all">
+        <?= icon('bolt', 'h-6 w-6 text-sky-500 mb-3') ?>
+        <p class="font-medium text-slate-800">Cache</p>
+        <p class="text-xs text-slate-400 mt-0.5">Page cache and object cache</p>
+    </a>
 </div>

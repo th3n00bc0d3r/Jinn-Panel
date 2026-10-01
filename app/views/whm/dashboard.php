@@ -2,16 +2,16 @@
     <?php if (Auth::isAdmin()): ?>
     <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
         <p class="text-xs font-medium text-slate-500 uppercase tracking-wide">Resellers</p>
-        <p class="mt-2 text-3xl font-semibold text-slate-900"><?= (int) $resellerCount ?></p>
+        <p class="mt-2 text-3xl font-semibold text-slate-900" data-countup><?= (int) $resellerCount ?></p>
     </div>
     <?php endif; ?>
     <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
         <p class="text-xs font-medium text-slate-500 uppercase tracking-wide">Hosting Accounts</p>
-        <p class="mt-2 text-3xl font-semibold text-slate-900"><?= (int) $userCount ?></p>
+        <p class="mt-2 text-3xl font-semibold text-slate-900" data-countup><?= (int) $userCount ?></p>
     </div>
     <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
         <p class="text-xs font-medium text-slate-500 uppercase tracking-wide">Domains Hosted</p>
-        <p class="mt-2 text-3xl font-semibold text-slate-900"><?= (int) $domainCount ?></p>
+        <p class="mt-2 text-3xl font-semibold text-slate-900" data-countup><?= (int) $domainCount ?></p>
     </div>
 </div>
 
