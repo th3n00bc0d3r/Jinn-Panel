@@ -152,6 +152,7 @@ final class DomainController
         }
         PhpSettingsService::remove((string) $domain['domain_name']);
         DomainAliasService::removeAll($domain);
+        CacheService::purgePages((string) $domain['domain_name']);
         $pdo->prepare('DELETE FROM email_accounts WHERE domain_id = ?')->execute([$id]);
 
         $del = $pdo->prepare('DELETE FROM domains WHERE id = ?');
@@ -372,7 +373,14 @@ final class DomainController
         $me = Auth::user();
         $d = self::owned($me, (int) ($params['id'] ?? 0));
         $n = CacheService::clearDomain($d);
-        Flash::ok("Cache cleared for {$d['domain_name']}" . ($n['opcache'] ? " ({$n['opcache']} cached PHP files" . ($n['pages'] !== null ? ", {$n['pages']} cached pages" : '') . ')' : '') . '.');
+        $parts = ["{$n['opcache']} cached PHP files"];
+        if ($n['pages'] !== null) {
+            $parts[] = "{$n['pages']} cached pages";
+        }
+        if ($n['objects'] !== null) {
+            $parts[] = "{$n['objects']} object cache keys";
+        }
+        Flash::ok("Cache cleared for {$d['domain_name']}: " . implode(', ', $parts) . '.');
         self::backTo($d);
     }
 

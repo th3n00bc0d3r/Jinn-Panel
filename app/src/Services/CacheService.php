@@ -16,7 +16,11 @@ final class CacheService
 {
     private const MAX_FILES = 50000;
 
-    /** @return array{opcache:int, pages:?int} counts of what was cleared (pages: null = no page cache) */
+    public const PAGE_CACHE_DIR = '/var/lib/jinnpanel-pagecache';
+    public const VALKEY_HOST = '127.0.0.1';
+    public const VALKEY_PORT = 6379;
+
+    /** @return array{opcache:int, pages:?int, objects:?int} counts of what was cleared (null = not in use) */
     public static function clearDomain(array $domain): array
     {
         $name = (string) $domain['domain_name'];
@@ -24,7 +28,133 @@ final class CacheService
         if (($domain['php_version'] ?? 'default') === 'default' && function_exists('opcache_invalidate')) {
             $opcache = self::invalidateTree(VhostService::siteDir($name));
         }
-        return ['opcache' => $opcache, 'pages' => null];
+        $pages = !empty($domain['page_cache_ttl']) || is_dir(self::pageDir($name)) ? self::purgePages($name) : null;
+        $objects = null;
+        $owner = self::owner((int) $domain['user_id']);
+        if ($owner && !empty($owner['cache_secret_enc'])) {
+            try {
+                $objects = Valkey::admin()->deleteMatching(self::prefix($owner['username']) . $name . ':*');
+            } catch (Throwable $e) {
+                error_log('object cache clear: ' . $e->getMessage());
+            }
+        }
+        return ['opcache' => $opcache, 'pages' => $pages, 'objects' => $objects];
+    }
+
+    // ------------------------------------------------------------------
+    // Page cache (app/runtime/pagecache.php serves it)
+    // ------------------------------------------------------------------
+
+    public static function pageDir(string $domain): string
+    {
+        return self::PAGE_CACHE_DIR . '/' . preg_replace('/[^a-z0-9.-]/', '_', strtolower($domain));
+    }
+
+    /** $ttl seconds, or 0 = off. */
+    public static function setPageCache(array $domain, int $ttl): void
+    {
+        if ($ttl !== 0 && ($ttl < 30 || $ttl > 86400)) {
+            throw new InvalidArgumentException('Cache lifetime must be between 30 seconds and a day.');
+        }
+        Database::app()->prepare('UPDATE domains SET page_cache_ttl = ? WHERE id = ?')->execute([$ttl ?: null, $domain['id']]);
+        $domain['page_cache_ttl'] = $ttl ?: null;
+        PhpSettingsService::write($domain);
+        if ($ttl === 0) {
+            self::purgePages((string) $domain['domain_name']);
+        }
+    }
+
+    public static function purgePages(string $domain): int
+    {
+        $dir = self::pageDir($domain);
+        if (!is_dir($dir)) {
+            return 0;
+        }
+        $n = 0;
+        foreach (glob("$dir/*", GLOB_ONLYDIR) ?: [] as $sub) {
+            foreach (glob("$sub/*") ?: [] as $f) {
+                if (is_file($f) && @unlink($f)) {
+                    $n++;
+                }
+            }
+            @rmdir($sub);
+        }
+        return $n;
+    }
+
+    public static function pageCount(string $domain): int
+    {
+        return count(glob(self::pageDir($domain) . '/*/*') ?: []);
+    }
+
+    // ------------------------------------------------------------------
+    // Object cache (Valkey): one login per account, limited to its prefix
+    // ------------------------------------------------------------------
+
+    public static function prefix(string $username): string
+    {
+        return $username . ':';
+    }
+
+    public static function valkeyUser(string $username): string
+    {
+        return 'acct_' . $username;
+    }
+
+    /** @return array{user:string, password:string, prefix:string}|null */
+    public static function credentials(array $user): ?array
+    {
+        if (empty($user['cache_secret_enc'])) {
+            return null;
+        }
+        return ['user' => self::valkeyUser((string) $user['username']), 'password' => Crypto::decrypt((string) $user['cache_secret_enc']), 'prefix' => self::prefix((string) $user['username'])];
+    }
+
+    /** Creates (or resets the password of) the account's object cache login. */
+    public static function enableObjectCache(array $user): void
+    {
+        $pass = bin2hex(random_bytes(20));
+        $v = Valkey::admin();
+        // Data commands on its own keys only; no admin, no FLUSHALL/KEYS/CONFIG
+        // (the "dangerous" category), no pub/sub across accounts.
+        $v->cmd('ACL', 'SETUSER', self::valkeyUser((string) $user['username']), 'reset', 'on', '>' . $pass,
+            '~' . self::prefix((string) $user['username']) . '*', 'resetchannels', '+@all', '-@dangerous', '-@admin', '-@pubsub', '+info', '+ping');
+        $v->cmd('ACL', 'SAVE');
+        Database::app()->prepare('UPDATE users SET cache_secret_enc = ? WHERE id = ?')->execute([Crypto::encrypt($pass), $user['id']]);
+    }
+
+    public static function disableObjectCache(array $user): void
+    {
+        try {
+            $v = Valkey::admin();
+            $v->cmd('ACL', 'DELUSER', self::valkeyUser((string) $user['username']));
+            $v->cmd('ACL', 'SAVE');
+            $v->deleteMatching(self::prefix((string) $user['username']) . '*');
+        } finally {
+            Database::app()->prepare('UPDATE users SET cache_secret_enc = NULL WHERE id = ?')->execute([$user['id']]);
+        }
+    }
+
+    /** Deletes all the account's keys; returns how many. */
+    public static function flushObjects(array $user): int
+    {
+        return Valkey::admin()->deleteMatching(self::prefix((string) $user['username']) . '*');
+    }
+
+    public static function objectKeys(array $user): ?int
+    {
+        try {
+            return Valkey::admin()->countMatching(self::prefix((string) $user['username']) . '*');
+        } catch (Throwable) {
+            return null;
+        }
+    }
+
+    private static function owner(int $userId): ?array
+    {
+        $s = Database::app()->prepare('SELECT id, username, cache_secret_enc FROM users WHERE id = ?');
+        $s->execute([$userId]);
+        return $s->fetch() ?: null;
     }
 
     private static function invalidateTree(string $dir): int

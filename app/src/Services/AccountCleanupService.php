@@ -27,6 +27,12 @@ final class AccountCleanupService
             try { DnsService::removeZone($d['domain_name']); } catch (Throwable $e) { error_log($e->getMessage()); }
             try { DomainAliasService::removeAll($d); } catch (Throwable $e) { error_log($e->getMessage()); }
             PhpSettingsService::remove((string) $d['domain_name']);
+            CacheService::purgePages((string) $d['domain_name']);
+        }
+        $u = $pdo->prepare('SELECT * FROM users WHERE id = ? AND cache_secret_enc IS NOT NULL');
+        $u->execute([$userId]);
+        if ($row = $u->fetch()) {
+            try { CacheService::disableObjectCache($row); } catch (Throwable $e) { error_log($e->getMessage()); }
         }
 
         $droppedUsers = [];

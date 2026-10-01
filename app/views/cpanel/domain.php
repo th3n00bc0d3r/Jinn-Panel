@@ -118,7 +118,8 @@ $st = $ssl['state'];
 
         <div class="<?= $card ?>">
             <h3 class="text-sm font-semibold text-slate-700 mb-1">Cache</h3>
-            <p class="text-xs text-slate-400 mb-3">Clears the site's cached PHP code (and cached pages, when page caching is on) - use it after uploading changed files if the old version still shows.</p>
+            <p class="text-xs text-slate-400 mb-3">Clears the site's cached PHP code, its cached pages and its object cache keys - use it after uploading changed files if the old version still shows.
+                Page cache: <span class="font-medium text-slate-600"><?= !empty($d['page_cache_ttl']) ? 'on (' . (int) $d['page_cache_ttl'] . ' s)' : 'off' ?></span> &middot; <a href="/cpanel/cache" class="text-sky-700 hover:underline">Cache settings</a></p>
             <form method="post" action="/cpanel/domains/<?= $id ?>/clear-cache">
                 <?= Csrf::field() ?>
                 <button class="<?= $btn ?> bg-slate-100 hover:bg-slate-200 text-slate-700"><?= icon('refresh', 'h-4 w-4') ?> Clear cache</button>

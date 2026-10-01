@@ -482,6 +482,42 @@ ok "Knot DNS running"
 # 7. Deploy JinnPanel
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Object cache: Valkey on loopback (cPanel > Cache gives each account its
+# own login, restricted to its key prefix; see CacheService)
+# ---------------------------------------------------------------------------
+log "Installing the object cache (Valkey)"
+dnf -y install valkey >/dev/null
+if [ ! -s "$STATE_DIR/valkey_admin_pass" ]; then
+    python3 -c "import secrets; print(secrets.token_hex(24))" > "$STATE_DIR/valkey_admin_pass"
+    chmod 600 "$STATE_DIR/valkey_admin_pass"
+fi
+VALKEY_ADMIN_PASS=$(cat "$STATE_DIR/valkey_admin_pass")
+VALKEY_CONF=/etc/valkey/valkey.conf
+VALKEY_ACL=/etc/valkey/users.acl
+VALKEY_MB=$(( $(awk '/MemTotal/ {print $2}' /proc/meminfo) / 1024 / 20 ))
+[ "$VALKEY_MB" -lt 128 ] && VALKEY_MB=128
+[ "$VALKEY_MB" -gt 1024 ] && VALKEY_MB=1024
+set_valkey() { # key value: replace or append a valkey.conf directive
+    if grep -qE "^#? *$1 " "$VALKEY_CONF"; then sed -i -E "s|^#? *$1 .*|$1 $2|" "$VALKEY_CONF"; else echo "$1 $2" >> "$VALKEY_CONF"; fi
+}
+set_valkey bind "127.0.0.1 -::1"
+set_valkey protected-mode yes
+set_valkey port 6379
+set_valkey maxmemory "${VALKEY_MB}mb"
+set_valkey maxmemory-policy allkeys-lru
+set_valkey aclfile "$VALKEY_ACL"
+# Keep the account logins the panel created; (re)set the default and admin users.
+touch "$VALKEY_ACL"
+sed -i -E '/^user (default|jinnpanel) /d' "$VALKEY_ACL"
+{ echo "user default off"; echo "user jinnpanel on >$VALKEY_ADMIN_PASS ~* &* +@all"; cat "$VALKEY_ACL"; } > "$VALKEY_ACL.new"
+mv "$VALKEY_ACL.new" "$VALKEY_ACL"
+chown valkey:valkey "$VALKEY_ACL"; chmod 0640 "$VALKEY_ACL"
+restorecon "$VALKEY_ACL" 2>/dev/null || true
+systemctl enable valkey >/dev/null 2>&1
+systemctl restart valkey
+ok "Valkey on 127.0.0.1:6379 (${VALKEY_MB} MB, LRU)"
+
 log "Deploying JinnPanel application"
 mkdir -p "$APP_ROOT"
 cp -r "$APP_SRC"/. "$APP_ROOT"/
@@ -504,6 +540,7 @@ sed \
     -e "s/__MAIL_ADMIN_USER__/$MAIL_ADMIN_USER_ESC/" \
     -e "s/__MAIL_ADMIN_PASS__/$MAIL_ADMIN_PASS/" \
     -e "s/__SFTP_ADMIN_PASS__/$SFTPGO_ADMIN_PASS/" \
+    -e "s/__VALKEY_ADMIN_PASS__/$VALKEY_ADMIN_PASS/" \
     -e "s/__SERVER_HOSTNAME__/$HOSTNAME_FQDN/" \
     -e "s/__SERVER_IP__/$SERVER_IP/" \
     -e "s/__SERVER_IPV6__/$SERVER_IPV6/" \
@@ -539,23 +576,14 @@ find /var/lib/frankenphp/site-rules -type f -exec chmod 0644 {} +
 mkdir -p /var/lib/frankenphp/site-ini
 chown frankenphp:webusers /var/lib/frankenphp/site-ini
 chmod 2775 /var/lib/frankenphp/site-ini
-cat > /var/lib/frankenphp/site-ini/_dispatch.php <<'PHP'
-<?php
-// JinnPanel: apply this site's PHP settings (cPanel > Domains > domain > PHP settings).
-(static function (): void {
-    // DOCUMENT_ROOT for web requests; JINNPANEL_DOCROOT for cron jobs (the
-    // CLI always blanks DOCUMENT_ROOT).
-    $root = (string) ($_SERVER['DOCUMENT_ROOT'] ?? '') ?: (string) getenv('JINNPANEL_DOCROOT');
-    if ($root !== '' && preg_match('#^/var/www/([a-z0-9][a-z0-9.-]*)/#', $root . '/', $m)) {
-        $file = '/var/lib/frankenphp/site-ini/' . $m[1] . '.php';
-        if (is_file($file)) {
-            include $file;
-        }
-    }
-})();
-PHP
-chown root:webusers /var/lib/frankenphp/site-ini/_dispatch.php
-chmod 0644 /var/lib/frankenphp/site-ini/_dispatch.php
+install -o root -g webusers -m 0644 "$APP_ROOT/runtime/dispatch.php" /var/lib/frankenphp/site-ini/_dispatch.php
+install -o root -g webusers -m 0644 "$APP_ROOT/runtime/pagecache.php" /var/lib/frankenphp/site-ini/_pagecache.php
+# Page cache storage (cPanel > Cache), written by the sites' PHP.
+mkdir -p /var/lib/jinnpanel-pagecache
+chown frankenphp:webusers /var/lib/jinnpanel-pagecache
+chmod 2770 /var/lib/jinnpanel-pagecache
+semanage fcontext -a -t httpd_sys_rw_content_t '/var/lib/jinnpanel-pagecache(/.*)?' 2>/dev/null || true
+restorecon -R /var/lib/jinnpanel-pagecache
 semanage fcontext -a -t httpd_sys_rw_content_t '/var/lib/frankenphp/site-ini(/.*)?' 2>/dev/null || true
 restorecon -R /var/lib/frankenphp/site-ini
 echo "auto_prepend_file = /var/lib/frankenphp/site-ini/_dispatch.php" > /etc/php-zts/conf.d/99-jinnpanel-site-ini.ini

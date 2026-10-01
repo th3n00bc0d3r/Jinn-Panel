@@ -159,6 +159,9 @@ final class ServerConfigController
             'opcache.max_accelerated_files' => (int) $_POST['opcache_max_files'],
             'opcache.jit' => !empty($_POST['jit_enabled']) ? 'tracing' : 'off',
             'opcache.jit_buffer_size' => !empty($_POST['jit_enabled']) ? '64M' : '0',
+            // 0 = check every request; "never" = only on restart / Clear cache.
+            'opcache.validate_timestamps' => ($_POST['opcache_revalidate'] ?? '2') === 'never' ? '0' : '1',
+            'opcache.revalidate_freq' => (string) max(0, min(3600, (int) (($_POST['opcache_revalidate'] ?? '2') === 'never' ? 60 : $_POST['opcache_revalidate']))),
         ];
 
         SystemWorkerService::enqueue('php-settings', ['type' => 'set_ini', 'file' => '/etc/php-zts/php.ini', 'settings' => $ini]);
@@ -291,7 +294,7 @@ final class ServerConfigController
             }
         }
         foreach (@file('/etc/php-zts/conf.d/opcache.ini') ?: [] as $line) {
-            if (preg_match('/^;?\s*(opcache\.(memory_consumption|max_accelerated_files|jit|jit_buffer_size))\s*=\s*(.+)$/', trim($line), $m)) {
+            if (preg_match('/^;?\s*(opcache\.(memory_consumption|max_accelerated_files|jit|jit_buffer_size|validate_timestamps|revalidate_freq))\s*=\s*(.+)$/', trim($line), $m)) {
                 $out[$m[1]] = trim($m[3]);
             }
         }

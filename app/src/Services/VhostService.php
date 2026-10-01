@@ -119,7 +119,14 @@ final class VhostService
         $panelHooks = "\trequest_header Cookie \"(^|;\\s*){$sid}=[^;]*\" \"\"\n"
             . "\trequest_header Cookie \"^;\\s*\" \"\"\n"
             . "\tredir /jpanel https://{host}:2083/ 302\n"
-            . "\tredir /jpanel/* https://{host}:2083/ 302\n";
+            . "\tredir /jpanel/* https://{host}:2083/ 302\n"
+            // Browser caching for static files ('?' = only when the site
+            // didn't set its own). CSS/JS short: they're often edited in
+            // place without a version in the file name.
+            . "\t@jp_media path_regexp jp_media (?i)\\.(png|jpe?g|gif|webp|avif|svg|ico|woff2?|ttf|otf|eot|mp4|webm|mp3|pdf)$\n"
+            . "\theader @jp_media ?Cache-Control \"public, max-age=2592000\"\n"
+            . "\t@jp_assets path_regexp jp_assets (?i)\\.(css|js|mjs)$\n"
+            . "\theader @jp_assets ?Cache-Control \"public, max-age=86400\"\n";
 
         // The domain, its aliases (parked domains) and www. of each.
         $names = array_merge([$domain], DomainAliasService::forDomain($domain));

@@ -67,7 +67,7 @@ final class HtaccessTranslator
     private const FILE_SERVER_SUBDIRECTIVES = ['index', 'status', 'hide', 'precompressed', 'pass_thru', 'disable_canonical_uris'];
 
     /** Matcher names the surrounding VhostService route block already defines. */
-    private const RESERVED_MATCHERS = ['@hidden'];
+    private const RESERVED_MATCHERS = ['@hidden', '@jp_media', '@jp_assets'];
 
     /** @var array<string, mixed> translation state, reset by translate() */
     private static array $st = [];

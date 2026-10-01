@@ -33,6 +33,9 @@ final class Config
     public const SFTP_ADMIN_USER = 'panelapi';
     public const SFTP_ADMIN_PASS = '__SFTP_ADMIN_PASS__';
 
+    // Valkey (object cache) admin login - CacheService manages per-account users with it
+    public const VALKEY_ADMIN_PASS = '__VALKEY_ADMIN_PASS__';
+
     // Server / provisioning paths
     public const SERVER_HOSTNAME = '__SERVER_HOSTNAME__';
     public const SERVER_IP = '__SERVER_IP__';

@@ -161,17 +161,18 @@ do them.
 
 ## 3. Caching
 
-- [ ] **Cache feature.** Nothing is cached today beyond PHP's OPcache
-      defaults: no page cache, no object cache, no static-asset
-      `Cache-Control` headers. Scope to decide:
-  - per-site page cache in Caddy (the Souin/`cache-handler` module - not in
-    the stock FrankenPHP binary, needs an xcaddy build), on/off and TTL per domain in cPanel > Domains, with a
-    "Purge cache" button and rules that skip logged-in/cart cookies;
-  - Redis/Valkey for object caching (WordPress, Laravel) - one instance with
-    a per-account ACL user and memory limit, shown in cPanel;
-  - OPcache settings per PHP version in WHM (memory, revalidate frequency);
-  - long `Cache-Control` headers for static assets by default.
-- [ ] **Clear cache per domain:** a "Clear cache" button for each domain in
+- [x] **Cache feature.** Done as:
+  - page cache per domain (cPanel > Cache) in the per-site PHP dispatcher,
+    Batcache-style: anonymous GET/HEAD only, 200 HTML without cookies or
+    private/no-store, TTL per domain, X-JinnPanel-Cache header. Not Souin:
+    that needs a custom-built FrankenPHP binary replacing the packaged one;
+  - object cache: Valkey on loopback, one ACL login per account limited to
+    its key prefix (no FLUSHALL/KEYS/CONFIG/admin), LRU, 5% of RAM, the
+    php-zts-redis extension, WordPress/Laravel snippets in cPanel > Cache;
+  - OPcache memory/files/JIT/revalidate in WHM > PHP Settings;
+  - Cache-Control for static files (media 30 days, CSS/JS 1 day) unless
+    the site sets its own.
+- [x] **Clear cache per domain:** a "Clear cache" button for each domain in
       cPanel > Domains (page cache for that host, plus the domain's object
       cache keys / OPcache for its docroot).
 

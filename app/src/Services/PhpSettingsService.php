@@ -134,6 +134,9 @@ final class PhpSettingsService
                 $lines[] = 'ini_set(' . var_export($key, true) . ', ' . var_export((string) $value, true) . ');';
             }
         }
+        // Options for the dispatcher (install.sh / app/runtime/dispatch.php).
+        $ttl = (int) ($domain['page_cache_ttl'] ?? 0);
+        $lines[] = 'return ' . var_export(['page_cache_ttl' => $ttl > 0 ? $ttl : 0], true) . ';';
         if (!is_dir(self::DIR)) {
             throw new RuntimeException(self::DIR . ' is missing - re-run install.sh.');
         }
