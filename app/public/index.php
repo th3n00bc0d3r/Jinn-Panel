@@ -125,6 +125,7 @@ $router->get('/cpanel/files', ['FileManagerController', 'index']);
 $router->post('/cpanel/files/upload', ['FileManagerController', 'upload']);
 $router->post('/cpanel/files/mkdir', ['FileManagerController', 'mkdir']);
 $router->post('/cpanel/files/delete', ['FileManagerController', 'delete']);
+$router->post('/cpanel/files/action', ['FileManagerController', 'action']);
 $router->get('/cpanel/files/download', ['FileManagerController', 'download']);
 
 try {

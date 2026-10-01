@@ -150,7 +150,7 @@ do them.
       or right after DNS was fixed.
 - [x] **Mail client settings card** in cPanel > Email: IMAP/POP3/SMTP host,
       ports, security and username, for setting up a mail app by hand.
-- [ ] **File manager:** select multiple files/folders (bulk delete, move,
+- [x] **File manager:** select multiple files/folders (bulk delete, move,
       copy, download), extract `.zip` (and `.tar.gz`) archives, compress the
       selection into a `.zip`, and view/change permissions (chmod) of files
       and folders - all confined to the account's own directories.
