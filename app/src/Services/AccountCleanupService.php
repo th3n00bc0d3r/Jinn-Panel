@@ -35,6 +35,9 @@ final class AccountCleanupService
             try { CacheService::disableObjectCache($row); } catch (Throwable $e) { error_log($e->getMessage()); }
         }
 
+        // Remote (user@host) and phpMyAdmin logins, besides the @localhost ones below.
+        try { MysqlService::dropAccount($userId); } catch (Throwable $e) { error_log($e->getMessage()); }
+
         $droppedUsers = [];
         $dbs = $pdo->prepare('SELECT * FROM db_instances WHERE user_id = ?');
         $dbs->execute([$userId]);
@@ -82,6 +85,7 @@ final class AccountCleanupService
         }
 
         $pdo->prepare('DELETE FROM users WHERE id = ?')->execute([$userId]);
+        try { MysqlService::syncFirewall(); } catch (Throwable $e) { error_log($e->getMessage()); } // its Remote MySQL hosts went with it
 
         foreach ($removeDirs as $dir) {
             self::removeSiteDir($dir);

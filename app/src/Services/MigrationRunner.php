@@ -974,6 +974,7 @@ final class MigrationRunner
                 }
             }
             $row->execute([$userId, $db, $dbUser]);
+            $this->pdo->prepare('INSERT IGNORE INTO db_user_accounts (user_id, db_user) VALUES (?, ?)')->execute([$userId, $dbUser]);
         }
         $this->log("$owner: " . count($migrated) . ' database(s) restored');
     }

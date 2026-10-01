@@ -96,6 +96,9 @@ if (is_dir(QUEUE_DIR)) {
                 case 'php_ext_change':
                     phpExtChange((string) ($job['ext'] ?? ''), !empty($job['install']), $log);
                     break;
+                case 'mysql_firewall':
+                    mysqlFirewall((array) ($job['sources'] ?? []), $log);
+                    break;
                 case 'routes_remove':
                     routesRemove((string) ($job['domain'] ?? ''), $log);
                     break;
@@ -589,6 +592,40 @@ function phpExtChange(string $ext, bool $install, callable $log): void
     exec('systemctl try-restart jinnpanel-webmail 2>&1');
     phpExtList(fn($m) => null);
     $log("php-zts-$ext " . ($install ? 'installed' : 'removed') . '; FrankenPHP restarted');
+}
+
+/**
+ * Port 3306 only for the Remote MySQL hosts of all accounts: firewalld rich
+ * rules, tracked in a state file so only rules this job added are removed.
+ * "0.0.0.0/0" (a % host) opens the port to everyone.
+ */
+function mysqlFirewall(array $sources, callable $log): void
+{
+    $state = '/var/lib/jinnpanel/mysql-firewall.json';
+    $old = is_file($state) ? (json_decode((string) file_get_contents($state), true) ?: []) : [];
+    $want = [];
+    foreach ($sources as $src) {
+        $src = (string) $src;
+        [$ip, $bits] = array_pad(explode('/', $src, 2), 2, null);
+        $v6 = filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false;
+        if (!filter_var($ip, FILTER_VALIDATE_IP) || ($bits !== null && (!ctype_digit($bits) || (int) $bits > ($v6 ? 128 : 32)))) {
+            continue;
+        }
+        $want[$src] = sprintf('rule family="%s" source address="%s" port port="3306" protocol="tcp" accept', $v6 ? 'ipv6' : 'ipv4', $src);
+        if ($src === '0.0.0.0/0') {
+            $want['::/0'] = 'rule family="ipv6" source address="::/0" port port="3306" protocol="tcp" accept';
+        }
+    }
+    foreach (array_diff($old, $want) as $rule) {
+        exec('firewall-cmd --permanent --remove-rich-rule=' . escapeshellarg($rule) . ' 2>&1');
+    }
+    foreach (array_diff($want, $old) as $rule) {
+        run('firewall-cmd --permanent --add-rich-rule=' . escapeshellarg($rule));
+    }
+    run('firewall-cmd --reload');
+    @mkdir(dirname($state), 0750, true);
+    file_put_contents($state, json_encode(array_values($want)));
+    $log('3306 open for: ' . (implode(', ', array_keys($want)) ?: 'nobody'));
 }
 
 /** A removed domain's routing rules (only once the domain is really gone). */

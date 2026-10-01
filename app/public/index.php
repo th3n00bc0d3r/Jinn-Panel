@@ -97,6 +97,10 @@ $router->post('/cpanel/domains/{id}/settings', ['DomainController', 'updateSetti
 $router->get('/cpanel/databases', ['DatabaseController', 'index']);
 $router->post('/cpanel/databases', ['DatabaseController', 'store']);
 $router->post('/cpanel/databases/{id}/delete', ['DatabaseController', 'destroy']);
+$router->post('/cpanel/databases/users', ['DatabaseController', 'userStore']);
+$router->post('/cpanel/databases/users/action', ['DatabaseController', 'userAction']);
+$router->post('/cpanel/databases/remote', ['DatabaseController', 'remote']);
+$router->post('/cpanel/databases/phpmyadmin', ['DatabaseController', 'phpmyadmin']);
 $router->get('/cpanel/email', ['EmailController', 'index']);
 $router->post('/cpanel/email', ['EmailController', 'store']);
 $router->post('/cpanel/email/{id}/delete', ['EmailController', 'destroy']);

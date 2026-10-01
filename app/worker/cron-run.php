@@ -16,3 +16,10 @@ foreach ($jobs as $j) {
         exec('setsid ' . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(__DIR__ . '/cron-exec.php') . ' ' . (int) $j['id'] . ' > /dev/null 2>&1 &');
     }
 }
+
+// Expired phpMyAdmin logins (MysqlService::phpMyAdminUrl).
+try {
+    MysqlService::dropExpiredPmaLogins();
+} catch (Throwable $e) {
+    error_log('phpMyAdmin login cleanup: ' . $e->getMessage());
+}
