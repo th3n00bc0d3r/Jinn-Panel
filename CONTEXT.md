@@ -279,7 +279,7 @@ The security review of 2026-09-30 listed 19 items. Status after the work of
 | 6 | No throttling/2FA, 8-char passwords | **Fixed**: `LoginThrottle`, TOTP two-factor for all roles (WHM/cPanel > shield icon; admins can reset), 10+ chars and no common passwords (`Passwords`) |
 | 7 | /setup open until the first admin | **Fixed**: one-time setup token from install.sh |
 | 8 | Suspension only blocks login | **Fixed**: `SuspensionService` - sites 503 + pools stopped, mail logins off (Stalwart `authenticate` permission), SFTP off, MySQL users locked, Valkey login off, cron skipped, sessions ended |
-| 9 | Quotas counted, not enforced; resellers unlimited | **Fixed (soft) / hard with XFS quotas**: `UsageService` measures files+DBs+mail and monthly bandwidth hourly; over disk -> uploads/new DBs/mailboxes/domains refused; over bandwidth -> sites 509; resellers limited by `packages.max_accounts`. Hard per-user limits are applied automatically once the root filesystem has XFS user quotas (`rootflags=uquota` + reboot - not done on this server) |
+| 9 | Quotas counted, not enforced; resellers unlimited | **Fixed (soft) / hard with XFS quotas**: `UsageService` measures files+DBs+mail and monthly bandwidth hourly; over disk -> uploads/new DBs/mailboxes/domains refused; over bandwidth -> sites 509; resellers limited by `packages.max_accounts`. Hard per-user limits: XFS user quotas (`JINNPANEL_XFS_QUOTA=1` adds `rootflags=uquota`; on this server since 2026-10-01, active after the next reboot), applied at boot (`jinnpanel-usage-boot`) and hourly as each account's package disk quota on its Linux user (files; DBs/mail are counted softly) |
 | 10 | Domains not verified | **Fixed (policy)**: `DomainPolicy` refuses the server's names, names under/above another account's domain, public suffixes and the most impersonated domains. Ownership is proven by DNS (Let's Encrypt only issues when it points here) |
 | 11 | No backups | **Fixed**: `BackupService` - daily per-account (files, DBs, mail via IMAP) + server (panel DB, configs), retention, optional S3 copy, restore per part, customer downloads (WHM/cPanel > Backups) |
 | 12 | DNS: ns1.<domain>, one NS, no SPF/DKIM/DMARC | **Fixed** earlier (DNS work): ns1/ns2 of the server zone, SPF, DKIM (RSA + Ed25519), DMARC on every mail domain |
@@ -303,5 +303,5 @@ Known limits of the isolation (worth knowing before letting strangers host):
 
 Still open (owner's side): rotating the root password, SSH password logins
 (kept on by choice; fail2ban added), restricting 8080/8090/9090, IPv6 rDNS
-at the provider, XFS user quotas (needs a reboot), a migration trial
+at the provider, the reboot that turns XFS user quotas on, a migration trial
 against a real cPanel server.
