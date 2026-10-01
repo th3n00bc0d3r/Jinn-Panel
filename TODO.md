@@ -110,7 +110,7 @@ do them.
       (`CpanelZoneImporter`), but only proven via
       `worker/dns-import-cpanel.php` on existing zones - verify on the next real
       migration.
-- [ ] **Subdomain sites get their own zone** (e.g. `admin.example.com`)
+- [x] **Subdomain sites get their own zone** (e.g. `admin.example.com`)
       while the parent zone also holds their records. Create subdomain sites as records in the parent zone instead.
 - [x] **No www for the server zone.** `www.<server zone>` has no DNS record,
       so its certificate can't be issued.

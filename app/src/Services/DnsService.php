@@ -158,6 +158,23 @@ final class DnsService
     {
         $domain = self::normalizeZoneName($domain);
         $zone = self::findZoneByName($domain);
+        // A subdomain site (blog.example.com) whose parent zone is on this
+        // server is a pair of records there, not a zone of its own.
+        if ($zone === null && ($parent = self::parentZone($domain)) !== null) {
+            $rel = self::relativeName($domain, (string) $parent['zone_name']);
+            $taken = self::customerNames((int) $parent['id'], 'site');
+            $want = [];
+            foreach ([$rel, 'www.' . $rel] as $n) {
+                if (!isset($taken[$n])) {
+                    $want[] = [$n, 'A', Config::SERVER_IP, null];
+                }
+            }
+            $stmt = Database::app()->prepare("SELECT name, type, content, priority FROM dns_records WHERE zone_id = ? AND managed = 'site'");
+            $stmt->execute([(int) $parent['id']]);
+            $keep = array_map(fn($r) => [$r['name'], $r['type'], $r['content'], $r['priority'] === null ? null : (int) $r['priority']], $stmt->fetchAll());
+            self::syncManaged((int) $parent['id'], 'site', array_merge($keep, $want));
+            return;
+        }
         if ($zone === null) {
             $zoneId = self::insertZone($domain, false);
             self::seedMissing($zoneId, [
@@ -169,6 +186,70 @@ final class DnsService
             $zoneId = (int) $zone['id'];
         }
         self::publish($zoneId);
+    }
+
+    /** The closest zone on this server that $name is inside of (not $name's own zone). */
+    public static function parentZone(string $name): ?array
+    {
+        $labels = explode('.', strtolower($name));
+        for ($i = 1; $i < count($labels) - 1; $i++) {
+            if (($z = self::findZoneByName(implode('.', array_slice($labels, $i)))) !== null) {
+                return $z;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Folds zones of subdomain sites into their parent zone on this server
+     * (they used to get a zone each, duplicating the parent's records):
+     * records move over with the name prefixed, the child zone goes.
+     *
+     * @return list<string> log lines
+     */
+    public static function mergeSubdomainZones(): array
+    {
+        $log = [];
+        $pdo = Database::app();
+        foreach (self::listZones() as $z) {
+            if ((int) $z['is_server_zone'] === 1 || ($parent = self::parentZone((string) $z['zone_name'])) === null) {
+                continue;
+            }
+            $child = (string) $z['zone_name'];
+            $rel = self::relativeName($child, (string) $parent['zone_name']);
+            $names = self::customerNames((int) $parent['id']);
+            $moved = 0;
+            $ins = $pdo->prepare('INSERT INTO dns_records (zone_id, name, type, ttl, priority, content, managed) VALUES (?, ?, ?, ?, ?, ?, ?)');
+            foreach (self::records((int) $z['id']) as $r) {
+                if (!empty($r['managed'])) {
+                    continue; // the syncs re-create mail/IPv6 records where they belong
+                }
+                $name = $r['name'] === '@' ? $rel : $r['name'] . '.' . $rel;
+                // The template's own records (A @/www to this server, MX to itself) become 'site' records.
+                $template = in_array($r['name'], ['@', 'www'], true) && $r['type'] === 'A' && $r['content'] === Config::SERVER_IP;
+                if ($r['type'] === 'MX' && rtrim((string) $r['content'], '.') === $child && !self::hasMailDomain($child)) {
+                    continue;
+                }
+                if (isset($names[$name]) && ($template || in_array($r['type'], $names[$name], true) || in_array('CNAME', $names[$name], true))) {
+                    continue; // the parent already has it
+                }
+                $ins->execute([(int) $parent['id'], $name, $r['type'], (int) $r['ttl'], $r['priority'], $r['content'], $template ? 'site' : null]);
+                $names[$name][] = $r['type'];
+                $moved++;
+            }
+            $pdo->prepare('DELETE FROM dns_zones WHERE id = ?')->execute([(int) $z['id']]);
+            SystemWorkerService::enqueue("dns-$child", ['type' => 'dns_remove', 'domain' => $child]);
+            self::publish((int) $parent['id']);
+            $log[] = "$child: merged into {$parent['zone_name']} ($moved records moved)";
+        }
+        return $log;
+    }
+
+    private static function hasMailDomain(string $domain): bool
+    {
+        $s = Database::app()->prepare('SELECT COUNT(*) FROM domains WHERE domain_name = ? AND mail_domain_id IS NOT NULL');
+        $s->execute([$domain]);
+        return (int) $s->fetchColumn() > 0;
     }
 
     /** A zone not tied to any hosting account (WHM > DNS Zones > Add zone). */
@@ -194,6 +275,15 @@ final class DnsService
     {
         $domain = strtolower(trim($domain));
         $zone = self::findZoneByName($domain);
+        if ($zone === null && ($parent = self::parentZone($domain)) !== null) {
+            $rel = self::relativeName($domain, (string) $parent['zone_name']);
+            $stmt = Database::app()->prepare("DELETE FROM dns_records WHERE zone_id = ? AND managed = 'site' AND name IN (?, ?)");
+            $stmt->execute([(int) $parent['id'], $rel, 'www.' . $rel]);
+            if ($stmt->rowCount() > 0) {
+                self::publish((int) $parent['id']);
+            }
+            return;
+        }
         if ($zone !== null && (int) $zone['is_server_zone'] === 1) {
             return;
         }
