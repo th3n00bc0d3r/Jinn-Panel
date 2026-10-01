@@ -13,6 +13,7 @@
 # Usage:
 #   sudo ./install.sh
 #   sudo JINNPANEL_HOSTNAME=panel.example.com ./install.sh   # override auto-detected hostname
+#   sudo JINNPANEL_XFS_QUOTA=1 ./install.sh                  # hard per-account disk quotas (after a reboot)
 #
 # Safe to re-run: package installs are idempotent (dnf skips what's already
 # there), and file writes overwrite cleanly. Re-running does NOT rotate
@@ -101,11 +102,55 @@ dnf -y makecache
 # rsync + gzip: used by WHM > cPanel Migration to unpack and copy site files.
 # bind-utils: dig, used to verify the server's own DNS zone at the end.
 dnf -y install tar gzip rsync unzip dnf-plugins-core epel-release curl firewalld bind-utils
+# From EPEL (enabled just above): qrencode draws the QR code for two-factor
+# setup; fail2ban bans addresses that keep failing SSH logins.
+dnf -y install qrencode fail2ban fail2ban-firewalld
 ok "Base packages installed"
+
+# Hard disk quotas per hosting account (optional): XFS user quotas on the
+# root filesystem need the rootflags=uquota boot option, i.e. a reboot.
+# Once they're on, UsageService gives each account's Linux user its
+# package's disk quota as a hard limit. Opt in with JINNPANEL_XFS_QUOTA=1.
+if [ "${JINNPANEL_XFS_QUOTA:-0}" = 1 ] && [ "$(findmnt -no FSTYPE /)" = xfs ]; then
+    if ! grep -qw 'rootflags=uquota' /proc/cmdline; then
+        grubby --update-kernel=ALL --args=rootflags=uquota
+        warn "XFS user quotas will be on after the next reboot (rootflags=uquota added to the boot options)."
+    fi
+fi
 
 if ! systemctl is-active --quiet firewalld; then
     systemctl enable --now firewalld
 fi
+
+# SSH brute force: 5 failures in 10 minutes bans the address for an hour,
+# repeat offenders (recidive) for a week. Addresses that must never be
+# banned go in /etc/fail2ban/jail.d/zz-local.local (ignoreip), which this
+# installer doesn't touch.
+cat > /etc/fail2ban/jail.d/jinnpanel.local <<'F2B'
+# Managed by JinnPanel's install.sh - local overrides go in zz-local.local.
+[DEFAULT]
+banaction = firewallcmd-rich-rules
+banaction_allports = firewallcmd-allports
+ignoreip = 127.0.0.1/8 ::1
+backend = systemd
+
+[sshd]
+enabled = true
+maxretry = 5
+findtime = 10m
+bantime = 1h
+
+[recidive]
+enabled = true
+logpath = /var/log/fail2ban.log
+backend = auto
+bantime = 1w
+findtime = 1d
+F2B
+# recidive reads fail2ban's own log, which doesn't exist before its first start.
+touch /var/log/fail2ban.log
+systemctl enable fail2ban >/dev/null 2>&1
+systemctl restart fail2ban
 
 # ---------------------------------------------------------------------------
 # 2. MariaDB
@@ -165,6 +210,9 @@ log "Installing FrankenPHP"
 curl -fsSL https://frankenphp.dev/install.sh -o /tmp/frankenphp-install.sh
 sh /tmp/frankenphp-install.sh
 dnf -y install php-zts-pdo php-zts-pdo_mysql php-zts-mysqlnd
+# PHP-FPM runs the sites' PHP (one pool per hosting account, as its own
+# Linux user); acl lets the web server read into account-owned folders.
+dnf -y install php-zts-fpm acl
 # Extensions customer sites expect on shared hosting (WordPress and most PHP
 # apps need mysqli; gd/imagick/intl/zip are near-universal plugin requirements).
 dnf -y install php-zts-mysqli php-zts-gd php-zts-imagick php-zts-intl php-zts-zip php-zts-bcmath \
@@ -179,10 +227,76 @@ semanage fcontext -a -t httpd_sys_rw_content_t '/var/lib/frankenphp/sites-enable
 restorecon -R /var/lib/frankenphp/sites-enabled
 
 grep -q 'sites-enabled' /etc/frankenphp/Caddyfile || echo 'import /var/lib/frankenphp/sites-enabled/*.caddyfile' >> /etc/frankenphp/Caddyfile
+# Caddy's admin API on a Unix socket only frankenphp and root can open: on
+# 127.0.0.1:2019 any local process - customer PHP included - could load a
+# whole new server config. And no PHP for unknown names on port 80.
+python3 - <<'PYEOF'
+p = '/etc/frankenphp/Caddyfile'
+s = open(p).read()
+if 'admin unix//run/frankenphp/admin.sock' not in s:
+    s = s.replace("{\n\tfrankenphp\n}", "{\n\tfrankenphp\n\tadmin unix//run/frankenphp/admin.sock\n}", 1)
+s = s.replace("http:// {\n\troot /usr/share/frankenphp/\n\tencode zstd br gzip\n\n\tphp_server\n}",
+              "# Any other name on port 80 (JinnPanel: nothing runs PHP here).\nhttp:// {\n\trespond \"Not found\" 404\n}")
+open(p, 'w').write(s)
+PYEOF
+grep -q 'admin unix//run/frankenphp/admin.sock' /etc/frankenphp/Caddyfile || warn "Couldn't put Caddy's admin API on its socket - check the global options block of /etc/frankenphp/Caddyfile."
+mkdir -p /etc/systemd/system/frankenphp.service.d
+cat > /etc/systemd/system/frankenphp.service.d/jinnpanel.conf <<'UNIT'
+# JinnPanel: Caddy's admin API is a Unix socket here (see the Caddyfile).
+[Service]
+RuntimeDirectory=frankenphp
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+ExecReload=
+ExecReload=/usr/bin/frankenphp reload --config /etc/frankenphp/Caddyfile --address unix//run/frankenphp/admin.sock --force
+UNIT
+systemctl daemon-reload
+install -d -o frankenphp -g frankenphp -m 0750 /run/frankenphp
+# The web server's access log (one JSON line per request, every site):
+# hourly bandwidth accounting per account (UsageService).
+mkdir -p /var/log/jinnpanel-web /var/log/jinnpanel
+chown frankenphp:frankenphp /var/log/jinnpanel-web; chmod 0750 /var/log/jinnpanel-web
+chown root:root /var/log/jinnpanel; chmod 0750 /var/log/jinnpanel
+semanage fcontext -a -t httpd_log_t '/var/log/jinnpanel-web(/.*)?' 2>/dev/null || true
+restorecon -R /var/log/jinnpanel-web
 
+# Sites' PHP: one PHP-FPM master per PHP version (jinnpanel-php-fpm@default
+# here, @82 etc. for versions added in WHM), one pool per account, each
+# running as that account's Linux user. Labelled like EL's own php-fpm so
+# it runs as httpd_t (SELinux) and Caddy may talk to its sockets.
+semanage fcontext -a -t httpd_exec_t '/usr/bin/php-fpm-zts' 2>/dev/null || semanage fcontext -m -t httpd_exec_t '/usr/bin/php-fpm-zts' 2>/dev/null || true
+semanage fcontext -a -t httpd_exec_t '/opt/php-versions/[^/]+/php-fpm' 2>/dev/null || true
+restorecon /usr/sbin/php-fpm-zts
+systemctl disable --now php-fpm-zts >/dev/null 2>&1 || true
+cat > /etc/systemd/system/jinnpanel-php-fpm@.service <<'UNIT'
+[Unit]
+Description=JinnPanel PHP-FPM (%i) - the hosting accounts' PHP
+After=network.target mariadb.service
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/php-fpm-zts --nodaemonize --fpm-config /etc/jinnpanel/php-fpm/%i/php-fpm.conf -d opcache.validate_permission=1
+ExecReload=/bin/kill -USR2 $MAINPID
+RuntimeDirectory=jinnpanel-php/%i
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=restart
+PrivateTmp=true
+UMask=0022
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+
+# /var/www: one folder per site, each owned by its hosting account's Linux
+# user (hostpanel-worker accountSync). frankenphp may create new site
+# folders (migrations; the worker hands them over), and the sticky bit
+# stops it from renaming or removing anyone else's.
 mkdir -p /var/www
-chgrp webusers /var/www
-chmod 2775 /var/www
+chown root:frankenphp /var/www
+chmod 1775 /var/www
 semanage fcontext -a -t httpd_sys_rw_content_t '/var/www(/.*)?' 2>/dev/null || true
 restorecon -R /var/www
 
@@ -423,7 +537,36 @@ if [ ! -f /etc/yum.repos.d/sftpgo.repo ]; then
     curl -sS "https://oss.sftpgo.com/yum/${ARCH}/sftpgo.repo" -o /etc/yum.repos.d/sftpgo.repo
 fi
 dnf -y install sftpgo
-usermod -aG webusers sftpgo
+# SFTP logins write as the hosting account's Linux user (SftpService sets
+# uid/gid per login): SFTPGo needs to hand files over (CAP_CHOWN/FOWNER)
+# and to write in account-owned folders (CAP_DAC_OVERRIDE) - file
+# capabilities only, it still runs as sftpgo and keeps logins in their homes.
+mkdir -p /etc/systemd/system/sftpgo.service.d
+# The packaged binary carries a file capability (cap_net_bind_service),
+# and executing a file with file capabilities clears the ambient set - so
+# SFTPGo runs from a copy without any (re-copied on every install, i.e.
+# after an SFTPGo upgrade re-run the installer).
+install -d -m 0755 /usr/local/libexec/jinnpanel
+if ! cmp -s /usr/bin/sftpgo /usr/local/libexec/jinnpanel/sftpgo; then
+    install -m 0755 /usr/bin/sftpgo /usr/local/libexec/jinnpanel/sftpgo
+    SFTPGO_BIN_CHANGED=1
+fi
+cat > /tmp/sftpgo-jinnpanel.conf <<'UNIT'
+[Service]
+ExecStart=
+ExecStart=/usr/local/libexec/jinnpanel/sftpgo serve
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
+UNIT
+SFTPGO_RESTART=${SFTPGO_BIN_CHANGED:-0}
+if ! cmp -s /tmp/sftpgo-jinnpanel.conf /etc/systemd/system/sftpgo.service.d/jinnpanel.conf; then
+    mv /tmp/sftpgo-jinnpanel.conf /etc/systemd/system/sftpgo.service.d/jinnpanel.conf
+    SFTPGO_RESTART=1
+fi
+rm -f /tmp/sftpgo-jinnpanel.conf
+systemctl daemon-reload
+mkdir -p /var/lib/jinnpanel/sftp
+chmod 0755 /var/lib/jinnpanel/sftp
 
 # Move the web admin off 8080 (Stalwart already owns that).
 python3 - <<'PYEOF'
@@ -453,6 +596,7 @@ EOF
 fi
 
 systemctl enable --now sftpgo
+[ "$SFTPGO_RESTART" = 1 ] && systemctl restart sftpgo
 sleep 1
 
 if ! curl -sf -u "panelapi:$SFTPGO_ADMIN_PASS" http://127.0.0.1:8090/api/v2/token >/dev/null 2>&1; then
@@ -522,6 +666,9 @@ systemctl restart valkey
 ok "Valkey on 127.0.0.1:6379 (${VALKEY_MB} MB, LRU)"
 
 log "Deploying JinnPanel application"
+# The root worker stays paused until its new version is in place (below):
+# the old one doesn't know the signed job format.
+systemctl stop hostpanel-worker.timer 2>/dev/null || true
 mkdir -p "$APP_ROOT"
 cp -r "$APP_SRC"/. "$APP_ROOT"/
 
@@ -552,9 +699,37 @@ rm -f "$APP_ROOT/src/Config.php.template"
 
 mysql -u hostpanel_app -p"$DB_APP_PASS" hostpanel < "$APP_ROOT/migrations/schema.sql"
 
-chown -R frankenphp:webusers "$APP_ROOT"
-find "$APP_ROOT" -type d -exec chmod 2775 {} \;
-find "$APP_ROOT" -type f -exec chmod 664 {} \;
+# /setup creates the first admin; until then it's open to anyone who finds
+# the page, so it asks for this one-time token (printed in the summary).
+SETUP_TOKEN=""
+if [ "$(mysql -N -u hostpanel_app -p"$DB_APP_PASS" hostpanel -e "SELECT COUNT(*) FROM users WHERE role = 'admin'")" = "0" ]; then
+    if [ ! -s "$STATE_DIR/setup_token" ]; then
+        python3 -c "import secrets; print(secrets.token_urlsafe(24))" > "$STATE_DIR/setup_token"
+        chmod 600 "$STATE_DIR/setup_token"
+    fi
+    SETUP_TOKEN=$(cat "$STATE_DIR/setup_token")
+    SETUP_HASH=$(printf '%s' "$SETUP_TOKEN" | sha256sum | awk '{print $1}')
+    mysql -u hostpanel_app -p"$DB_APP_PASS" hostpanel -e "REPLACE INTO panel_settings (setting_key, setting_value) VALUES ('setup_token_hash', '$SETUP_HASH')"
+else
+    rm -f "$STATE_DIR/setup_token"
+fi
+
+# The panel's code is root's: frankenphp (which also serves every site's
+# static files) can read it but not change it, and the hosting accounts'
+# PHP (other users entirely) can't even read it - Config.php holds every
+# service's credentials. Only storage/ is the panel's to write.
+chown -R root:frankenphp "$APP_ROOT"
+find "$APP_ROOT" -type d -exec chmod 0750 {} +
+find "$APP_ROOT" -type f -exec chmod 0640 {} +
+chmod 0750 "$APP_ROOT"/worker/*.php
+mkdir -p "$APP_ROOT/storage/logs" "$APP_ROOT/storage/config-queue"
+chown -R frankenphp:frankenphp "$APP_ROOT/storage"
+find "$APP_ROOT/storage" -type d -exec chmod 0770 {} +
+find "$APP_ROOT/storage" -type f -exec chmod 0660 {} +
+# What the root worker writes for the panel (job logs, log snapshots).
+mkdir -p /var/lib/jinnpanel/worker
+chown root:frankenphp /var/lib/jinnpanel/worker
+chmod 0750 /var/lib/jinnpanel/worker
 semanage fcontext -a -t httpd_sys_rw_content_t "$APP_ROOT(/.*)?" 2>/dev/null || true
 restorecon -R "$APP_ROOT"
 
@@ -564,12 +739,20 @@ if [ ! -f /usr/local/bin/tailwindcss ]; then
     chmod +x /usr/local/bin/tailwindcss
 fi
 ( cd "$APP_ROOT" && tailwindcss -i public/assets/css/input.css -o public/assets/css/app.css --minify )
-chown frankenphp:webusers "$APP_ROOT/public/assets/css/app.css"
+chown root:frankenphp "$APP_ROOT/public/assets/css/app.css"; chmod 0640 "$APP_ROOT/public/assets/css/app.css"
+
+# The pool agent: file work the panel does inside an account's own PHP pool
+# (PoolClient). Root-owned; every account's pool may run it (open_basedir).
+install -d -m 0755 /usr/local/lib/jinnpanel/pool
+install -m 0644 "$APP_ROOT/runtime/pool-agent.php" "$APP_ROOT/src/Services/FileManagerService.php" \
+    "$APP_ROOT/src/Services/ExposureService.php" "$APP_ROOT/src/Services/RoutesService.php" /usr/local/lib/jinnpanel/pool/
+semanage fcontext -a -t httpd_sys_content_t '/usr/local/lib/jinnpanel(/.*)?' 2>/dev/null || true
+restorecon -R /usr/local/lib/jinnpanel
 
 # Per-site routing rules (cPanel > Domains > Routes): written by the root
 # worker only - root-owned so sites, which run as frankenphp, can't edit them.
 mkdir -p /var/lib/frankenphp/site-rules
-chown -R root:webusers /var/lib/frankenphp/site-rules
+chown -R root:root /var/lib/frankenphp/site-rules
 chmod 0755 /var/lib/frankenphp/site-rules
 find /var/lib/frankenphp/site-rules -type f -exec chmod 0644 {} +
 
@@ -577,14 +760,16 @@ find /var/lib/frankenphp/site-rules -type f -exec chmod 0644 {} +
 # auto_prepend_file includes the site's generated settings file
 # (PhpSettingsService) - one is_file() per request.
 mkdir -p /var/lib/frankenphp/site-ini
-chown frankenphp:webusers /var/lib/frankenphp/site-ini
-chmod 2775 /var/lib/frankenphp/site-ini
-install -o root -g webusers -m 0644 "$APP_ROOT/runtime/dispatch.php" /var/lib/frankenphp/site-ini/_dispatch.php
-install -o root -g webusers -m 0644 "$APP_ROOT/runtime/pagecache.php" /var/lib/frankenphp/site-ini/_pagecache.php
-# Page cache storage (cPanel > Cache), written by the sites' PHP.
+chown frankenphp:frankenphp /var/lib/frankenphp/site-ini
+chmod 0755 /var/lib/frankenphp/site-ini
+find /var/lib/frankenphp/site-ini -type f -exec chmod 0644 {} +
+install -o root -g root -m 0644 "$APP_ROOT/runtime/dispatch.php" /var/lib/frankenphp/site-ini/_dispatch.php
+install -o root -g root -m 0644 "$APP_ROOT/runtime/pagecache.php" /var/lib/frankenphp/site-ini/_pagecache.php
+# Page cache storage (cPanel > Cache): a folder per domain, written by that
+# account's PHP (hostpanel-worker accountSync), cleared by the panel.
 mkdir -p /var/lib/jinnpanel-pagecache
-chown frankenphp:webusers /var/lib/jinnpanel-pagecache
-chmod 2770 /var/lib/jinnpanel-pagecache
+chown root:root /var/lib/jinnpanel-pagecache
+chmod 0711 /var/lib/jinnpanel-pagecache
 semanage fcontext -a -t httpd_sys_rw_content_t '/var/lib/jinnpanel-pagecache(/.*)?' 2>/dev/null || true
 restorecon -R /var/lib/jinnpanel-pagecache
 semanage fcontext -a -t httpd_sys_rw_content_t '/var/lib/frankenphp/site-ini(/.*)?' 2>/dev/null || true
@@ -625,16 +810,15 @@ $PANEL_TLS_LINE
 	import jinnpanel_app
 }
 
+# Never over plain HTTP: the login form and session cookie would travel in clear.
 http://$PANEL_HOSTNAME {
-	import jinnpanel_app
+	redir https://{host}{uri} 308
 }
 CADDY
 
 frankenphp reload --config /etc/frankenphp/Caddyfile --force || systemctl restart frankenphp
 # Per-site PHP settings files (and cPanel .user.ini imports) for every site.
 runuser -u frankenphp -- php "$APP_ROOT/worker/php-settings-import.php" >/dev/null || warn "Writing per-site PHP settings failed."
-# Re-render every site file from the current template (and reload once).
-runuser -u frankenphp -- php "$APP_ROOT/worker/vhost-rebuild.php" || warn "Rewriting the site configs failed - see $APP_ROOT/storage/logs/reload.log"
 ok "JinnPanel deployed to $APP_ROOT"
 
 # ---------------------------------------------------------------------------
@@ -646,11 +830,10 @@ log "Installing the background config worker"
 cp "$APP_SRC/worker/hostpanel-worker.php" /usr/local/bin/hostpanel-worker.php
 chmod 755 /usr/local/bin/hostpanel-worker.php
 
+# Alt PHP versions (installed by the root worker, run by root's systemd): root's only.
 mkdir -p /opt/php-versions
-chown frankenphp:webusers /opt/php-versions
-chmod 2775 /opt/php-versions
-semanage fcontext -a -t httpd_sys_rw_content_t '/opt/php-versions(/.*)?' 2>/dev/null || true
-restorecon -R /opt/php-versions
+chown root:root /opt/php-versions
+chmod 0755 /opt/php-versions
 
 # Scratch space for WHM > cPanel Migration: backups are received/downloaded
 # and unpacked here by the migration runner (frankenphp:webusers), and in
@@ -658,7 +841,9 @@ restorecon -R /opt/php-versions
 # import/ holds backups to restore without a source server (file mode,
 # worker/migration-import.php); files there must be readable by frankenphp.
 mkdir -p /var/lib/jinnpanel/migrations/import
-chown frankenphp:webusers /var/lib/jinnpanel /var/lib/jinnpanel/migrations /var/lib/jinnpanel/migrations/import
+chown root:frankenphp /var/lib/jinnpanel
+chmod 0755 /var/lib/jinnpanel
+chown frankenphp:webusers /var/lib/jinnpanel/migrations /var/lib/jinnpanel/migrations/import
 chmod 2770 /var/lib/jinnpanel/migrations /var/lib/jinnpanel/migrations/import
 semanage fcontext -a -t httpd_sys_rw_content_t '/var/lib/jinnpanel(/.*)?' 2>/dev/null || true
 restorecon -R /var/lib/jinnpanel
@@ -694,7 +879,7 @@ Description=JinnPanel - apply queued config changes (DNS zones, PHP/MariaDB/SFTP
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/php /usr/local/bin/hostpanel-worker.php
+ExecStart=/usr/bin/php -d auto_prepend_file= /usr/local/bin/hostpanel-worker.php
 UNIT
 
 cat > /etc/systemd/system/hostpanel-worker.timer <<'UNIT'
@@ -711,6 +896,27 @@ WantedBy=timers.target
 UNIT
 
 systemctl daemon-reload
+
+# Every hosting account: its Linux user (jp_<name>), its site folders handed
+# to it, its PHP-FPM pool(s) - then the site configs pointing at those pools
+# (rendered after the pools exist, so sites never point at a missing one).
+log "Setting up the hosting accounts (Linux users, site folders, PHP-FPM pools)"
+# (Each account's sites switch to its pool as soon as that pool is up.)
+php -d auto_prepend_file= /usr/local/bin/hostpanel-worker.php sync-accounts | sed 's/^/    /' \
+    || warn "SETTING UP SOME ACCOUNTS FAILED (above) - their sites may not work; fix and re-run the installer."
+runuser -u frankenphp -- php "$APP_ROOT/worker/vhost-rebuild.php" > /tmp/jinnpanel-vhost-rebuild.log 2>&1 \
+    || { grep FAILED /tmp/jinnpanel-vhost-rebuild.log | sed 's/^/    /'; warn "Rewriting some site configs failed (above)."; }
+# VhostService reloads in the background; here, check and reload for real.
+sleep 2
+if runuser -u frankenphp -- frankenphp validate --config /etc/frankenphp/Caddyfile >/tmp/jinnpanel-validate.log 2>&1; then
+    frankenphp reload --config /etc/frankenphp/Caddyfile --address unix//run/frankenphp/admin.sock --force >/dev/null 2>&1 \
+        || warn "Reloading the web server failed - run: systemctl reload frankenphp"
+else
+    tail -n 5 /tmp/jinnpanel-validate.log | sed 's/^/    /'
+    warn "THE WEB SERVER CONFIG IS INVALID (above) - the running config was kept; fix it and re-run the installer."
+fi
+runuser -u frankenphp -- php "$APP_ROOT/worker/sftp-sync.php" | sed 's/^/    /' || warn "Updating some SFTP logins failed (above)."
+
 systemctl enable --now hostpanel-worker.timer
 ok "Background worker running (every 5s)"
 
@@ -881,9 +1087,8 @@ Description=JinnPanel - start the customer cron jobs due this minute
 
 [Service]
 Type=oneshot
-User=frankenphp
-Group=webusers
-ExecStart=/usr/bin/php $APP_ROOT/worker/cron-run.php
+# root: each PHP job runs as its own account's Linux user (CronService).
+ExecStart=/usr/bin/php -d auto_prepend_file= $APP_ROOT/worker/cron-run.php
 # The jobs are detached children that may run past this oneshot: leave them be.
 KillMode=process
 UNIT
@@ -1066,7 +1271,7 @@ After=stalwart.service frankenphp.service
 [Service]
 Type=oneshot
 User=frankenphp
-Group=webusers
+Group=frankenphp
 ExecStart=/usr/bin/php $APP_ROOT/worker/mail-dns-sync.php
 ExecStart=/usr/bin/php $APP_ROOT/worker/ssl-sync.php
 UNIT
@@ -1117,6 +1322,15 @@ fi
 # Done
 # ---------------------------------------------------------------------------
 
+if [ -n "$SETUP_TOKEN" ]; then
+    SETUP_NOTE="    2. Visit:  https://$PANEL_HOSTNAME/setup
+       and create the real administrator account, with this one-time
+       setup token (also in $STATE_DIR/setup_token):
+           $SETUP_TOKEN"
+else
+    SETUP_NOTE="    2. Sign in at https://$PANEL_HOSTNAME/ (the administrator account exists)."
+fi
+
 {
     echo "MARIADB_ROOT_PASSWORD=$MARIADB_ROOT_PW"
     echo "HOSTPANEL_APP_DB_PASSWORD=$DB_APP_PASS"
@@ -1135,10 +1349,7 @@ cat <<SUMMARY
 
   Next steps:
 $DNS_NOTE
-    2. Visit:  https://$PANEL_HOSTNAME/setup
-       and create the real administrator account. That page IS the
-       "get this into production" step - no admin account exists until
-       you create one there.
+$SETUP_NOTE
 
   Internal service credentials (DB, Stalwart, SFTPGo admin APIs - not
   needed day-to-day, only for direct troubleshooting) were generated

@@ -3,13 +3,15 @@ declare(strict_types=1);
 
 /**
  * Cron jobs (cPanel > Cron Jobs). Two kinds only - a PHP script inside one
- * of the account's sites (run with php-zts and the site's PHP settings, cwd
- * = the script's folder) or a URL to fetch - because a free-form command
- * would be a shell as the web user every site runs as.
+ * of the account's sites or a URL to fetch. A PHP job runs as the account's
+ * own Linux user with the same limits as its sites' PHP-FPM pool
+ * (open_basedir, its own temp/session folders, programs only if allowed),
+ * the site's PHP settings, and cwd = the script's folder.
  *
- * cron-run.php (systemd timer, every minute) starts the jobs due that
- * minute, each through cron-exec.php in the background, with a per-job lock
- * so a slow run is never started twice, and a time limit.
+ * cron-run.php (systemd timer, every minute, as root - it has to switch to
+ * each account's user) starts the jobs due that minute, each through
+ * cron-exec.php in the background, with a per-job lock so a slow run is
+ * never started twice, and a time limit.
  */
 final class CronService
 {
@@ -156,7 +158,7 @@ final class CronService
     public static function execute(int $id): void
     {
         $pdo = Database::app();
-        $s = $pdo->prepare('SELECT c.*, d.domain_name, u.status AS user_status FROM cron_jobs c JOIN users u ON u.id = c.user_id LEFT JOIN domains d ON d.id = c.domain_id WHERE c.id = ?');
+        $s = $pdo->prepare('SELECT c.*, d.domain_name, d.php_version, u.username, u.php_exec, u.status AS user_status FROM cron_jobs c JOIN users u ON u.id = c.user_id LEFT JOIN domains d ON d.id = c.domain_id WHERE c.id = ?');
         $s->execute([$id]);
         $job = $s->fetch();
         if (!$job || $job['user_status'] !== 'active') {
@@ -177,9 +179,14 @@ final class CronService
         } else {
             // Re-check: the script must still be inside that domain's folder.
             $script = self::scriptPath((string) $job['domain_name'], substr((string) $job['target'], strlen(VhostService::siteDir((string) $job['domain_name'])) + 1));
-            $cmd = array_merge(['timeout', (string) self::TIMEOUT, PHP_BINARY, '-f', $script, '--'], $job['args'] !== '' ? preg_split('/\s+/', (string) $job['args']) : []);
-            $env = ['PATH' => '/usr/local/bin:/usr/bin:/bin', 'HOME' => VhostService::siteDir((string) $job['domain_name']),
+            $cmd = array_merge(['runuser', '-u', Usernames::linuxUser((string) $job['username']), '--', 'timeout', (string) self::TIMEOUT],
+                self::phpCommand($job), ['-f', $script, '--'], $job['args'] !== '' ? preg_split('/\s+/', (string) $job['args']) : []);
+            $home = AccountRuntime::HOME . '/' . $job['username'];
+            $env = ['PATH' => '/usr/local/bin:/usr/bin:/bin', 'HOME' => $home, 'TMPDIR' => "$home/tmp",
                 'JINNPANEL_DOCROOT' => VhostService::effectiveDocroot((string) $job['domain_name'])]; // site PHP settings (see install.sh's dispatcher)
+            if (($job['php_version'] ?? 'default') !== 'default') {
+                $env['PHP_INI_SCAN_DIR'] = PhpVersionService::DIR . '/' . $job['php_version'] . '/conf.d';
+            }
             $proc = proc_open($cmd, [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['redirect', 1]], $pipes, dirname($script), $env);
             $output = '';
             if (is_resource($proc)) {
@@ -203,6 +210,34 @@ final class CronService
         $pdo->prepare('UPDATE cron_jobs SET last_status = ?, last_output = ? WHERE id = ?')
             ->execute([$status, mb_substr(mb_scrub($output), -4000), $id]);
         flock($lock, LOCK_UN);
+    }
+
+    /**
+     * The PHP CLI (the domain's version when it has one) with its account's
+     * pool limits - same open_basedir, temp and session folders, and
+     * disabled functions as hostpanel-worker's poolConfig().
+     *
+     * @return list<string>
+     */
+    private static function phpCommand(array $job): array
+    {
+        $version = (string) ($job['php_version'] ?? 'default');
+        $bin = $version !== 'default' && is_executable(PhpVersionService::DIR . "/$version/php") ? PhpVersionService::DIR . "/$version/php" : PHP_BINARY;
+        $home = AccountRuntime::HOME . '/' . $job['username'];
+        $paths = ["$home/", '/var/lib/frankenphp/site-ini/', '/usr/local/lib/jinnpanel/pool/', '/usr/share/pear/', '/usr/share/php/'];
+        $d = Database::app()->prepare('SELECT domain_name FROM domains WHERE user_id = ?');
+        $d->execute([$job['user_id']]);
+        foreach ($d->fetchAll(PDO::FETCH_COLUMN) as $name) {
+            $paths[] = VhostService::siteDir((string) $name) . '/';
+            $paths[] = CacheService::PAGE_CACHE_DIR . "/$name/";
+        }
+        $disabled = (int) ($job['php_exec'] ?? 0) === 1 ? '' : 'exec,passthru,shell_exec,system,proc_open,popen,pcntl_exec,dl';
+        $cmd = [$bin, '-d', 'open_basedir=' . implode(':', $paths), '-d', "sys_temp_dir=$home/tmp", '-d', "upload_tmp_dir=$home/tmp",
+            '-d', "session.save_path=$home/sessions", '-d', "disable_functions=$disabled", '-d', 'opcache.enable_cli=0'];
+        if ($bin !== PHP_BINARY) {
+            array_push($cmd, '-c', PhpVersionService::DIR . "/$version/php.ini");
+        }
+        return $cmd;
     }
 
     /**

@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: zip, phar, pcntl, posix, curl, openssl, pdo_mysql, mbstring
+          coverage: none
+
+      - name: Lint every PHP file
+        run: |
+          find app tests -name '*.php' -print0 | xargs -0 -n1 -P4 php -l > /tmp/lint.txt || { grep -v '^No syntax errors' /tmp/lint.txt; exit 1; }
+
+      - name: Installer syntax
+        run: bash -n installer/install.sh
+
+      - name: Unit tests
+        run: php tests/UnitTest.php
+
+      - name: .htaccess translator (with FrankenPHP)
+        run: |
+          curl -fsSL "https://github.com/php/frankenphp/releases/latest/download/frankenphp-linux-x86_64" -o /usr/local/bin/frankenphp || exit 0
+          chmod +x /usr/local/bin/frankenphp
+          php tests/HtaccessTranslatorTest.php

@@ -10,7 +10,7 @@ declare(strict_types=1);
  */
 final class PhpExtensionService
 {
-    public const CACHE = __DIR__ . '/../../storage/php-extensions.json';
+    public const CACHE = SystemWorkerService::OUT_DIR . '/php-extensions.json';
     /** Installed by install.sh and needed by the panel or most sites: not removable here. */
     public const REQUIRED = ['pdo', 'pdo_mysql', 'mysqlnd', 'mysqli', 'gd', 'intl', 'zip', 'bcmath', 'gmp', 'soap', 'sqlite3', 'pdo_sqlite', 'xsl', 'bz2', 'gettext', 'ftp', 'imagick', 'cli', 'embed'];
     /** Packages that aren't extensions. */

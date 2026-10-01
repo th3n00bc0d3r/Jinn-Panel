@@ -451,6 +451,54 @@ final class MailService
         }
     }
 
+    /** Bytes the mailboxes use (Stalwart's usedDiskQuota), summed. @param list<string> $ids */
+    public static function usedBytes(array $ids): int
+    {
+        $total = 0;
+        foreach (array_chunk($ids, 100) as $chunk) {
+            $r = self::call([['x:Account/get', ['accountId' => self::accountId(), 'ids' => $chunk, 'properties' => ['usedDiskQuota']], '0']]);
+            foreach ((array) ($r[0][1]['list'] ?? []) as $acct) {
+                $total += (int) ($acct['usedDiskQuota'] ?? 0);
+            }
+        }
+        return $total;
+    }
+
+    /**
+     * Suspension: a mailbox that may not log in (IMAP, POP3, SMTP
+     * submission, webmail) - mail to it is still accepted and kept. Only
+     * the "authenticate" permission is touched; anything else the mailbox
+     * has (e.g. lifted import limits) stays.
+     */
+    public static function setLoginAllowed(string $mailAccountId, bool $allowed): void
+    {
+        $get = self::call([['x:Account/get', ['accountId' => self::accountId(), 'ids' => [$mailAccountId], 'properties' => ['permissions']], '0']]);
+        $perm = $get[0][1]['list'][0]['permissions'] ?? null;
+        if (!is_array($perm)) {
+            throw new RuntimeException('Could not read the mailbox permissions.');
+        }
+        $type = (string) ($perm['@type'] ?? 'Inherit');
+        $enabled = (array) ($perm['enabledPermissions'] ?? []);
+        $disabled = (array) ($perm['disabledPermissions'] ?? []);
+        if ($allowed) {
+            unset($disabled['authenticate']);
+        } else {
+            $disabled['authenticate'] = true;
+        }
+        if ($type === 'Replace') {
+            if ($allowed) {
+                $enabled['authenticate'] = true;
+            } else {
+                unset($enabled['authenticate']);
+            }
+            self::setPermissions($mailAccountId, ['@type' => 'Replace', 'enabledPermissions' => $enabled, 'disabledPermissions' => $disabled]);
+            return;
+        }
+        self::setPermissions($mailAccountId, $enabled === [] && $disabled === []
+            ? ['@type' => 'Inherit']
+            : ['@type' => 'Merge', 'enabledPermissions' => $enabled, 'disabledPermissions' => $disabled]);
+    }
+
     private static function setPermissions(string $mailAccountId, array $permissions): void
     {
         // Permission sets are maps; Stalwart returns an empty one as [] but

@@ -16,7 +16,18 @@ $router->post('/setup', ['SetupController', 'store']);
 $router->get('/login', ['AuthController', 'showLogin']);
 $router->get('/login/handoff', ['AuthController', 'handoff']);
 $router->post('/login', ['AuthController', 'login']);
-$router->get('/logout', ['AuthController', 'logout']);
+$router->get('/login/2fa', ['AuthController', 'showTwoFactor']);
+$router->post('/login/2fa', ['AuthController', 'twoFactor']);
+$router->post('/logout', ['AuthController', 'logout']);
+
+// Login security (password, two-factor) for every role.
+foreach (['/whm/security', '/cpanel/security'] as $sec) {
+    $router->get($sec, ['SecurityController', 'index']);
+    $router->post("$sec/password", ['SecurityController', 'password']);
+    $router->post("$sec/2fa/start", ['SecurityController', 'twoFactorStart']);
+    $router->post("$sec/2fa/confirm", ['SecurityController', 'twoFactorConfirm']);
+    $router->post("$sec/2fa/disable", ['SecurityController', 'twoFactorDisable']);
+}
 
 // WHM (admin + reseller)
 $router->get('/whm', ['WhmDashboardController', 'index']);
@@ -26,6 +37,14 @@ $router->post('/whm/accounts', ['AccountController', 'store']);
 $router->post('/whm/accounts/{id}/suspend', ['AccountController', 'suspend']);
 $router->post('/whm/accounts/{id}/unsuspend', ['AccountController', 'unsuspend']);
 $router->post('/whm/accounts/{id}/delete', ['AccountController', 'destroy']);
+$router->post('/whm/accounts/{id}/reset-2fa', ['SecurityController', 'resetTwoFactor']);
+$router->post('/whm/accounts/{id}/php-exec', ['AccountController', 'phpExec']);
+$router->get('/whm/activity', ['ActivityController', 'index']);
+$router->get('/whm/backups', ['BackupController', 'whm']);
+$router->post('/whm/backups/settings', ['BackupController', 'whmSettings']);
+$router->post('/whm/backups/run', ['BackupController', 'whmRun']);
+$router->post('/whm/backups/{id}/restore', ['BackupController', 'whmRestore']);
+$router->get('/whm/backups/{id}/download', ['BackupController', 'whmDownload']);
 $router->get('/whm/packages', ['PackageController', 'index']);
 $router->get('/whm/packages/create', ['PackageController', 'create']);
 $router->post('/whm/packages', ['PackageController', 'store']);
@@ -126,6 +145,10 @@ $router->post('/cpanel/cron', ['CronController', 'store']);
 $router->post('/cpanel/cron/{id}/toggle', ['CronController', 'toggle']);
 $router->post('/cpanel/cron/{id}/run', ['CronController', 'runNow']);
 $router->post('/cpanel/cron/{id}/delete', ['CronController', 'destroy']);
+$router->get('/cpanel/backups', ['BackupController', 'cpanel']);
+$router->post('/cpanel/backups', ['BackupController', 'cpanelRun']);
+$router->post('/cpanel/backups/{id}/restore', ['BackupController', 'cpanelRestore']);
+$router->get('/cpanel/backups/{id}/download', ['BackupController', 'cpanelDownload']);
 $router->get('/cpanel/files', ['FileManagerController', 'index']);
 $router->post('/cpanel/files/upload', ['FileManagerController', 'upload']);
 $router->post('/cpanel/files/mkdir', ['FileManagerController', 'mkdir']);

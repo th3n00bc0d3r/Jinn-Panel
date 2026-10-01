@@ -107,7 +107,7 @@ final class ServerConfigController
             'title' => 'PHP Extensions',
             'list' => $list,
             'last' => $last,
-            'pending' => (bool) glob(__DIR__ . '/../../storage/config-queue/php-ext*.json'),
+            'pending' => SystemWorkerService::pending('php-ext'),
         ], 'whm');
     }
 

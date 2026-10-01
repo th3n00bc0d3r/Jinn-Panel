@@ -10,7 +10,7 @@ final class Http
      * @param array<string,string> $headers
      * @return array{status:int, body:mixed, raw:string}
      */
-    public static function json(string $method, string $url, ?array $payload = null, array $headers = [], ?string $basicAuth = null): array
+    public static function json(string $method, string $url, array|stdClass|null $payload = null, array $headers = [], ?string $basicAuth = null): array
     {
         $ch = curl_init($url);
         $defaultHeaders = ['Content-Type: application/json', 'Accept: application/json'];

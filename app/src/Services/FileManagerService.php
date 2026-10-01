@@ -7,6 +7,11 @@ declare(strict_types=1);
  * inside it, symlinks are never followed out of it, and archives are
  * unpacked entry by entry (no "..", absolute paths or links; total size
  * checked against free space).
+ *
+ * This runs inside the account's own PHP-FPM pool, as the account's Linux
+ * user (runtime/pool-agent.php, reached through PoolClient) - so the files
+ * it creates belong to the account and it can only touch what the account
+ * itself could.
  */
 final class FileManagerService
 {
@@ -30,7 +35,7 @@ final class FileManagerService
     /** Existing directory for a relative path (falls back to the root). */
     public function dir(string $rel): string
     {
-        $t = realpath($this->root . '/' . ltrim($rel, '/'));
+        $t = @realpath($this->root . '/' . ltrim($rel, '/'));
         return ($t !== false && is_dir($t) && $this->inside($t)) ? $t : $this->root;
     }
 
@@ -111,7 +116,7 @@ final class FileManagerService
             @copy($src, $dest) ?: throw new RuntimeException('Could not copy ' . basename($src) . '.');
             return;
         }
-        @mkdir($dest, 02775);
+        @mkdir($dest, 0755);
         foreach (scandir($src) ?: [] as $n) {
             if ($n !== '.' && $n !== '..') {
                 $this->transfer("$src/$n", $dest, true);
@@ -128,11 +133,7 @@ final class FileManagerService
         @rename($src, $dest) ?: throw new RuntimeException('Could not rename.');
     }
 
-    /**
-     * chmod: $fileMode/$dirMode are octal strings like "644"/"755". Folders
-     * keep their setgid bit (new files stay in the shared group); setuid and
-     * sticky bits are never set.
-     */
+    /** chmod: $fileMode/$dirMode are octal strings like "644"/"755"; setuid, setgid and sticky bits are never set. */
     public function chmod(string $path, string $fileMode, string $dirMode, bool $recursive): int
     {
         $f = self::mode($fileMode);
@@ -142,8 +143,7 @@ final class FileManagerService
             if (is_link($p)) {
                 return;
             }
-            $old = (int) (@fileperms($p) ?: 0);
-            if (@chmod($p, is_dir($p) ? ($d | ($old & 02000)) : $f)) {
+            if (@chmod($p, is_dir($p) ? $d : $f)) {
                 $n++;
             }
         };
@@ -255,43 +255,53 @@ final class FileManagerService
             $zip->close();
             return $n;
         }
-        if (preg_match('/\.(tar\.gz|tgz|tar)$/', $lower)) {
-            $z = str_ends_with($lower, '.tar') ? '' : 'z';
-            // List first: refuse links, devices, absolute and ".." paths.
-            $code = CpanelBackupReader::run(['tar', "-t{$z}vf", $archive], $listing);
-            if ($code !== 0) {
+        if (preg_match('/\.(tar\.gz|tgz|tar|tar\.bz2)$/', $lower)) {
+            // PharData, not the tar program: this runs in the account's own
+            // PHP, which may not start programs. Entries are checked first
+            // (links, devices, absolute and ".." paths are refused), then
+            // copied one by one like the zip case.
+            try {
+                $tar = new PharData($archive);
+            } catch (Throwable) {
                 throw new RuntimeException('Not a readable tar archive.');
             }
+            $base = 'phar://' . $tar->getPath() . '/';
+            $entries = [];
             $total = 0;
-            foreach (preg_split('/\r?\n/', trim((string) $listing)) as $line) {
-                if ($line === '') {
-                    continue;
+            foreach (new RecursiveIteratorIterator($tar, RecursiveIteratorIterator::SELF_FIRST) as $f) {
+                /** @var PharFileInfo $f */
+                $rel = self::safeArchivePath(substr($f->getPathname(), strlen($base)));
+                if ($f->isLink()) {
+                    throw new RuntimeException("The archive contains a link ($rel) - not extracted.");
                 }
-                if (!preg_match('/^([-dlhbcps])\S*\s+\S+\s+(\d+)\s+\S+\s+\S+\s+(.*)$/', $line, $m)) {
-                    throw new RuntimeException('Unexpected archive listing.');
-                }
-                if (!in_array($m[1], ['-', 'd'], true)) {
-                    throw new RuntimeException('The archive contains links or special files - not extracted.');
-                }
-                $rel = self::safeArchivePath($m[3]);
-                // An existing link on the way (e.g. x -> /elsewhere) would be followed by tar.
-                $p = $destDir;
-                foreach (explode('/', $rel) as $part) {
-                    $p .= '/' . $part;
-                    if (is_link($p)) {
-                        throw new RuntimeException("$rel would be written through the link " . $this->rel($p) . ' - not extracted.');
-                    }
-                }
-                $total += (int) $m[2];
+                $entries[] = [$f->getPathname(), $rel, $f->isDir()];
+                $total += $f->isDir() ? 0 : (int) $f->getSize();
             }
             self::checkSize($total, $free);
-            $code = CpanelBackupReader::run(['tar', "-x{$z}f", $archive, '-C', $destDir, '--no-same-owner', '--no-same-permissions', '--no-overwrite-dir'], $out);
-            if ($code !== 0) {
-                throw new RuntimeException('Extracting failed: ' . mb_substr(trim((string) $out), 0, 300));
+            $n = 0;
+            foreach ($entries as [$src, $rel, $isDir]) {
+                $out = $destDir . '/' . $rel;
+                if ($isDir) {
+                    $this->ensureDir($out);
+                    continue;
+                }
+                $this->ensureDir(dirname($out));
+                if (is_link($out)) {
+                    @unlink($out);
+                }
+                $in = @fopen($src, 'rb');
+                $fh = $in !== false ? @fopen($out, 'wb') : false;
+                if ($in === false || $fh === false) {
+                    throw new RuntimeException("Could not write $rel.");
+                }
+                stream_copy_to_stream($in, $fh);
+                fclose($fh);
+                fclose($in);
+                $n++;
             }
-            return substr_count(trim((string) $listing), "\n") + 1;
+            return $n;
         }
-        throw new InvalidArgumentException('Only .zip, .tar.gz, .tgz and .tar archives can be extracted.');
+        throw new InvalidArgumentException('Only .zip, .tar.gz, .tgz, .tar.bz2 and .tar archives can be extracted.');
     }
 
     public function inside(string $abs): bool
@@ -310,7 +320,7 @@ final class FileManagerService
         if ($r === false || !is_dir($r) || !$this->inside($r)) {
             throw new RuntimeException('The archive tries to write outside the folder.');
         }
-        if (!is_dir($dir) && !@mkdir($dir, 02775, true)) {
+        if (!is_dir($dir) && !@mkdir($dir, 0755, true)) {
             throw new RuntimeException('Could not create ' . $this->rel($dir) . '.');
         }
         $final = realpath($dir);

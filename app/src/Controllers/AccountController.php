@@ -49,7 +49,7 @@ final class AccountController
         Csrf::requireValid();
         $me = Auth::user();
 
-        $username = trim((string) ($_POST['username'] ?? ''));
+        $username = strtolower(trim((string) ($_POST['username'] ?? '')));
         $email = trim((string) ($_POST['email'] ?? ''));
         $fullName = trim((string) ($_POST['full_name'] ?? ''));
         $password = (string) ($_POST['password'] ?? '');
@@ -61,14 +61,14 @@ final class AccountController
         }
 
         $errors = [];
-        if ($username === '' || !preg_match('/^[a-z][a-z0-9_]{2,31}$/i', $username)) {
-            $errors[] = 'Username must be 3-32 characters, letters/numbers/underscore, starting with a letter.';
+        if (($problem = $role === 'user' ? Usernames::problem($username) : Usernames::loginProblem($username)) !== null) {
+            $errors[] = $problem;
         }
         if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
             $errors[] = 'A valid email address is required.';
         }
-        if (strlen($password) < 8) {
-            $errors[] = 'Password must be at least 8 characters.';
+        if (($problem = Passwords::problem($password, $username)) !== null) {
+            $errors[] = $problem;
         }
 
         $pdo = Database::app();
@@ -77,6 +77,17 @@ final class AccountController
             $chk->execute([$username, $email]);
             if ($chk->fetch()) {
                 $errors[] = 'That username or email is already taken.';
+            }
+        }
+
+        // A reseller may create as many accounts as its own package allows.
+        if (!$errors && $me['role'] === 'reseller') {
+            $pkg = Quota::package((int) $me['id']);
+            $limit = (int) ($pkg['max_accounts'] ?? 0);
+            $n = $pdo->prepare("SELECT COUNT(*) FROM users WHERE parent_id = ? AND role = 'user'");
+            $n->execute([$me['id']]);
+            if ((int) $n->fetchColumn() >= $limit) {
+                $errors[] = $limit > 0 ? "Your reseller package allows $limit accounts - you've reached that." : 'Your reseller package doesn\'t allow creating accounts - ask the server administrator.';
             }
         }
 
@@ -111,6 +122,11 @@ final class AccountController
             $packageId,
         ]);
 
+        $newId = (int) $pdo->lastInsertId();
+        Audit::target($newId);
+        if ($role === 'user') {
+            AccountRuntime::sync($newId); // its Linux user, PHP home and (once it has domains) pools
+        }
         Flash::ok("Account \"$username\" created as $role.");
         header('Location: /whm/accounts');
         exit;
@@ -140,10 +156,33 @@ final class AccountController
 
         // Best-effort external cleanup (vhosts, DNS, databases + every MySQL
         // user the account owns, mailboxes, SFTP users), then the cascading
-        // DB delete. Shared with the cPanel migration rollback.
+        // DB delete. Shared with the cPanel migration rollback. The worker
+        // then removes its pools and Linux user, and moves its site folders
+        // aside (root-only) - a later account must never inherit them.
         AccountCleanupService::purge((int) $target['id']);
+        Audit::target((int) $target['id']);
 
         Flash::ok("Account \"{$target['username']}\" and its resources have been removed.");
+        header('Location: /whm/accounts');
+        exit;
+    }
+
+    /** Whether the account's PHP may run programs (exec, proc_open, ...): off by default. */
+    public static function phpExec(array $params): void
+    {
+        Auth::requireRole(['admin']);
+        Csrf::requireValid();
+        $target = self::findScopedAccount((int) $params['id'], Auth::user());
+        if (!$target || $target['role'] !== 'user') {
+            Flash::error('Account not found.');
+            header('Location: /whm/accounts');
+            exit;
+        }
+        $on = !empty($_POST['allow']);
+        Database::app()->prepare('UPDATE users SET php_exec = ? WHERE id = ?')->execute([$on ? 1 : 0, $target['id']]);
+        AccountRuntime::sync((int) $target['id']);
+        Audit::target((int) $target['id']);
+        Flash::ok("\"{$target['username']}\": PHP " . ($on ? 'may now run programs (exec, proc_open, ...).' : 'may no longer run programs.'));
         header('Location: /whm/accounts');
         exit;
     }
@@ -162,8 +201,19 @@ final class AccountController
 
         $stmt = Database::app()->prepare('UPDATE users SET status = ? WHERE id = ?');
         $stmt->execute([$status, $target['id']]);
+        Audit::target((int) $target['id']);
+        $problems = $target['role'] === 'user' ? SuspensionService::apply((int) $target['id'], $status === 'suspended') : [];
+        if ($target['role'] !== 'user') {
+            Auth::invalidateSessions((int) $target['id']);
+        }
 
-        Flash::ok("Account \"{$target['username']}\" is now $status.");
+        $what = $status === 'suspended'
+            ? ' Its sites, mail logins, SFTP, MySQL users and cron jobs are switched off.'
+            : ' Its sites, mail logins, SFTP, MySQL users and cron jobs are back on.';
+        Flash::ok("Account \"{$target['username']}\" is now $status." . ($target['role'] === 'user' ? $what : ''));
+        if ($problems) {
+            Flash::error('Not everything could be switched: ' . implode('; ', array_slice($problems, 0, 5)));
+        }
         header('Location: /whm/accounts');
         exit;
     }

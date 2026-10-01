@@ -3,8 +3,11 @@ declare(strict_types=1);
 
 /**
  * cPanel > File Manager, rooted at the domain's site folder (/var/www/<domain>:
- * the document root, plus private/ and logs/ next to it). File operations
- * are in FileManagerService, which keeps every path inside that folder.
+ * the document root, plus private/ and logs/ next to it). The work itself
+ * runs inside the account's own PHP-FPM pool, as the account's Linux user
+ * (PoolClient -> pool-agent -> FileManagerService), which keeps every path
+ * inside that folder - so files belong to the account, and the panel can't
+ * reach anything the account itself couldn't.
  */
 final class FileManagerController
 {
@@ -15,7 +18,7 @@ final class FileManagerController
         return $stmt->fetch() ?: null;
     }
 
-    /** @return array{0:array,1:FileManagerService,2:string} domain, service, current directory (POST + CSRF checked) */
+    /** @return array{0:array,1:string} domain, current directory relative to the site folder (POST + CSRF checked) */
     private static function context(bool $post = true): array
     {
         Auth::requireRole(['user']);
@@ -29,8 +32,7 @@ final class FileManagerController
             header('Location: /cpanel/files');
             exit;
         }
-        $fm = new FileManagerService(VhostService::siteDir((string) $domain['domain_name']));
-        return [$domain, $fm, $fm->dir((string) ($src['path'] ?? ''))];
+        return [$domain, trim((string) ($src['path'] ?? ''), '/')];
     }
 
     public static function index(): void
@@ -47,12 +49,12 @@ final class FileManagerController
         $currentRel = '';
         $docrootRel = '';
         if ($domain) {
+            $name = (string) $domain['domain_name'];
+            $docrootRel = ltrim(substr(VhostService::effectiveDocroot($name), strlen(VhostService::siteDir($name))), '/');
             try {
-                $fm = new FileManagerService(VhostService::siteDir((string) $domain['domain_name']));
-                $docrootRel = $fm->rel(VhostService::effectiveDocroot((string) $domain['domain_name']));
-                $dir = $fm->dir(array_key_exists('path', $_GET) ? (string) $_GET['path'] : $docrootRel);
-                $currentRel = $fm->rel($dir);
-                $entries = $fm->list($dir);
+                $res = PoolClient::call($name, 'list', ['dir' => array_key_exists('path', $_GET) ? (string) $_GET['path'] : $docrootRel]);
+                $currentRel = (string) $res['dir'];
+                $entries = (array) $res['entries'];
             } catch (Throwable $e) {
                 Flash::error($e->getMessage());
             }
@@ -70,7 +72,8 @@ final class FileManagerController
 
     public static function upload(): void
     {
-        [$domain, $fm, $dir] = self::context();
+        [$domain, $dir] = self::context();
+        self::needSpace($domain, $dir);
         $files = $_FILES['file'] ?? null;
         $n = 0;
         $errors = [];
@@ -81,83 +84,70 @@ final class FileManagerController
                     $errors[] = (string) $name . ($files['error'][$i] === UPLOAD_ERR_INI_SIZE ? ' (too large)' : '');
                     continue;
                 }
+                $in = fopen($tmp, 'rb');
                 try {
-                    move_uploaded_file($tmp, $fm->entry($dir, (string) $name)) ? $n++ : $errors[] = (string) $name;
-                } catch (Throwable) {
-                    $errors[] = (string) $name;
+                    if ($in === false) {
+                        throw new RuntimeException('unreadable');
+                    }
+                    PoolClient::call((string) $domain['domain_name'], 'upload', ['dir' => $dir, 'name' => (string) $name], $in);
+                    $n++;
+                } catch (Throwable $e) {
+                    $errors[] = (string) $name . ' (' . $e->getMessage() . ')';
+                } finally {
+                    is_resource($in) && fclose($in);
+                    @unlink($tmp);
                 }
             }
         }
         $n > 0 && Flash::ok("Uploaded $n file" . ($n === 1 ? '' : 's') . '.');
         $errors && Flash::error('Not uploaded: ' . implode(', ', array_slice($errors, 0, 10)));
-        self::backTo($domain, $fm->rel($dir));
+        self::backTo($domain, $dir);
     }
 
     public static function mkdir(): void
     {
-        [$domain, $fm, $dir] = self::context();
+        [$domain, $dir] = self::context();
+        self::needSpace($domain, $dir);
         try {
-            $path = $fm->entry($dir, (string) ($_POST['name'] ?? ''));
-            if (!file_exists($path)) {
-                mkdir($path, 02775);
-            }
+            PoolClient::call((string) $domain['domain_name'], 'mkdir', ['dir' => $dir, 'name' => (string) ($_POST['name'] ?? '')]);
             Flash::ok('Folder created.');
         } catch (Throwable $e) {
             Flash::error($e->getMessage());
         }
-        self::backTo($domain, $fm->rel($dir));
+        self::backTo($domain, $dir);
     }
 
     /** Bulk actions on the selected names[] in the current folder. */
     public static function action(): void
     {
-        [$domain, $fm, $dir] = self::context();
+        [$domain, $dir] = self::context();
         $op = (string) ($_POST['op'] ?? '');
         $names = array_values(array_filter(array_map('strval', (array) ($_POST['names'] ?? []))));
+        $name = (string) $domain['domain_name'];
+        $args = ['dir' => $dir, 'names' => array_slice($names, 0, 500)];
+        if (in_array($op, ['copy', 'compress', 'extract'], true)) {
+            self::needSpace($domain, $dir);
+        }
         try {
             if (!$names) {
                 throw new InvalidArgumentException('Select at least one file or folder.');
             }
-            $paths = array_map(fn($n) => $fm->entry($dir, $n), array_slice($names, 0, 500));
-            foreach ($paths as $p) {
-                if (!file_exists($p) && !is_link($p)) {
-                    throw new InvalidArgumentException(basename($p) . ' no longer exists.');
-                }
-            }
             $msg = match ($op) {
-                'delete' => (function () use ($fm, $paths) {
-                    foreach ($paths as $p) {
-                        $fm->delete($p);
-                    }
-                    return count($paths) . ' deleted.';
+                'delete' => (function () use ($name, $args) {
+                    PoolClient::call($name, 'delete', $args);
+                    return count($args['names']) . ' deleted.';
                 })(),
-                'move', 'copy' => (function () use ($fm, $paths, $op) {
-                    $dest = $fm->dir((string) ($_POST['dest'] ?? ''));
-                    if ((string) ($_POST['dest'] ?? '') !== '' && $fm->rel($dest) !== trim((string) $_POST['dest'], '/')) {
-                        throw new InvalidArgumentException('The destination folder doesn\'t exist.');
-                    }
-                    foreach ($paths as $p) {
-                        $fm->transfer($p, $dest, $op === 'copy');
-                    }
-                    return count($paths) . ($op === 'copy' ? ' copied' : ' moved') . ' to /' . $fm->rel($dest) . '.';
+                'move', 'copy' => (function () use ($name, $args, $op) {
+                    $res = PoolClient::call($name, $op, $args + ['dest' => (string) ($_POST['dest'] ?? '')]);
+                    return count($args['names']) . ($op === 'copy' ? ' copied' : ' moved') . ' to /' . $res['dest'] . '.';
                 })(),
-                'chmod' => (function () use ($fm, $paths) {
-                    $n = 0;
-                    foreach ($paths as $p) {
-                        $n += $fm->chmod($p, (string) ($_POST['file_mode'] ?? '644'), (string) ($_POST['dir_mode'] ?? '755'), !empty($_POST['recursive']));
-                    }
-                    return "Permissions changed on $n item(s).";
-                })(),
-                'compress' => 'Created ' . basename($fm->compress($dir, $paths, trim((string) ($_POST['dest'] ?? '')) ?: 'archive-' . date('Ymd-His'))) . '.',
-                'extract' => (function () use ($fm, $paths, $dir) {
-                    $n = 0;
-                    foreach ($paths as $p) {
-                        $n += $fm->extract($p, $dir);
-                    }
-                    return "Extracted $n file(s).";
-                })(),
-                'rename' => (function () use ($fm, $paths) {
-                    $fm->rename($paths[0], (string) ($_POST['dest'] ?? ''));
+                'chmod' => 'Permissions changed on ' . (int) PoolClient::call($name, 'chmod', $args + [
+                    'file_mode' => (string) ($_POST['file_mode'] ?? '644'), 'dir_mode' => (string) ($_POST['dir_mode'] ?? '755'), 'recursive' => !empty($_POST['recursive']),
+                ])['count'] . ' item(s).',
+                'compress' => 'Created ' . PoolClient::call($name, 'compress', $args + ['dest' => trim((string) ($_POST['dest'] ?? ''))])['name'] . '.',
+                'extract' => 'Extracted ' . (int) PoolClient::call($name, 'extract', $args)['count'] . ' file(s).',
+                'rename' => (function () use ($name, $args) {
+                    PoolClient::call($name, 'rename', $args + ['dest' => (string) ($_POST['dest'] ?? '')]);
                     return 'Renamed.';
                 })(),
                 default => throw new InvalidArgumentException('Unknown action.'),
@@ -166,41 +156,38 @@ final class FileManagerController
         } catch (Throwable $e) {
             Flash::error($e->getMessage());
         }
-        self::backTo($domain, $fm->rel($dir));
+        self::backTo($domain, $dir);
     }
 
-    /** One file as-is; several (or a folder) as a zip. */
+    /** One file as-is; several (or a folder) as a zip. Streamed from the pool. */
     public static function download(): void
     {
-        [$domain, $fm, $dir] = self::context(false);
+        [$domain, $dir] = self::context(false);
         $names = array_values(array_filter(array_map('strval', (array) ($_GET['names'] ?? ($_GET['name'] ?? [])))));
         try {
-            $paths = array_map(fn($n) => $fm->entry($dir, $n), $names);
-            if (!$paths) {
+            if (!$names) {
                 throw new InvalidArgumentException('Nothing selected.');
             }
-            if (count($paths) === 1 && is_file($paths[0]) && !is_link($paths[0])) {
-                header('Content-Type: application/octet-stream');
-                header('Content-Disposition: attachment; filename="' . addcslashes(basename($paths[0]), '"\\') . '"');
-                header('Content-Length: ' . filesize($paths[0]));
-                readfile($paths[0]);
-                exit;
-            }
-            $tmpDir = sys_get_temp_dir() . '/jp-dl-' . bin2hex(random_bytes(6));
-            mkdir($tmpDir, 0700);
-            $tmp = new FileManagerService($tmpDir);
-            $zip = (new FileManagerService($fm->root()))->compress($dir, $paths, '.jp-download-' . bin2hex(random_bytes(4)));
-            rename($zip, "$tmpDir/download.zip");
-            header('Content-Type: application/zip');
-            header('Content-Disposition: attachment; filename="' . $domain['domain_name'] . '-files.zip"');
-            header('Content-Length: ' . filesize("$tmpDir/download.zip"));
-            readfile("$tmpDir/download.zip");
-            $tmp->delete("$tmpDir/download.zip");
-            @rmdir($tmpDir);
+            $zipName = $domain['domain_name'] . '-files.zip';
+            PoolClient::stream((string) $domain['domain_name'], 'download', ['dir' => $dir, 'names' => $names], function (array $h) use ($zipName): void {
+                $file = rawurldecode((string) ($h['x-jp-name'] ?? 'download'));
+                $file = $file === 'download.zip' ? $zipName : basename($file);
+                header('Content-Type: ' . ($h['content-type'] ?? 'application/octet-stream'));
+                header('Content-Disposition: attachment; filename="' . addcslashes($file, '"\\') . '"');
+                if (isset($h['content-length'])) {
+                    header('Content-Length: ' . (int) $h['content-length']);
+                }
+            }, function (string $chunk): void {
+                echo $chunk;
+                flush();
+            });
             exit;
         } catch (Throwable $e) {
+            if (headers_sent()) {
+                exit;
+            }
             Flash::error($e->getMessage());
-            self::backTo($domain, $fm->rel($dir));
+            self::backTo($domain, $dir);
         }
     }
 
@@ -210,6 +197,17 @@ final class FileManagerController
         $_POST['op'] = 'delete';
         $_POST['names'] = [(string) ($_POST['name'] ?? '')];
         self::action();
+    }
+
+    /** Over the disk quota nothing new may be written (deleting and moving still work). */
+    private static function needSpace(array $domain, string $dir): void
+    {
+        try {
+            Quota::requireDiskSpace((int) $domain['user_id']);
+        } catch (RuntimeException $e) {
+            Flash::error($e->getMessage());
+            self::backTo($domain, $dir);
+        }
     }
 
     private static function backTo(array $domain, string $relPath): never

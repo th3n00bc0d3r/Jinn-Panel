@@ -35,7 +35,4 @@ foreach ($pdo->query('SELECT id, domain_name, php_version, ssl_mode FROM domains
     }
 }
 VhostService::reload();
-foreach ($pdo->query("SELECT DISTINCT php_version FROM domains WHERE php_version <> 'default'")->fetchAll(PDO::FETCH_COLUMN) as $v) {
-    VhostService::reloadAltInstance((string) $v);
-}
 exit($failed > 0 ? 1 : 0);

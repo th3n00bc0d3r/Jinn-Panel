@@ -38,6 +38,14 @@
                 <input type="number" name="max_ftp_accounts" value="1" min="0"
                        class="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
             </div>
+            <?php if (Auth::isAdmin()): ?>
+            <div>
+                <label class="block text-xs font-medium text-slate-600 mb-1.5">Max accounts (for resellers)</label>
+                <input type="number" name="max_accounts" value="0" min="0"
+                       class="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+                <p class="mt-1 text-[11px] text-slate-400">How many accounts a reseller on this package may create (0 = none).</p>
+            </div>
+            <?php endif; ?>
         </div>
         <div class="flex gap-3 pt-2">
             <button type="submit" class="rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-5 py-2.5 transition-colors">Create package</button>

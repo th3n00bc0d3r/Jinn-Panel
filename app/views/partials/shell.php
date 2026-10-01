@@ -52,9 +52,15 @@ $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
                     <p class="text-sm font-medium text-white truncate"><?= e($me['username'] ?? '') ?></p>
                     <p class="text-xs text-slate-500 truncate capitalize"><?= e($me['role'] ?? '') ?></p>
                 </div>
-                <a href="/logout" title="Sign out" class="text-slate-500 hover:text-white p-1.5 rounded-md hover:bg-slate-900">
-                    <?= icon('logout', 'h-5 w-5') ?>
+                <a href="<?= ($me['role'] ?? '') === 'user' ? '/cpanel/security' : '/whm/security' ?>" title="Login security" class="text-slate-500 hover:text-white p-1.5 rounded-md hover:bg-slate-900">
+                    <?= icon('shield', 'h-5 w-5') ?>
                 </a>
+                <form method="post" action="/logout">
+                    <?= Csrf::field() ?>
+                    <button type="submit" title="Sign out" class="text-slate-500 hover:text-white p-1.5 rounded-md hover:bg-slate-900">
+                        <?= icon('logout', 'h-5 w-5') ?>
+                    </button>
+                </form>
             </div>
         </div>
     </aside>

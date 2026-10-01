@@ -4,16 +4,17 @@
 
 | Component | Role | Why this one |
 |---|---|---|
-| **FrankenPHP** | Web server + PHP runtime | Caddy-based, embeds PHP directly - no separate PHP-FPM process, automatic HTTPS built in |
+| **FrankenPHP** | Web server (every site's TLS, static files) + the panel's own PHP | Caddy-based, automatic HTTPS built in |
+| **PHP-FPM** | The customer sites' PHP: one pool per hosting account, as that account's own Linux user | Process-level isolation between accounts, and between accounts and the panel |
 | **MariaDB** | Database (panel's own state + every customer database) | Standard, well-understood, MySQL-wire-compatible |
 | **Stalwart Mail** | SMTP/IMAP/JMAP mail server | Single Rust binary combining what used to be Postfix+Dovecot, with a REST-ish management API instead of flat config files |
 | **SFTPGo** | SFTP server | Virtual users managed entirely via REST API - no local Linux user per hosting account |
 | **Knot DNS** | Authoritative DNS | Fast, scriptable via `knotc`, used for zones this panel provisions |
 
-All five run as systemd services on one AlmaLinux box. JinnPanel itself is a
-plain-PHP application (no framework, no Composer) deployed to
-`/var/www/hostpanel`, served by the same FrankenPHP instance as its own
-vhost (`panel.<hostname>`).
+All of them run as systemd services on one AlmaLinux box. JinnPanel itself
+is a plain-PHP application (no framework, no Composer) deployed to
+`/var/www/hostpanel` (root-owned, readable by `frankenphp` only), served by
+FrankenPHP as its own vhost (`panel.<hostname>`, and `<domain>:2083`).
 
 ## The one architectural decision that shapes everything else
 
@@ -47,52 +48,98 @@ script (`app/worker/hostpanel-worker.php`) that a **systemd timer** runs
 every 5 seconds - as root, spawned by PID 1, completely outside FrankenPHP's
 process tree. The web app never does privileged work itself; it drops a
 small JSON "job" file into `storage/config-queue/`, and the worker picks it
-up, applies it, and deletes the job file. Job types: `set_ini`,
-`set_mycnf`, `set_sftpgo_json`, `restart`, `dns_create`/`dns_remove`,
-`install_php_version`/`remove_php_version`, `pull_log`. Every "Save &
-restart X" button and every DNS zone provisioning in the panel goes through
-this queue.
+up, applies it, and deletes the job file. Every "Save & restart X" button,
+every DNS zone, every account/site change goes through this queue.
+
+The worker trusts job files as little as possible: each is signed
+(HMAC with a key derived from `APP_KEY`, `SystemWorkerService::enqueue`),
+must be a regular file owned by `frankenphp` or root (never a link), and
+each job type validates its own input - settings jobs accept only a fixed
+list of keys with a value shape each (`INI_KEYS`, `MYCNF_KEYS`,
+`SFTPGO_KEYS`); account jobs carry only an id and the worker reads
+everything else from the database.
 
 This also solves the read side: since FrankenPHP can't read the systemd
 journal either, the same worker snapshots each service's last 200 journal
-lines into `storage/logs/live-<service>.log` every cycle, which the WHM
-dashboard just reads as a plain file - no journal access needed from the
-web process at all.
+lines into `/var/lib/jinnpanel/worker/live-<service>.log` every cycle, which
+the WHM dashboard just reads as a plain file. Everything root writes for
+the panel (job logs, snapshots, the PHP extension list) goes to that
+root-owned folder - never into `storage/`, which `frankenphp` can write
+(a link planted there would aim root's writes anywhere).
+
+## Customer isolation
+
+Every hosting account is a Linux user, `jp_<username>` (UID 20000+, no
+shell, locked password), created and kept in line by the worker's
+`accountSync` (job `account_sync`, run on every account/domain change and
+by `install.sh`):
+
+- **Files.** `/var/www/<domain>` belongs to the account, mode 0750, plus an
+  ACL letting `frankenphp` traverse it (Caddy serves static files, the
+  panel reads) - other accounts can't even list it. A folder the panel or a
+  migration created is handed over (`chown -R -P -h`, no world-writable
+  bits). `/var/www` itself is `root:frankenphp 1775`: the panel may create
+  new site folders, the sticky bit stops it from renaming anyone else's.
+- **PHP.** Each PHP version is one PHP-FPM master
+  (`jinnpanel-php-fpm@default`, `@82`, ...; template unit from install.sh,
+  config in `/etc/jinnpanel/php-fpm/<tag>/`), with one pool per account:
+  `user = jp_<name>`, socket `/run/jinnpanel-php/<tag>/<name>.sock` that only
+  `frankenphp` can open, `open_basedir` = the account's site folders, its
+  page-cache folders, its private home (`/var/lib/jinnpanel/php/<name>`:
+  sessions, temp files) and the panel's per-site settings, plus
+  `disable_functions` for exec/proc_open & co. unless an admin allows them
+  per account (WHM > Accounts, `users.php_exec`). OPcache is shared per
+  master, with `opcache.validate_permission` and `opcache.restrict_api`.
+  The FPM binary is labelled `httpd_exec_t`, so it runs as `httpd_t` like
+  FrankenPHP and EL's own php-fpm.
+- **Vhosts.** `VhostService` renders `php_fastcgi <socket>` + `file_server`
+  where sites used to say `php_server`; routing rules translated from
+  `.htaccess` still say `php_server` (the editor's language) and are
+  rewritten on render (`VhostService::fpmRules`). A suspended account's
+  sites answer 503, one over its monthly bandwidth 509.
+- **The panel acting on customer files.** The panel can only read into
+  site folders, so file work (File Manager, Exposed files, Routes' .htaccess
+  scan, clearing OPcache) runs *inside the account's own pool*:
+  `PoolClient` sends a FastCGI request (`FastCgi`) to the pool's socket for
+  `runtime/pool-agent.php` (installed root-owned in
+  `/usr/local/lib/jinnpanel/pool/` with the classes it uses). The agent
+  refuses anything without the `JINNPANEL_AGENT` FastCGI parameter, which a
+  web request can't carry. Files it writes belong to the account.
+- **SFTP.** Logins are SFTPGo virtual users whose uid/gid are the
+  account's; SFTPGo holds `CAP_CHOWN`/`CAP_FOWNER`/`CAP_DAC_OVERRIDE` (unit
+  drop-in) to write as them. Account-wide logins see each site as
+  `/<domain>` (SFTPGo virtual folders).
+- **Cron.** `jinnpanel-cron` runs as root and starts each PHP job as the
+  account's user with the pool's limits (`CronService::phpCommand`).
+- **Elsewhere.** Caddy's admin API is a Unix socket
+  (`/run/frankenphp/admin.sock`, frankenphp only) - on 127.0.0.1:2019 any
+  local process could load a new config. `Config.php` is
+  `root:frankenphp 0640`. Valkey logins are per account (key prefix); MySQL
+  users per account.
+
+Deleting an account removes its pools and Linux user and moves its site
+folders to `/var/lib/jinnpanel/removed/` (root-only) - left in place they'd
+belong to a bare UID the next account could be given.
 
 ## Multiple PHP versions
 
-Each additional PHP version (8.2/8.3/8.4 alongside the default 8.5) runs as
-its **own fully separate FrankenPHP instance** - not a per-request switch,
-because FrankenPHP embeds exactly one PHP build into the process it's
-running as.
+Each additional PHP version (8.2/8.3/8.4 alongside the default 8.5) is its
+own PHP-FPM master, `jinnpanel-php-fpm@<82|83|84>`. `install_php_version`
+(run by the worker, not the web app):
 
-This works cleanly because each version's shared PHP library has a
-**version-specific filename** (`libphp-zts-82.so`, `libphp-zts-85.so`, ...),
-so multiple versions coexist on disk without touching the default install.
-`install_php_version` (run by the worker, not the web app):
-
-1. Resolves the exact RPM URLs for that version from the upstream
+1. Resolves the exact RPM URLs for that version's `php-zts-fpm`,
+   `php-zts-cli` and common extension packages from the upstream
    `static-php` repo via `dnf repoquery --disable-modular-filtering`
-   (bypassing `dnf module`, which is exclusive-per-stream and would try to
-   replace the default version's packages).
-2. Downloads and extracts (via `rpm2cpio`/`cpio`, not `rpm -i`) just the
-   `frankenphp` binary and that version's `.so` into
-   `/opt/php-versions/<version>/`.
-3. Relabels the binary `httpd_exec_t` (SELinux: a *content* type like
-   `httpd_sys_rw_content_t` can be written but not executed - this needs
-   the actual executable type) and registers its ports (TCP admin port,
-   TCP+UDP HTTP port - FrankenPHP uses HTTP/3/QUIC) under `http_port_t`,
-   both idempotently.
-4. Writes a dedicated systemd unit and starts it, bound to
-   `127.0.0.1:90XX`, completely loopback-only.
+   (bypassing `dnf module`, which is exclusive-per-stream and would replace
+   the default version's packages).
+2. Extracts them (`rpm2cpio`/`cpio`, not `rpm -i`) into
+   `/opt/php-versions/<version>/` (`php-fpm`, `php`, `modules/`, `conf.d/`,
+   its own `php.ini`), labels `php-fpm` `httpd_exec_t`, and checks it runs.
+3. Starts its master with a unit drop-in pointing at that binary and ini.
 
-A domain assigned to an alt version gets **two** vhost fragments written:
-one in that instance's own `sites-enabled/` (real `php_server`, plain HTTP,
-`bind 127.0.0.1` - explicitly `http://` scheme, otherwise Caddy sees what
-looks like a real domain and tries to auto-provision TLS for an internal
-loopback listener), and one in the *main* instance's `sites-enabled/` that's
-just `reverse_proxy 127.0.0.1:90XX`. The main instance is the only thing
-with a real TLS certificate and the only thing reachable from outside.
+A domain on that version gets its account's pool in that master
+(`accountSync` writes one pool file per version the account uses); its
+cron jobs use that version's CLI.
 
 ## AutoSSL
 
@@ -128,9 +175,12 @@ only validates input and records a `migrations` row plus one
 `migration_items` row per account; `MigrationService` queues a
 `migration_start` job; `hostpanel-worker.php` turns that into a transient
 systemd unit (`jinnpanel-migration-<id>`) running
-`app/worker/migration-runner.php` as **frankenphp:webusers** - not root,
-because everything it unpacks came from another server, and not a
-FrankenPHP child, because a single account can take hours.
+`app/worker/migration-runner.php` as **frankenphp** - not root, because
+everything it unpacks came from another server, and not a FrankenPHP child,
+because a single account can take hours. It creates the new site folders
+itself; at the end it asks for an `account_sync`, which hands the files to
+the account's Linux user and starts its PHP pool, and only then creates
+the account's SFTP logins (they write as that user).
 
 `MigrationRunner` then, per account: asks the source for a full backup
 through `CpanelApiClient` (WHM API 1 / UAPI, with `uapi_cpanel` proxying
@@ -153,7 +203,8 @@ MariaDB `hostpanel` database: `users` (role: admin/reseller/user, with
 (quotas; `owner_id` NULL = global, else a reseller's own custom package),
 `domains` (+ `php_version`, `php_port`, `ssl_mode`), `db_instances`,
 `email_accounts`, `ftp_accounts`, `php_versions` (installed alt PHP
-versions and their ports), `activity_log`, plus `migrations` /
+versions), `activity_log` (the audit trail), `login_attempts` (sign-in
+throttling), `account_usage` (measured disk/bandwidth), `backups`, plus `migrations` /
 `migration_items` (cPanel migrations and their per-account progress and
 reports) and `db_user_accounts` (extra MySQL users an account owns - a
 migrated cPanel account can have several users per database and several
@@ -169,14 +220,32 @@ list rather than `GRANT ALL`).
 
 ## Security posture
 
-- Every mutating request goes through `Csrf::requireValid()`.
-- Passwords: bcrypt via `password_hash`/`password_verify`.
+- Customer code runs as its own account's Linux user in its own PHP-FPM
+  pool - see *Customer isolation* above.
+- Every mutating request goes through `Csrf::requireValid()`; logout is a
+  POST too.
+- Sign-in: bcrypt (`password_hash`); throttled (`LoginThrottle`: 5 failures
+  per username and address, or 20 per address, in 15 minutes); optional
+  TOTP two-factor (`Totp`, RFC 6238, codes single-use) for every role;
+  sessions end after 2 hours idle / 12 hours, on password or two-factor
+  changes (`users.session_version`) and when the account is suspended.
+  Roles are read from the database on every request, never trusted from
+  the session. New passwords need 10+ characters and aren't common ones.
+- `/setup` (creating the first admin) needs the one-time token install.sh
+  prints.
+- The panel is HTTPS only (`http://panel.<host>` redirects) with HSTS,
+  CSP, `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy`; session
+  cookies are always `Secure`, `HttpOnly`, `SameSite=Lax`.
+- Usernames that would collide with the panel's own identities (Linux users,
+  `hostpanel_*` MySQL users, ...) are refused (`Usernames`); domain names
+  that belong to the server, to another account (or sit above/below one),
+  or are public suffixes are refused (`DomainPolicy`).
 - Role checks are server-side on every controller action (`Auth::requireRole`),
   plus row-level scoping (a reseller only sees rows where `parent_id`
   matches them; a user only sees their own domains/databases/etc).
-- The file manager resolves every path through `realpath()` and checks the
-  result is still inside the account's own docroot (with a path-separator
-  boundary check, not just a string prefix match) before touching disk.
+- File work on customer files happens as the customer (pool agent), and
+  `FileManagerService` still resolves every path and keeps it inside the
+  site folder, never following links out of it.
 - SQL is parameterized everywhere except a handful of identifiers
   (database/table/user names) that MySQL doesn't allow to be bound
   parameters at all - those go through a strict
@@ -184,3 +253,6 @@ list rather than `GRANT ALL`).
 - `hostpanel_prov`'s grant to customer accounts deliberately excludes
   `CREATE ROUTINE`/`TRIGGER`/`VIEW`/etc - it hands out exactly the
   privileges it itself has, nothing broader.
+- Every panel action and sign-in is in the audit trail (WHM > Activity
+  Log): who, what, which account, from which address.
+- SSH brute force: fail2ban (`sshd` + `recidive` jails).

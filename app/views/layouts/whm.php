@@ -4,9 +4,11 @@ $navItems = [
     ['href' => '/whm/accounts', 'label' => 'Accounts', 'icon' => 'users'],
     ['href' => '/whm/packages', 'label' => 'Packages', 'icon' => 'box'],
     ['href' => '/whm/migrations', 'label' => 'cPanel Migration', 'icon' => 'transfer'],
+    ['href' => '/whm/activity', 'label' => 'Activity Log', 'icon' => 'clock'],
 ];
 if (Auth::isAdmin()) {
     $navItems[] = ['section' => 'Server Config'];
+    $navItems[] = ['href' => '/whm/backups', 'label' => 'Backups', 'icon' => 'download'];
     $navItems[] = ['href' => '/whm/dns', 'label' => 'DNS Zones', 'icon' => 'globe'];
     $navItems[] = ['href' => '/whm/server-config/mail', 'label' => 'Mail Settings', 'icon' => 'mail'];
     $navItems[] = ['href' => '/whm/server-config/sftp', 'label' => 'SFTP Settings', 'icon' => 'folder-up'];

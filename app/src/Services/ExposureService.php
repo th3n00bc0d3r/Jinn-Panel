@@ -7,6 +7,7 @@ declare(strict_types=1);
  * exports (cPanel > Domains > domain > Exposed files, and the migration
  * report). Only flagged - some are intentional downloads - with "Move to
  * private/", which moves them next to (not inside) the document root.
+ * scan() and makePrivate() run in the account's PHP-FPM pool (pool-agent).
  */
 final class ExposureService
 {
@@ -72,15 +73,14 @@ final class ExposureService
      * Moves $rel (inside the docroot) to <site>/private/<rel>, out of the
      * web root. Returns the new path.
      */
-    public static function makePrivate(string $domain, string $rel): string
+    public static function makePrivate(string $docroot, string $siteDir, string $rel): string
     {
-        $docroot = VhostService::effectiveDocroot($domain);
         $src = realpath($docroot . '/' . $rel);
         $root = realpath($docroot);
         if ($rel === '' || str_contains($rel, '..') || $src === false || $root === false || !str_starts_with($src, $root . '/') || is_link($docroot . '/' . $rel)) {
             throw new InvalidArgumentException('That file is not in the site\'s document root.');
         }
-        $private = VhostService::siteDir($domain) . '/private';
+        $private = rtrim($siteDir, '/') . '/private';
         if (str_starts_with($root . '/', $private . '/')) {
             throw new InvalidArgumentException('The document root is inside private/ - move it elsewhere first.');
         }
@@ -88,7 +88,7 @@ final class ExposureService
         if (file_exists($dest)) {
             $dest .= '.' . date('Ymd-His');
         }
-        if (!is_dir(dirname($dest)) && !@mkdir(dirname($dest), 02775, true)) {
+        if (!is_dir(dirname($dest)) && !@mkdir(dirname($dest), 0755, true)) {
             throw new RuntimeException('Could not create ' . dirname($dest) . '.');
         }
         if (!@rename($src, $dest)) {

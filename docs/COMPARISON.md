@@ -37,9 +37,10 @@ it's better across the board.
   hand-built per setting - meaning as Stalwart adds new settings objects,
   they become editable in JinnPanel's WHM without anyone writing new PHP
   for them.
-- **Multi-PHP-version support is real process isolation**, not a
-  PHP-FPM-pool config switch - each additional version is a fully separate
-  FrankenPHP instance with its own PHP shared library.
+- **Every account's PHP runs as its own Linux user**, in its own PHP-FPM
+  pool per PHP version, confined to its own folders - the panel works on
+  customer files from inside that pool too, so it never needs more access
+  to them than the customer has.
 
 ## Where the established panels are still the safer choice
 

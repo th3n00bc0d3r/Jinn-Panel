@@ -45,14 +45,15 @@ final class FtpController
             header('Location: /cpanel/ftp');
             exit;
         }
-        if (strlen($password) < 8) {
-            Flash::error('FTP password must be at least 8 characters.');
+        if (strlen($password) < Passwords::MIN_LENGTH) {
+            Flash::error('FTP password must be at least ' . Passwords::MIN_LENGTH . ' characters.');
             header('Location: /cpanel/ftp');
             exit;
         }
 
         $pdo = Database::app();
-        $homeDir = Config::VHOSTS_DOCROOT_BASE . '/' . $me['username'];
+        // No domain: an account-wide login, which sees every site as /<domain>.
+        $homeDir = SftpService::ACCOUNT_ROOT . '/' . $me['username'];
         if ($domainId) {
             $dStmt = $pdo->prepare('SELECT * FROM domains WHERE id = ? AND user_id = ?');
             $dStmt->execute([$domainId, $me['id']]);
@@ -68,7 +69,7 @@ final class FtpController
         $ftpUsername = substr($me['username'] . '_' . $label, 0, 31);
 
         try {
-            SftpService::createUser($ftpUsername, $password, $homeDir, Quota::package($me['id'])['disk_quota_mb'] ?? 0);
+            SftpService::createUser($ftpUsername, $password, $homeDir, Quota::package($me['id'])['disk_quota_mb'] ?? 0, (string) $me['username']);
         } catch (Throwable $e) {
             error_log($e->getMessage());
             Flash::error('Could not create the SFTP account: ' . $e->getMessage());
@@ -78,6 +79,13 @@ final class FtpController
 
         $stmt = $pdo->prepare('INSERT INTO ftp_accounts (user_id, domain_id, username, home_dir) VALUES (?, ?, ?, ?)');
         $stmt->execute([$me['id'], $domainId, $ftpUsername, $homeDir]);
+        if (!$domainId) {
+            try {
+                SftpService::syncAccountFolders((int) $me['id']);
+            } catch (Throwable $e) {
+                error_log('sftp folders: ' . $e->getMessage());
+            }
+        }
 
         Flash::ok("SFTP account \"$ftpUsername\" created (port 2022).");
         header('Location: /cpanel/ftp');

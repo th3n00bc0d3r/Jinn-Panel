@@ -367,7 +367,8 @@ final class MigrationRunner
         $sftpUser = 'jpmig' . $this->migrationId . 'x' . (int) $this->item['id'];
         $pass = bin2hex(random_bytes(16));
         $this->deleteSftpUser($sftpUser); // leftover from a crashed attempt
-        SftpService::createUser($sftpUser, $pass, $incoming, 0);
+        $fp = posix_getpwnam('frankenphp'); // the backup is read by this runner
+        SftpService::createUser($sftpUser, $pass, $incoming, 0, [(int) $fp['uid'], (int) $fp['gid']]);
 
         $host = trim((string) $this->opt['public_host']) ?: Config::SERVER_IP;
         $port = (int) $this->opt['public_port'] ?: 2022;
@@ -571,6 +572,9 @@ final class MigrationRunner
         if ((int) $chk->fetchColumn() > 0) {
             throw new RuntimeException("A JinnPanel account named \"$user\" already exists. Rename or delete it, then retry.");
         }
+        if (($problem = Usernames::problem($user)) !== null) {
+            throw new RuntimeException("Can't recreate the account \"$user\" here: $problem");
+        }
 
         $domains = $r->domains();
         [$packageId, $packageName] = $this->resolvePackage($this->item['source_plan'] ?: $r->plan());
@@ -626,15 +630,43 @@ final class MigrationRunner
             $this->setItem(['report' => $this->reportJson()]);
         }
 
+        $this->setItem(['step' => 'Final checks', 'progress' => 94]);
+        $this->postChecks($userId, $r, $migratedDomains, $packageId);
+
+        // The account's Linux user takes over its site files and its PHP
+        // pool starts (the root worker); SFTP logins write as that user, so
+        // they're created once it exists.
+        $this->setItem(['step' => 'Handing the files to the account', 'progress' => 96]);
+        AccountRuntime::sync($userId);
+        $this->waitForRuntime($user, $migratedDomains);
         if ($this->opt['files']) {
-            $this->setItem(['step' => 'FTP accounts and cron jobs', 'progress' => 95]);
+            $this->setItem(['step' => 'FTP accounts and cron jobs', 'progress' => 98]);
             $this->restoreFtpAccounts($userId, $r, $domains, $migratedDomains);
             $this->restoreCron($userId, $r, $domains, $migratedDomains);
         }
-
-        $this->setItem(['step' => 'Final checks', 'progress' => 97]);
-        $this->postChecks($userId, $r, $migratedDomains, $packageId);
         $this->relinkChildren($user);
+    }
+
+    /**
+     * Waits for the root worker to set the account up (Linux user, files
+     * handed over, PHP pool) - at most two minutes, then carries on and
+     * says so in the report.
+     *
+     * @param list<string> $domains
+     */
+    private function waitForRuntime(string $user, array $domains): void
+    {
+        $until = time() + 120;
+        do {
+            clearstatcache();
+            $ready = posix_getpwnam(Usernames::linuxUser($user)) !== false
+                && ($domains === [] || AccountRuntime::ready($user));
+            if ($ready) {
+                return;
+            }
+            sleep(1);
+        } while (time() < $until);
+        $this->report['warnings'][] = 'The account\'s server-side setup (its Linux user and PHP) took longer than expected - check WHM > Accounts; it finishes on its own.';
     }
 
     private function restoreDomain(int $userId, array $d, ?string $home): bool
@@ -663,13 +695,21 @@ final class MigrationRunner
             return false;
         }
 
+        if (($problem = DomainPolicy::problem($name, $userId)) !== null) {
+            $this->report['domains'][] = ['name' => $name, 'type' => $d['type'], 'status' => 'failed', 'note' => $problem];
+            return false;
+        }
+
         $siteDir = rtrim(Config::VHOSTS_DOCROOT_BASE, '/') . '/' . $name;
         $existed = is_dir($siteDir);
+        if ($existed && !is_writable($siteDir)) {
+            $this->report['domains'][] = ['name' => $name, 'type' => $d['type'], 'status' => 'failed', 'note' => "$siteDir already exists and belongs to someone else."];
+            return false;
+        }
         $ssl = SslService::resolveMode((string) $this->opt['ssl_mode'], $name);
-        try {
-            $docroot = VhostService::create($name, 'default', $ssl);
-        } catch (Throwable $e) {
-            $this->report['domains'][] = ['name' => $name, 'type' => $d['type'], 'status' => 'failed', 'note' => 'Vhost: ' . $e->getMessage()];
+        $docroot = VhostService::docroot($name);
+        if (!is_dir($docroot) && !@mkdir($docroot, 0755, true)) {
+            $this->report['domains'][] = ['name' => $name, 'type' => $d['type'], 'status' => 'failed', 'note' => "Could not create $docroot."];
             return false;
         }
         if (!$existed) {
@@ -681,8 +721,14 @@ final class MigrationRunner
         } catch (Throwable $e) {
             $dnsOk = false;
         }
+        // The row first: the vhost names the owning account's PHP pool.
         $this->pdo->prepare("INSERT INTO domains (user_id, domain_name, docroot, dns_provisioned, php_version, php_port, ssl_mode) VALUES (?, ?, ?, ?, 'default', NULL, ?)")
             ->execute([$userId, $name, $docroot, $dnsOk ? 1 : 0, $ssl]);
+        try {
+            VhostService::create($name, 'default', $ssl);
+        } catch (Throwable $e) {
+            $this->report['warnings'][] = "$name: vhost: " . $e->getMessage();
+        }
 
         $entry = ['name' => $name, 'type' => $d['type'], 'status' => 'ok', 'note' => $dnsOk ? '' : 'DNS zone provisioning failed (site works; re-provision from cPanel > DNS).'];
         if ($existed) {
@@ -771,10 +817,8 @@ final class MigrationRunner
                         throw new RuntimeException("unusual home folder ~/{$a['home_rel']}");
                     }
                 }
-                if (!is_dir($home)) {
-                    @mkdir($home, 02775, true);
-                    $created = true;
-                }
+                // A missing folder is made by SFTPGo at first login, as the account.
+                $created = !is_dir($home);
                 $label = preg_replace('/[^a-z0-9_]/', '_', strtolower(strstr($a['name'] . '@', '@', true)));
                 $label = preg_match('/^[a-z]/', $label) ? $label : 'ftp_' . $label;
                 $name = substr($user . '_' . $label, 0, 31);
@@ -790,7 +834,7 @@ final class MigrationRunner
                 if ($owner !== false) {
                     $name = substr($user . '_' . $label, 0, 26) . '_' . substr(md5($a['name']), 0, 4);
                 }
-                SftpService::createUser($name, (string) $a['hash'], $home, 0);
+                SftpService::createUser($name, (string) $a['hash'], $home, 0, $user);
                 $dom->execute([$domainName]);
                 $ins->execute([$userId, $dom->fetchColumn() ?: null, $name, $home]);
                 $entry['note'] = "SFTP login $name (same password), folder $home" . ($created && !in_array($a['home_rel'], array_keys($roots), true) && $home !== $mainDir ? ' - created empty: it wasn\'t part of the sites\' files' : '');

@@ -38,29 +38,14 @@ final class DomainController
             header('Location: /cpanel/domains');
             exit;
         }
-        if (!preg_match('/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/', $domain)) {
-            Flash::error('Enter a valid domain name, e.g. example.com');
+        if (($problem = DomainPolicy::problem($domain, (int) $me['id'])) !== null) {
+            Flash::error($problem);
             header('Location: /cpanel/domains');
             exit;
         }
 
         $pdo = Database::app();
-        if (DomainAliasService::nameTaken($domain)) {
-            Flash::error('That domain is already registered on this server.');
-            header('Location: /cpanel/domains');
-            exit;
-        }
-
         $sslMode = SslService::resolveMode($sslRequested, $domain);
-        try {
-            $docroot = VhostService::create($domain, $phpVersion, $sslMode);
-        } catch (Throwable $e) {
-            error_log($e->getMessage());
-            Flash::error('Could not create the web vhost: ' . $e->getMessage());
-            header('Location: /cpanel/domains');
-            exit;
-        }
-
         $dnsOk = true;
         try {
             DnsService::createZone($domain);
@@ -69,17 +54,30 @@ final class DomainController
             $dnsOk = false;
         }
 
-        $stmt = $pdo->prepare('INSERT INTO domains (user_id, domain_name, docroot, dns_provisioned, php_version, php_port, ssl_mode) VALUES (?, ?, ?, ?, ?, ?, ?)');
-        $stmt->execute([
-            $me['id'], $domain, $docroot, $dnsOk ? 1 : 0,
-            $phpVersion, $phpVersion === 'default' ? null : PhpVersionService::port($phpVersion),
-            $sslMode,
-        ]);
+        // The row first: the vhost names the owning account's PHP pool.
+        $stmt = $pdo->prepare('INSERT INTO domains (user_id, domain_name, docroot, dns_provisioned, php_version, php_port, ssl_mode) VALUES (?, ?, ?, ?, ?, NULL, ?)');
+        $stmt->execute([$me['id'], $domain, VhostService::docroot($domain), $dnsOk ? 1 : 0, $phpVersion, $sslMode]);
+        try {
+            VhostService::create($domain, $phpVersion, $sslMode);
+        } catch (Throwable $e) {
+            error_log($e->getMessage());
+            $pdo->prepare('DELETE FROM domains WHERE domain_name = ?')->execute([$domain]);
+            Flash::error('Could not create the web vhost: ' . $e->getMessage());
+            header('Location: /cpanel/domains');
+            exit;
+        }
+        // Its folder (owned by the account, with a placeholder page) and PHP pool.
+        AccountRuntime::sync((int) $me['id']);
+        try {
+            SftpService::syncAccountFolders((int) $me['id']);
+        } catch (Throwable $e) {
+            error_log('sftp folders: ' . $e->getMessage());
+        }
 
         $sslNote = $sslMode === 'letsencrypt'
             ? ' A Let\'s Encrypt certificate is being issued.'
             : ($sslRequested === 'auto' ? ' It uses a self-signed certificate until its DNS points here, then switches to Let\'s Encrypt automatically.' : '');
-        Flash::ok("Domain \"$domain\" is live" . ($dnsOk ? '.' : ', but DNS zone provisioning failed (web still works).') . $sslNote);
+        Flash::ok("Domain \"$domain\" is set up - it goes live within a few seconds" . ($dnsOk ? '.' : ', but DNS zone provisioning failed (web still works).') . $sslNote);
         header('Location: /cpanel/domains');
         exit;
     }
@@ -105,12 +103,9 @@ final class DomainController
         $sslMode = SslService::resolveMode((string) ($_POST['ssl_mode'] ?? $domain['ssl_mode']), $domain['domain_name']);
 
         try {
-            // Re-creating the vhost fragment(s) is safe/idempotent and
-            // handles every combination (version changed, SSL mode
-            // changed, moving off an alt version back to default, ...).
-            if ($domain['php_version'] !== 'default' && $domain['php_version'] !== $phpVersion) {
-                VhostService::remove($domain['domain_name'], $domain['php_version']);
-            }
+            // Re-creating the vhost is safe/idempotent: it names the pool of
+            // the chosen PHP version (the worker starts it), and the SSL mode.
+            $pdo->prepare('UPDATE domains SET php_version = ? WHERE id = ?')->execute([$phpVersion, $id]);
             VhostService::create($domain['domain_name'], $phpVersion, $sslMode);
         } catch (Throwable $e) {
             error_log($e->getMessage());
@@ -119,8 +114,9 @@ final class DomainController
             exit;
         }
 
-        $upd = $pdo->prepare('UPDATE domains SET php_version = ?, php_port = ?, ssl_mode = ? WHERE id = ?');
-        $upd->execute([$phpVersion, $phpVersion === 'default' ? null : PhpVersionService::port($phpVersion), $sslMode, $id]);
+        $upd = $pdo->prepare('UPDATE domains SET php_version = ?, php_port = NULL, ssl_mode = ? WHERE id = ?');
+        $upd->execute([$phpVersion, $sslMode, $id]);
+        AccountRuntime::sync((int) $me['id']); // a pool in the new PHP version's FPM
 
         Flash::ok("Settings updated for \"{$domain['domain_name']}\".");
         header('Location: /cpanel/domains');
@@ -157,6 +153,12 @@ final class DomainController
 
         $del = $pdo->prepare('DELETE FROM domains WHERE id = ?');
         $del->execute([$id]);
+        AccountRuntime::sync((int) $me['id']);
+        try {
+            SftpService::syncAccountFolders((int) $me['id']);
+        } catch (Throwable $e) {
+            error_log('sftp folders: ' . $e->getMessage());
+        }
 
         Flash::ok("Domain \"{$domain['domain_name']}\" removed with its mailboxes and forwarders. Files were left in place on disk.");
         header('Location: /cpanel/domains');
@@ -326,10 +328,21 @@ final class DomainController
         View::render('cpanel/exposed', [
             'title' => 'Exposed files · ' . $d['domain_name'],
             'd' => $d,
-            'scan' => ExposureService::scan(VhostService::effectiveDocroot((string) $d['domain_name'])),
+            'scan' => self::exposureScan($d),
             'docroot' => VhostService::effectiveDocroot((string) $d['domain_name']),
             'private' => VhostService::siteDir((string) $d['domain_name']) . '/private',
         ], 'cpanel');
+    }
+
+    /** @return array{items: list<array>, truncated: bool} */
+    private static function exposureScan(array $d): array
+    {
+        try {
+            return (array) PoolClient::call((string) $d['domain_name'], 'exposure_scan', ['docroot' => VhostService::effectiveDocroot((string) $d['domain_name'])])['scan'];
+        } catch (Throwable $e) {
+            Flash::error($e->getMessage());
+            return ['items' => [], 'truncated' => false];
+        }
     }
 
     public static function makePrivate(array $params): void
@@ -340,7 +353,7 @@ final class DomainController
         $moved = [];
         try {
             foreach (array_slice((array) ($_POST['paths'] ?? []), 0, 200) as $rel) {
-                $moved[] = ExposureService::makePrivate((string) $d['domain_name'], (string) $rel);
+                $moved[] = (string) PoolClient::call((string) $d['domain_name'], 'make_private', ['docroot' => VhostService::effectiveDocroot((string) $d['domain_name']), 'rel' => (string) $rel])['dest'];
             }
             Flash::ok(count($moved) . ' moved out of the web folder into ' . VhostService::siteDir((string) $d['domain_name']) . '/private/.');
         } catch (Throwable $e) {

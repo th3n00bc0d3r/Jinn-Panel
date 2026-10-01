@@ -19,6 +19,12 @@ final class AccountCleanupService
     public static function purge(int $userId, array $removeDirs = []): void
     {
         $pdo = Database::app();
+        $who = $pdo->prepare('SELECT username, role FROM users WHERE id = ?');
+        $who->execute([$userId]);
+        $account = $who->fetch() ?: null;
+        $siteNames = $pdo->prepare('SELECT domain_name FROM domains WHERE user_id = ?');
+        $siteNames->execute([$userId]);
+        $siteNames = $siteNames->fetchAll(PDO::FETCH_COLUMN);
 
         $domains = $pdo->prepare('SELECT * FROM domains WHERE user_id = ?');
         $domains->execute([$userId]);
@@ -89,6 +95,13 @@ final class AccountCleanupService
 
         foreach ($removeDirs as $dir) {
             self::removeSiteDir($dir);
+            AccountRuntime::removeSite(basename((string) $dir)); // root removes what the panel can't
+        }
+        // Its PHP pools and Linux user (the worker re-checks the account is
+        // gone). Site folders not removed above are moved aside, root-only.
+        if ($account && $account['role'] === 'user') {
+            $archive = $removeDirs ? [] : array_values(array_map('strval', $siteNames));
+            SystemWorkerService::enqueue('account-remove-' . $account['username'], ['type' => 'account_remove', 'username' => (string) $account['username'], 'archive' => $archive]);
         }
     }
 

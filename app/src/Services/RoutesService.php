@@ -49,7 +49,8 @@ final class RoutesService
     {
         $name = (string) $domain['domain_name'];
         $docroot = VhostService::effectiveDocroot($name);
-        $files = self::htaccessFiles($docroot);
+        // Read as the account (its files aren't the panel's to read).
+        $files = (array) PoolClient::call($name, 'htaccess', ['docroot' => $docroot])['files'];
         $route = VhostService::rulesFile($name);
         $site = VhostService::siteRulesFile($name);
         return [
@@ -116,6 +117,6 @@ final class RoutesService
     public static function pending(string $domain): bool
     {
         $safe = preg_replace('/[^a-zA-Z0-9_.-]/', '_', self::label($domain));
-        return (bool) glob(__DIR__ . "/../../storage/config-queue/$safe-*.json");
+        return SystemWorkerService::pending("$safe-");
     }
 }

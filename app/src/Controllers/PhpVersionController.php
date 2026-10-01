@@ -25,7 +25,7 @@ final class PhpVersionController
 
         try {
             PhpVersionService::install($version);
-            Flash::ok("Installing PHP $version - this downloads and builds a dedicated instance, usually done within a minute. Refresh to check status.");
+            Flash::ok("Installing PHP $version - this downloads its PHP-FPM and extensions and starts it, usually done within a minute or two. Refresh to check status.");
         } catch (Throwable $e) {
             Flash::error($e->getMessage());
         }

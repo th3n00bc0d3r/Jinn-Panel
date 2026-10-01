@@ -3,8 +3,9 @@ declare(strict_types=1);
 
 /**
  * Starts the cron jobs due this minute (CronService), each as a detached
- * cron-exec.php so a long job doesn't hold up the others. Run as frankenphp
- * by jinnpanel-cron.timer every minute.
+ * cron-exec.php so a long job doesn't hold up the others. Run as root by
+ * jinnpanel-cron.timer every minute: each PHP job switches to its account's
+ * own Linux user (CronService::execute).
  */
 
 require __DIR__ . '/../src/cli_bootstrap.php';

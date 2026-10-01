@@ -27,6 +27,13 @@
 
     <form method="post" action="/setup" class="space-y-4">
         <?= Csrf::field() ?>
+        <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1.5">Setup token</label>
+            <input type="text" name="setup_token" required autocomplete="off" spellcheck="false"
+                   class="w-full rounded-lg bg-slate-800/80 border border-slate-700 px-3 py-2.5 text-sm font-mono text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                   placeholder="printed at the end of install.sh">
+            <p class="mt-1 text-[11px] text-slate-500">Also saved on the server in <code>/root/.jinnpanel/setup_token</code>.</p>
+        </div>
         <div class="grid grid-cols-2 gap-4">
             <div>
                 <label class="block text-xs font-medium text-slate-400 mb-1.5">Admin username</label>

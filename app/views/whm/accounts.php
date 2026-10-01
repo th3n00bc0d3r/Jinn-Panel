@@ -41,9 +41,22 @@
                     </span>
                 </td>
                 <td class="px-5 py-3">
-                    <div class="flex justify-end gap-1">
+                    <div class="flex justify-end items-center gap-1">
+                        <?php if ($me['role'] === 'admin' && $a['role'] === 'user'): ?>
+                        <form method="post" action="/whm/accounts/<?= (int) $a['id'] ?>/php-exec" data-confirm="<?= (int) $a['php_exec'] ? 'Stop ' . e($a['username']) . '\'s PHP from running programs?' : 'Let ' . e($a['username']) . '\'s PHP run programs (exec, proc_open...)? Only for software that needs it.' ?>">
+                            <?= Csrf::field() ?>
+                            <input type="hidden" name="allow" value="<?= (int) $a['php_exec'] ? '' : '1' ?>">
+                            <button class="text-[11px] font-medium rounded-full px-2 py-0.5 <?= (int) $a['php_exec'] ? 'bg-amber-50 text-amber-700' : 'bg-slate-100 text-slate-500 hover:text-slate-700' ?>" title="Whether this account's PHP may run programs">exec <?= (int) $a['php_exec'] ? 'on' : 'off' ?></button>
+                        </form>
+                        <?php endif; ?>
+                        <?php if ($me['role'] === 'admin' && !empty($a['totp_secret_enc'])): ?>
+                        <form method="post" action="/whm/accounts/<?= (int) $a['id'] ?>/reset-2fa" data-confirm="Turn off two-factor sign-in for <?= e($a['username']) ?> (e.g. a lost phone)?">
+                            <?= Csrf::field() ?>
+                            <button class="text-[11px] font-medium rounded-full px-2 py-0.5 bg-emerald-50 text-emerald-700" title="Two-factor is on - click to reset it">2FA</button>
+                        </form>
+                        <?php endif; ?>
                         <?php if ($a['status'] === 'active'): ?>
-                        <form method="post" action="/whm/accounts/<?= (int) $a['id'] ?>/suspend" data-confirm="Suspend <?= e($a['username']) ?>?">
+                        <form method="post" action="/whm/accounts/<?= (int) $a['id'] ?>/suspend" data-confirm="Suspend <?= e($a['username']) ?>? Its sites go offline (503), and its mail logins, SFTP, MySQL users and cron jobs stop until it's unsuspended.">
                             <?= Csrf::field() ?>
                             <button class="p-2 rounded-md text-slate-400 hover:text-amber-600 hover:bg-amber-50" title="Suspend"><?= icon('pause', 'h-4 w-4') ?></button>
                         </form>
@@ -53,7 +66,7 @@
                             <button class="p-2 rounded-md text-slate-400 hover:text-emerald-600 hover:bg-emerald-50" title="Unsuspend"><?= icon('play', 'h-4 w-4') ?></button>
                         </form>
                         <?php endif; ?>
-                        <form method="post" action="/whm/accounts/<?= (int) $a['id'] ?>/delete" data-confirm="Permanently delete <?= e($a['username']) ?> and all of its domains, databases, mailboxes and FTP accounts?">
+                        <form method="post" action="/whm/accounts/<?= (int) $a['id'] ?>/delete" data-confirm="Permanently delete <?= e($a['username']) ?> and all of its domains, databases, mailboxes and FTP accounts? Its site files are moved to /var/lib/jinnpanel/removed/ (root only).">
                             <?= Csrf::field() ?>
                             <button class="p-2 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50" title="Delete"><?= icon('trash', 'h-4 w-4') ?></button>
                         </form>

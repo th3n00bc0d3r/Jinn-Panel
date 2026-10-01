@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 /**
  * Minimal S3 client (AWS Signature V4): list a prefix, download an object
- * to a file. Works with AWS (virtual-hosted URLs) and S3-compatible stores
+ * to a file, upload a file (one PUT, up to 5 GB), delete an object. Works with AWS (virtual-hosted URLs) and S3-compatible stores
  * - MinIO, Wasabi, Cloudflare R2, Backblaze B2 - (path-style URLs).
  */
 final class S3Client
@@ -65,12 +65,38 @@ final class S3Client
         rename($part, $dest);
     }
 
+    /** Uploads $file as $key (streamed from disk, one PUT - S3 takes up to 5 GB that way). */
+    public function upload(string $key, string $file): void
+    {
+        $fh = fopen($file, 'rb');
+        if ($fh === false) {
+            throw new RuntimeException("Can't read $file.");
+        }
+        try {
+            $res = $this->request('PUT', $key, [], null, null, $fh, (int) filesize($file));
+        } finally {
+            fclose($fh);
+        }
+        if ($res['status'] !== 200) {
+            throw new RuntimeException("Uploading $key failed: " . self::error($res));
+        }
+    }
+
+    public function delete(string $key): void
+    {
+        $res = $this->request('DELETE', $key);
+        if ($res['status'] !== 204 && $res['status'] !== 200 && $res['status'] !== 404) {
+            throw new RuntimeException("Deleting $key failed: " . self::error($res));
+        }
+    }
+
     /**
      * @param array<string,string> $query
      * @param resource|null $sink write the body here instead of returning it
+     * @param resource|null $upload request body (PUT), $uploadSize bytes
      * @return array{status:int, body:string}
      */
-    private function request(string $method, string $key, array $query = [], $sink = null, ?callable $onProgress = null): array
+    private function request(string $method, string $key, array $query = [], $sink = null, ?callable $onProgress = null, $upload = null, int $uploadSize = 0): array
     {
         $parts = parse_url($this->endpoint);
         $scheme = $parts['scheme'] ?? 'https';
@@ -99,7 +125,14 @@ final class S3Client
             CURLOPT_CONNECTTIMEOUT => 20,
             CURLOPT_FAILONERROR => false,
         ];
-        if ($sink !== null) {
+        if ($upload !== null) {
+            $opts[CURLOPT_UPLOAD] = true;
+            $opts[CURLOPT_INFILE] = $upload;
+            $opts[CURLOPT_INFILESIZE] = $uploadSize;
+            $opts[CURLOPT_RETURNTRANSFER] = true;
+            $opts[CURLOPT_LOW_SPEED_LIMIT] = 1024;
+            $opts[CURLOPT_LOW_SPEED_TIME] = 120;
+        } elseif ($sink !== null) {
             $opts[CURLOPT_FILE] = $sink;
             $opts[CURLOPT_LOW_SPEED_LIMIT] = 1024;
             $opts[CURLOPT_LOW_SPEED_TIME] = 120;

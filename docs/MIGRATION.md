@@ -87,7 +87,7 @@ for example copied back from offsite storage), restore them directly:
    `<user>.tar.gz` (as cPanel's scheduled backups name them),
    `cpmove-<user>.tar.gz` or `backup-<date>_<user>.tar.gz`, and make them
    readable by frankenphp:
-   `chown frankenphp:webusers /var/lib/jinnpanel/migrations/import/*`
+   `chown frankenphp: /var/lib/jinnpanel/migrations/import/*`
 2. Check what's there, then queue the accounts (as an admin):
 
    ```
@@ -159,14 +159,16 @@ The web request only records what should happen. It queues a
 launches `app/worker/migration-runner.php` as a transient systemd unit:
 
 ```
-systemd-run --unit=jinnpanel-migration-<id> --uid=frankenphp --gid=webusers ...
+systemd-run --unit=jinnpanel-migration-<id> --uid=frankenphp --gid=frankenphp ...
 ```
 
 - It runs outside FrankenPHP, so hours-long transfers aren't cut off by
   request limits.
-- It runs as `frankenphp:webusers` - the same identity the panel already
-  uses for vhosts, databases and mailboxes - never as root, because
-  everything it unpacks came from another server.
+- It runs as `frankenphp` - the identity the panel already uses for vhosts,
+  databases and mailboxes - never as root, because everything it unpacks
+  came from another server. When an account's files are in place, the root
+  worker hands them to the account's own Linux user (`jp_<name>`) and starts
+  its PHP-FPM pool; its SFTP logins are created after that.
 - Scratch space is `/var/lib/jinnpanel/migrations` (`Config::MIGRATION_DIR`);
   each account's work directory is deleted as soon as it's done. It needs
   free space of roughly three times the account's backup size.

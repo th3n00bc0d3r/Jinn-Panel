@@ -5,17 +5,14 @@ declare(strict_types=1);
  * Per-domain caches the customer can clear (cPanel > Domains > domain >
  * Clear cache).
  *
- * OPcache: customer sites on the default PHP version run inside the same
- * FrankenPHP process as the panel, so the panel can invalidate the site's
- * compiled files directly (opcache_invalidate per file - never a global
- * opcache_reset, which would hit every other site). Sites on an alternative
- * PHP version run in their own instance, which this doesn't reach (its
- * OPcache revalidates changed files by timestamp anyway).
+ * OPcache: a site's compiled files live in its PHP-FPM master's shared
+ * memory; the pool agent invalidates just that site's files from inside the
+ * account's pool (opcache_invalidate per file - never a global
+ * opcache_reset, which would hit every other site; opcache.restrict_api
+ * keeps customer code itself away from the OPcache API).
  */
 final class CacheService
 {
-    private const MAX_FILES = 50000;
-
     public const PAGE_CACHE_DIR = '/var/lib/jinnpanel-pagecache';
     public const VALKEY_HOST = '127.0.0.1';
     public const VALKEY_PORT = 6379;
@@ -24,9 +21,12 @@ final class CacheService
     public static function clearDomain(array $domain): array
     {
         $name = (string) $domain['domain_name'];
-        $opcache = 0;
-        if (($domain['php_version'] ?? 'default') === 'default' && function_exists('opcache_invalidate')) {
-            $opcache = self::invalidateTree(VhostService::siteDir($name));
+        // OPcache lives in the account's PHP-FPM master: cleared from inside its pool.
+        try {
+            $opcache = (int) PoolClient::call($name, 'opcache_clear')['count'];
+        } catch (Throwable $e) {
+            error_log("opcache clear ($name): " . $e->getMessage());
+            $opcache = 0;
         }
         $pages = !empty($domain['page_cache_ttl']) || is_dir(self::pageDir($name)) ? self::purgePages($name) : null;
         $objects = null;
@@ -179,26 +179,5 @@ final class CacheService
         $s = Database::app()->prepare('SELECT id, username, cache_secret_enc FROM users WHERE id = ?');
         $s->execute([$userId]);
         return $s->fetch() ?: null;
-    }
-
-    private static function invalidateTree(string $dir): int
-    {
-        if (!is_dir($dir)) {
-            return 0;
-        }
-        $n = 0;
-        $it = new RecursiveIteratorIterator(
-            new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS),
-            RecursiveIteratorIterator::LEAVES_ONLY
-        );
-        foreach ($it as $file) {
-            if ($n >= self::MAX_FILES) {
-                break;
-            }
-            if ($file->isFile() && str_ends_with($file->getFilename(), '.php') && @opcache_invalidate($file->getPathname(), true)) {
-                $n++;
-            }
-        }
-        return $n;
     }
 }

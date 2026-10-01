@@ -40,8 +40,8 @@ final class DomainAliasService
         if (!preg_match(self::DOMAIN_RE, $alias)) {
             throw new InvalidArgumentException('Enter a valid domain name, e.g. example.net');
         }
-        if (self::nameTaken($alias) || $alias === strtolower(Config::SERVER_HOSTNAME) || $alias === 'panel.' . strtolower(Config::SERVER_HOSTNAME)) {
-            throw new InvalidArgumentException("$alias is already in use on this server.");
+        if (($problem = DomainPolicy::problem($alias, (int) $domain['user_id'])) !== null) {
+            throw new InvalidArgumentException("$alias: $problem");
         }
         Database::app()->prepare('INSERT INTO domain_aliases (domain_id, alias_name) VALUES (?, ?)')->execute([$domain['id'], $alias]);
         try {

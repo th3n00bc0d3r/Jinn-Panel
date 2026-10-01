@@ -25,6 +25,7 @@
             <div class="flex justify-between"><dt>Databases</dt><dd class="font-medium text-slate-800"><?= (int) $p['max_databases'] ?></dd></div>
             <div class="flex justify-between"><dt>Email accounts</dt><dd class="font-medium text-slate-800"><?= (int) $p['max_email_accounts'] ?></dd></div>
             <div class="flex justify-between"><dt>FTP accounts</dt><dd class="font-medium text-slate-800"><?= (int) $p['max_ftp_accounts'] ?></dd></div>
+            <?php if ((int) ($p['max_accounts'] ?? 0) > 0): ?><div class="flex justify-between"><dt>Accounts (reseller)</dt><dd class="font-medium text-slate-800"><?= (int) $p['max_accounts'] ?></dd></div><?php endif; ?>
         </dl>
     </div>
     <?php endforeach; ?>

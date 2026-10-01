@@ -3,34 +3,47 @@ declare(strict_types=1);
 
 final class Auth
 {
+    /** Signed-in sessions end after this long without a request, and after MAX_AGE regardless. */
+    private const IDLE_TIMEOUT = 7200;
+    private const MAX_AGE = 43200;
+
     public static function start(): void
     {
         if (session_status() === PHP_SESSION_NONE) {
             session_name(Config::SESSION_NAME);
+            // The panel is only ever served over HTTPS (install.sh redirects
+            // http:// on the panel hostname), so the cookie never travels in clear.
             session_set_cookie_params([
                 'lifetime' => 0,
                 'path' => '/',
-                'secure' => !empty($_SERVER['HTTPS']),
+                'secure' => true,
                 'httponly' => true,
                 'samesite' => 'Lax',
             ]);
+            ini_set('session.use_strict_mode', '1');
             session_start();
         }
     }
 
-    public static function attempt(string $username, string $password): bool
+    /**
+     * The user row for a correct username/email + password of an active
+     * account, or null. Doesn't sign in (two-factor may still be needed).
+     */
+    public static function verifyPassword(string $username, string $password): ?array
     {
         $stmt = Database::app()->prepare(
-            'SELECT id, username, password_hash, role, status FROM users WHERE username = ? OR email = ? LIMIT 1'
+            'SELECT * FROM users WHERE username = ? OR email = ? LIMIT 1'
         );
         $stmt->execute([$username, $username]);
         $row = $stmt->fetch();
 
-        if (!$row || !password_verify($password, $row['password_hash'])) {
-            return false;
+        if (!$row) {
+            // Same cost as a real check, so response times don't reveal which usernames exist.
+            password_verify($password, '$2y$12$GyABU0PDJMYXy1vUQdququNI9Q8Ytyma1HHkQzAs.X9BhNViIt8sy');
+            return null;
         }
-        if ($row['status'] !== 'active') {
-            return false;
+        if (!password_verify($password, $row['password_hash']) || $row['status'] !== 'active') {
+            return null;
         }
 
         // Accounts migrated from cPanel keep their original crypt() hash
@@ -44,18 +57,32 @@ final class Auth
                 error_log('password rehash failed: ' . $e->getMessage());
             }
         }
-
-        self::loginAs($row);
-        return true;
+        return $row;
     }
 
-    /** Starts a session for a verified user row (password check or login handoff). */
+    /** Starts a session for a verified user row (password + two-factor check, or login handoff). */
     public static function loginAs(array $row): void
     {
         session_regenerate_id(true);
+        unset($_SESSION['pending_2fa']);
         $_SESSION['uid'] = (int) $row['id'];
         $_SESSION['role'] = $row['role'];
         $_SESSION['username'] = $row['username'];
+        $_SESSION['session_version'] = (int) ($row['session_version'] ?? 1);
+        $_SESSION['login_at'] = $_SESSION['seen_at'] = time();
+    }
+
+    /**
+     * Ends every other session of a user (password change, two-factor
+     * change, suspension): their session_version no longer matches. The
+     * current session, if it's this user's, is carried over.
+     */
+    public static function invalidateSessions(int $userId): void
+    {
+        Database::app()->prepare('UPDATE users SET session_version = session_version + 1 WHERE id = ?')->execute([$userId]);
+        if (self::id() === $userId) {
+            $_SESSION['session_version'] = ($_SESSION['session_version'] ?? 1) + 1;
+        }
     }
 
     /** The panel's own hostname (WHM lives only there). */
@@ -108,12 +135,17 @@ final class Auth
         return $_SESSION['uid'] ?? null;
     }
 
+    /** The role as it is now in the database, not as it was at login. */
     public static function role(): ?string
     {
-        return $_SESSION['role'] ?? null;
+        return self::user()['role'] ?? null;
     }
 
-    /** Full fresh row from DB (status may have changed since login). */
+    /**
+     * Full fresh row from DB - status, role and ownership may have changed
+     * since login. The session ends when the account isn't active any more,
+     * its sessions were invalidated, or it was idle/old for too long.
+     */
     public static function user(): ?array
     {
         if (!self::check()) {
@@ -123,13 +155,19 @@ final class Auth
         if ($cache !== null) {
             return $cache;
         }
+        $now = time();
         $stmt = Database::app()->prepare('SELECT * FROM users WHERE id = ? LIMIT 1');
         $stmt->execute([self::id()]);
         $row = $stmt->fetch();
-        if (!$row || $row['status'] !== 'active') {
+        if (!$row || $row['status'] !== 'active'
+            || (int) ($row['session_version'] ?? 1) !== (int) ($_SESSION['session_version'] ?? 1)
+            || $now - (int) ($_SESSION['seen_at'] ?? 0) > self::IDLE_TIMEOUT
+            || $now - (int) ($_SESSION['login_at'] ?? 0) > self::MAX_AGE) {
             self::logout();
             return null;
         }
+        $_SESSION['seen_at'] = $now;
+        $_SESSION['role'] = $row['role'];
         return $cache = $row;
     }
 

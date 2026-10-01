@@ -46,17 +46,22 @@ typical single-purpose web app.
 | `httpd_can_network_connect_db` | MariaDB connections |
 | `httpd_execmem` | **PHP's JIT/OPcache need to mmap executable memory.** Without this, enabling `opcache.jit` makes FrankenPHP crash on the first real request with `mprotect() failed [13] Permission denied` in the journal - it'll *start* fine (looks healthy) and only fail once a request actually hits JIT-compiled code. If you ever add JIT support somewhere else, remember this. |
 
-## SELinux port registrations for alt PHP versions
+## Sites' PHP (PHP-FPM) and SELinux
 
-`httpd_t` may only bind ports explicitly registered as `http_port_t`
-(`semanage port -l`). The default install (`:2019` admin, `:80`/`:443`)
-already has this from FrankenPHP's own RPM. Each alt PHP version's admin
-port and HTTP port need registering too - **both TCP and UDP** (FrankenPHP
-serves HTTP/3 over QUIC, which is UDP; forgetting the UDP registration
-gives `starting HTTP/3 QUIC listener: bind: permission denied` even after
-the TCP bind succeeds). `install_php_version` in the worker does this
-idempotently on every install, so this should never need manual attention -
-documented here in case a version gets installed by some other path.
+Every site's PHP runs in its account's PHP-FPM pool
+(`jinnpanel-php-fpm@default`, `@82`...). The FPM binaries are labelled
+`httpd_exec_t` (`semanage fcontext ... /usr/bin/php-fpm-zts` - the
+`/usr/sbin` path is an equivalence of `/usr/bin` in the policy, so the rule
+has to name `/usr/bin`), which makes them run as `httpd_t`, the same domain
+as FrankenPHP: Caddy may then connect to their sockets. A site answering
+**502** means its pool isn't up: `systemctl status jinnpanel-php-fpm@default`,
+`ls /run/jinnpanel-php/default/` (one `<username>.sock` per account) and
+`php /usr/local/bin/hostpanel-worker.php sync-accounts` (as root) rebuilds
+every account's pools. A site's PHP errors go to `/var/www/<domain>/logs/`.
+
+Caddy's admin API is a Unix socket: reload with
+`frankenphp reload --config /etc/frankenphp/Caddyfile --address unix//run/frankenphp/admin.sock`
+(or `systemctl reload frankenphp`).
 
 ## SELinux exec vs. content types
 
