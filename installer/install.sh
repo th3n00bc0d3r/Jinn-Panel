@@ -186,7 +186,14 @@ setsebool -P httpd_can_network_connect on
 setsebool -P httpd_can_network_connect_db on
 
 firewall-cmd --permanent --add-service=http --add-service=https >/dev/null
+# <domain>:2083 - each customer's own panel URL (<domain>/jpanel redirects
+# there). The policy labels 2083 radsec_port_t; FrankenPHP runs as httpd_t.
+# (udp too: Caddy also serves HTTP/3 there.)
+firewall-cmd --permanent --add-port=2083/tcp --add-port=2083/udp >/dev/null
 firewall-cmd --reload >/dev/null
+for proto in tcp udp; do
+    semanage port -a -t http_port_t -p $proto 2083 2>/dev/null || semanage port -m -t http_port_t -p $proto 2083
+done
 
 systemctl enable --now frankenphp
 ok "FrankenPHP running"
@@ -523,6 +530,15 @@ if [ "$(dig +short A "$PANEL_HOSTNAME" @1.1.1.1 2>/dev/null | tail -n1)" = "$SER
     PANEL_TLS_LINE=""
 fi
 cat > "/etc/frankenphp/Caddyfile.d/panel.caddyfile" <<CADDY
+# The panel app, also served at https://<every hosted domain>:2083 (the
+# site files import this snippet; Caddyfile.d is imported before them).
+(jinnpanel_app) {
+	root * $APP_ROOT/public
+	encode zstd br gzip
+	try_files {path} /index.php
+	php_server
+}
+
 https://$PANEL_HOSTNAME {
 $PANEL_TLS_LINE
 	root * $APP_ROOT/public
@@ -540,6 +556,8 @@ http://$PANEL_HOSTNAME {
 CADDY
 
 frankenphp reload --config /etc/frankenphp/Caddyfile --force || systemctl restart frankenphp
+# Re-render every site file from the current template (and reload once).
+runuser -u frankenphp -- php "$APP_ROOT/worker/vhost-rebuild.php" || warn "Rewriting the site configs failed - see $APP_ROOT/storage/logs/reload.log"
 ok "JinnPanel deployed to $APP_ROOT"
 
 # ---------------------------------------------------------------------------

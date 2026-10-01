@@ -75,6 +75,18 @@ final class VhostService
         // php.ini/.user.ini in docroots. `route` keeps this ahead of PHP.
         $guard = "@hidden {\n\t\t\tpath_regexp hidden (/\\.[^/]|/php\\.ini\$)\n\t\t\tnot path /.well-known/*\n\t\t}\n\t\trespond @hidden 404";
 
+        // <domain>/jpanel takes the customer to their own panel at
+        // https://<domain>:2083 - a separate origin from the site, so the
+        // site's scripts can't drive the panel. Cookies aren't per port
+        // though: strip the panel's session cookie before the site's PHP
+        // could read it (the panel issues a new session id at login, so a
+        // cookie the site plants is useless too).
+        $sid = preg_quote(Config::SESSION_NAME, '/');
+        $panelHooks = "\trequest_header Cookie \"(^|;\\s*){$sid}=[^;]*\" \"\"\n"
+            . "\trequest_header Cookie \"^;\\s*\" \"\"\n"
+            . "\tredir /jpanel https://{host}:2083/ 302\n"
+            . "\tredir /jpanel/* https://{host}:2083/ 302\n";
+
         // www.<domain> is served too: every DNS zone the panel creates has a
         // www record, and a name with no site block fails the TLS handshake
         // outright (browsers show ERR_SSL_PROTOCOL_ERROR, not a cert warning).
@@ -83,11 +95,17 @@ final class VhostService
         {$tlsLine}
         	encode zstd br gzip
         	root * {$docroot}
+        {$panelHooks}
         {$siteRules}
         	route {
         		{$guard}
         		{$phpBlock}
         	}
+        }
+
+        https://{$domain}:2083, https://www.{$domain}:2083 {
+        {$tlsLine}
+        	import jinnpanel_app
         }
 
         CADDY;
@@ -100,6 +118,7 @@ final class VhostService
             http://{$domain}, http://www.{$domain} {
             	encode zstd br gzip
             	root * {$docroot}
+            {$panelHooks}
             {$siteRules}
             	route {
             		{$guard}

@@ -133,6 +133,14 @@ do them.
       there's no per-site way to enable more - add a WHM page listing
       available `php-zts-*` extensions.
 
+- [x] **Customer panel URL.** `<domain>/jpanel` redirects to
+      `https://<domain>:2083`, where every hosted domain serves the panel
+      with its own certificate - a separate origin from the site. Site
+      blocks strip the panel session cookie (cookies aren't per port).
+- [ ] **Show it to customers:** "Your control panel: <domain>/jpanel" in
+      cPanel > Domains and the welcome email; WHM-only pages could be
+      limited to the panel hostname.
+
 ## 3. Caching
 
 - [ ] **Cache feature.** Nothing is cached today beyond PHP's OPcache
