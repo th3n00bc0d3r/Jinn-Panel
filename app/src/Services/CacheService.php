@@ -82,6 +82,30 @@ final class CacheService
         return $n;
     }
 
+    /**
+     * A site with no PHP at all (plain HTML/CSS/JS): the web server serves
+     * it straight from disk, so the page cache - which stores PHP output -
+     * has nothing to do. Bounded scan of the document root.
+     */
+    public static function isStatic(string $domain): bool
+    {
+        $root = VhostService::effectiveDocroot($domain);
+        if (!is_dir($root) || is_file(VhostService::rulesFile($domain)) && str_contains((string) @file_get_contents(VhostService::rulesFile($domain)), '/index.php')) {
+            return false;
+        }
+        $seen = 0;
+        $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS));
+        foreach ($it as $f) {
+            if (++$seen > 5000) {
+                return false; // big tree: don't guess
+            }
+            if ($f->isFile() && str_ends_with(strtolower($f->getFilename()), '.php')) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     public static function pageCount(string $domain): int
     {
         return count(glob(self::pageDir($domain) . '/*/*') ?: []);

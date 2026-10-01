@@ -71,6 +71,9 @@ REDIS_PREFIX=<?= e($creds['prefix'] . $first) ?>:</pre>
             <?php $on = !empty($d['page_cache_ttl']); ?>
             <li class="px-5 py-3 flex flex-wrap items-center gap-3">
                 <span class="font-medium text-slate-700 min-w-48"><?= e($d['domain_name']) ?></span>
+                <?php if ($d['static'] && !$on): ?>
+                <span class="text-xs text-slate-500">Static site (no PHP) - served straight from disk, no page cache needed.</span>
+                <?php else: ?>
                 <form method="post" action="/cpanel/cache/domains/<?= (int) $d['id'] ?>" class="flex flex-wrap items-center gap-2">
                     <?= Csrf::field() ?>
                     <label class="flex items-center gap-2 text-sm text-slate-600"><input type="checkbox" name="enabled" value="1" <?= $on ? 'checked' : '' ?> class="rounded border-slate-300 text-sky-600 focus:ring-sky-500"> On</label>
@@ -81,7 +84,8 @@ REDIS_PREFIX=<?= e($creds['prefix'] . $first) ?>:</pre>
                     </select>
                     <button class="rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-xs font-medium px-3 py-1.5">Save</button>
                 </form>
-                <span class="text-xs text-slate-400"><?= $on ? number_format((int) $d['cached_pages']) . ' pages cached' : '' ?></span>
+                <span class="text-xs text-slate-400"><?= $on ? number_format((int) $d['cached_pages']) . ' pages cached' : '' ?><?= $on && $d['static'] ? ' - this site has no PHP, so there\'s nothing to cache' : '' ?></span>
+                <?php endif; ?>
                 <form method="post" action="/cpanel/cache/domains/<?= (int) $d['id'] ?>" class="ml-auto">
                     <?= Csrf::field() ?>
                     <button name="op" value="clear" class="inline-flex items-center gap-1.5 text-xs font-medium text-sky-700 hover:text-sky-600"><?= icon('refresh', 'h-3.5 w-3.5') ?> Clear cache</button>

@@ -13,6 +13,7 @@ final class CacheController
         $domains = $d->fetchAll();
         foreach ($domains as &$row) {
             $row['cached_pages'] = CacheService::pageCount((string) $row['domain_name']);
+            $row['static'] = CacheService::isStatic((string) $row['domain_name']);
         }
         unset($row);
         $creds = null;
