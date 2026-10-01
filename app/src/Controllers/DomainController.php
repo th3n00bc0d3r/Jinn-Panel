@@ -317,6 +317,38 @@ final class DomainController
         self::backTo($d);
     }
 
+    /** Exposed files: archives, dumps, backups, logs reachable over the web. */
+    public static function exposed(array $params): void
+    {
+        Auth::requireRole(['user']);
+        $d = self::owned(Auth::user(), (int) ($params['id'] ?? 0));
+        View::render('cpanel/exposed', [
+            'title' => 'Exposed files · ' . $d['domain_name'],
+            'd' => $d,
+            'scan' => ExposureService::scan(VhostService::effectiveDocroot((string) $d['domain_name'])),
+            'docroot' => VhostService::effectiveDocroot((string) $d['domain_name']),
+            'private' => VhostService::siteDir((string) $d['domain_name']) . '/private',
+        ], 'cpanel');
+    }
+
+    public static function makePrivate(array $params): void
+    {
+        Auth::requireRole(['user']);
+        Csrf::requireValid();
+        $d = self::owned(Auth::user(), (int) ($params['id'] ?? 0));
+        $moved = [];
+        try {
+            foreach (array_slice((array) ($_POST['paths'] ?? []), 0, 200) as $rel) {
+                $moved[] = ExposureService::makePrivate((string) $d['domain_name'], (string) $rel);
+            }
+            Flash::ok(count($moved) . ' moved out of the web folder into ' . VhostService::siteDir((string) $d['domain_name']) . '/private/.');
+        } catch (Throwable $e) {
+            Flash::error(($moved ? count($moved) . ' moved, then: ' : '') . $e->getMessage());
+        }
+        header('Location: /cpanel/domains/' . (int) $d['id'] . '/exposed');
+        exit;
+    }
+
     public static function phpSettings(array $params): void
     {
         Auth::requireRole(['user']);

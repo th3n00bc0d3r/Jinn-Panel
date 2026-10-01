@@ -1234,6 +1234,16 @@ final class MigrationRunner
         if ($review) {
             $this->report['warnings'][] = 'Routes need review for ' . implode(', ', $review) . ': some .htaccess rules couldn\'t be translated exactly - see cPanel > Domains > (domain) > Routes.';
         }
+        // Leftovers anyone can download (archives, dumps, logs, backups).
+        foreach ($domains as $domain) {
+            $found = ExposureService::scan(VhostService::effectiveDocroot($domain))['items'];
+            if ($found) {
+                $kinds = array_count_values(array_column($found, 'kind'));
+                $this->report['warnings'][] = "$domain: " . count($found) . ' file(s) in the web folder anyone can download ('
+                    . implode(', ', array_map(fn($k, $n) => "$n $k", array_keys($kinds), $kinds))
+                    . ', e.g. ' . implode(', ', array_slice(array_column($found, 'path'), 0, 3)) . ') - review in cPanel > Domains > ' . $domain . ' > Exposed files.';
+            }
+        }
         if ($hardcoded) {
             $this->report['warnings'][] = 'These files contain the old /home/' . $user . '/ path and may need updating: ' . implode(', ', $hardcoded) . '.';
         }

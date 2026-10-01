@@ -85,6 +85,8 @@ $router->post('/cpanel/domains/{id}/php', ['DomainController', 'phpSettings']);
 $router->post('/cpanel/domains/{id}/aliases', ['DomainController', 'aliasAdd']);
 $router->post('/cpanel/domains/{id}/aliases/delete', ['DomainController', 'aliasRemove']);
 $router->get('/cpanel/domains/{id}/routes', ['DomainController', 'routes']);
+$router->get('/cpanel/domains/{id}/exposed', ['DomainController', 'exposed']);
+$router->post('/cpanel/domains/{id}/exposed', ['DomainController', 'makePrivate']);
 $router->post('/cpanel/domains/{id}/routes', ['DomainController', 'routesSave']);
 $router->post('/cpanel/domains', ['DomainController', 'store']);
 $router->post('/cpanel/domains/{id}/delete', ['DomainController', 'destroy']);

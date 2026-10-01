@@ -128,7 +128,7 @@ do them.
       scripts and URL fetches), FTP accounts (SFTP, same password), parked
       domains (new domain aliases). Email forwarders, autoresponders and
       default addresses: done too.
-- [ ] **Exposed leftovers.** Migrated docroots contain archives and data that
+- [x] **Exposed leftovers.** Migrated docroots contain archives and data that
       were public on cPanel too (site `.zip` archives, `orders.json`,
       `_backups/` folders, `error_log`). Flag files like these after a
       migration.
