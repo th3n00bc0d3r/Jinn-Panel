@@ -90,6 +90,9 @@ if (is_dir(QUEUE_DIR)) {
                 case 'routes_apply':
                     routesApply($job, $log);
                     break;
+                case 'routes_remove':
+                    routesRemove((string) ($job['domain'] ?? ''), $log);
+                    break;
                 default:
                     throw new RuntimeException('Unknown job type: ' . $job['type']);
             }
@@ -535,6 +538,24 @@ function routesApply(array $job, callable $log): void
     }
     run('frankenphp reload --config /etc/frankenphp/Caddyfile --force');
     $log("routes for $domain applied");
+}
+
+/** A removed domain's routing rules (only once the domain is really gone). */
+function routesRemove(string $domain, callable $log): void
+{
+    $domain = strtolower($domain);
+    if (!preg_match(DNS_DOMAIN_RE, $domain)) {
+        throw new RuntimeException('Invalid domain');
+    }
+    $s = appDb()->prepare('SELECT COUNT(*) FROM domains WHERE domain_name = ?');
+    $s->execute([$domain]);
+    if ((int) $s->fetchColumn() > 0) {
+        throw new RuntimeException("$domain is still hosted - not removing its rules");
+    }
+    foreach (["$domain.caddy", "$domain.site.caddy"] as $f) {
+        @unlink("/var/lib/frankenphp/site-rules/$f");
+    }
+    $log("routes for $domain removed");
 }
 
 /** Background download of cPanel backups from S3 into the import folder (S3FetchService). */

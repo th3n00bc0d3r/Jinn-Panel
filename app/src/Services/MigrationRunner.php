@@ -38,6 +38,8 @@ final class MigrationRunner
     private ?array $creatorCache = null;
     /** Set while restoring only the mail of a finished item: its status must not change. */
     private bool $mailOnly = false;
+    /** The restoring account's main domain (parked domains become its aliases). */
+    private ?string $mainDomain = null;
     /** @var array<string,array> address => report entry from before a mail restore */
     private array $previousEmail = [];
 
@@ -273,7 +275,7 @@ final class MigrationRunner
                 $sftpUser = null;
             }
             $this->setItem(['step' => 'Extracting mail from the backup', 'progress' => 45]);
-            $this->extract($archive, $this->work . '/extract', ['*/cp/*', '*/shadow', '*/va/*', '*/homedir/etc/*', '*/homedir/mail/*', '*/homedir/.autorespond/*', '*/homedir.tar']);
+            $this->extract($archive, $this->work . '/extract', ['*/cp/*', '*/shadow', '*/va/*', '*/userdata/*', '*/proftpdpasswd', '*/cron/*', '*/homedir/etc/*', '*/homedir/mail/*', '*/homedir/.autorespond/*', '*/homedir.tar']);
             if ($this->m['transfer_mode'] !== 'file') {
                 @unlink($archive);
             }
@@ -282,8 +284,15 @@ final class MigrationRunner
             $domains->execute([(int) $item['target_user_id']]);
             $opt = $this->opt;
             $this->opt['email_data'] = true; // the point of a mail restore, whatever the original run chose
+            $reader = new CpanelBackupReader($this->work . '/extract', $user);
+            $here = $domains->fetchAll(PDO::FETCH_COLUMN);
             try {
-                $this->restoreEmail((int) $item['target_user_id'], new CpanelBackupReader($this->work . '/extract', $user), $domains->fetchAll(PDO::FETCH_COLUMN));
+                $this->restoreEmail((int) $item['target_user_id'], $reader, $here);
+                // Extras that older migrations didn't bring over (idempotent).
+                $this->setItem(['step' => 'FTP accounts and cron jobs', 'progress' => 95]);
+                $this->mainDomain = $reader->mainDomain();
+                $this->restoreFtpAccounts((int) $item['target_user_id'], $reader, $reader->domains(), $here);
+                $this->restoreCron((int) $item['target_user_id'], $reader, $reader->domains(), $here);
             } finally {
                 $this->opt = $opt;
             }
@@ -320,7 +329,7 @@ final class MigrationRunner
 
     private function hasFailures(): bool
     {
-        foreach (['domains', 'databases', 'db_users', 'email', 'forwarders'] as $k) {
+        foreach (['domains', 'databases', 'db_users', 'email', 'forwarders', 'ftp'] as $k) {
             foreach ($this->report[$k] ?? [] as $r) {
                 if (in_array($r['status'] ?? '', ['failed', 'partial'], true)) {
                     return true;
@@ -595,6 +604,7 @@ final class MigrationRunner
 
         // Domains + site files
         $home = ($this->opt['files'] || $this->opt['email_accounts']) ? $r->homedir() : null;
+        $this->mainDomain = $r->mainDomain();
         $migratedDomains = [];
         foreach ($domains as $i => $d) {
             $this->checkpoint();
@@ -616,6 +626,12 @@ final class MigrationRunner
             $this->setItem(['report' => $this->reportJson()]);
         }
 
+        if ($this->opt['files']) {
+            $this->setItem(['step' => 'FTP accounts and cron jobs', 'progress' => 95]);
+            $this->restoreFtpAccounts($userId, $r, $domains, $migratedDomains);
+            $this->restoreCron($userId, $r, $domains, $migratedDomains);
+        }
+
         $this->setItem(['step' => 'Final checks', 'progress' => 97]);
         $this->postChecks($userId, $r, $migratedDomains, $packageId);
         $this->relinkChildren($user);
@@ -625,7 +641,19 @@ final class MigrationRunner
     {
         $name = $d['name'];
         if ($d['type'] === 'parked') {
-            $this->report['domains'][] = ['name' => $name, 'type' => 'parked', 'status' => 'skipped', 'note' => 'Parked (alias) domains aren\'t supported yet - add it as its own domain if you need it.'];
+            // A parked domain shows the main site: an alias of the main domain.
+            $main = $this->pdo->prepare('SELECT * FROM domains WHERE user_id = ? AND domain_name = ?');
+            $main->execute([$userId, (string) $this->mainDomain]);
+            $mainRow = $main->fetch();
+            try {
+                if (!$mainRow) {
+                    throw new RuntimeException('the main domain was not restored');
+                }
+                DomainAliasService::add($mainRow, $name);
+                $this->report['domains'][] = ['name' => $name, 'type' => 'parked', 'status' => 'ok', 'note' => "Alias of {$mainRow['domain_name']} (serves the same site)."];
+            } catch (Throwable $e) {
+                $this->report['domains'][] = ['name' => $name, 'type' => 'parked', 'status' => 'failed', 'note' => 'Not added as an alias: ' . $e->getMessage()];
+            }
             return false;
         }
         $chk = $this->pdo->prepare('SELECT COUNT(*) FROM domains WHERE domain_name = ?');
@@ -694,6 +722,125 @@ final class MigrationRunner
         $this->report['domains'][] = $entry;
         $this->log("{$this->item['source_username']}: domain $name {$entry['status']}");
         return true;
+    }
+
+    /**
+     * cPanel's extra FTP accounts become SFTP accounts (same password - the
+     * crypt hash is kept). Their home maps from /home/<user>/... onto the
+     * new layout; a folder that wasn't part of a site is created empty.
+     */
+    private function restoreFtpAccounts(int $userId, CpanelBackupReader $r, array $domains, array $migrated): void
+    {
+        $accounts = $r->ftpAccounts();
+        if (!$accounts) {
+            return;
+        }
+        $this->report['ftp'] = [];
+        $user = $r->username();
+        $roots = [];
+        foreach ($domains as $d) {
+            if (in_array($d['name'], $migrated, true) && $d['docroot_rel']) {
+                $roots[rtrim((string) $d['docroot_rel'], '/')] = $d['name'];
+            }
+        }
+        uksort($roots, fn($a, $b) => strlen($b) <=> strlen($a));
+        $mainDir = $this->mainDomain && in_array($this->mainDomain, $migrated, true) ? VhostService::siteDir($this->mainDomain) : null;
+        $ins = $this->pdo->prepare('INSERT INTO ftp_accounts (user_id, domain_id, username, home_dir) VALUES (?, ?, ?, ?)');
+        $dom = $this->pdo->prepare('SELECT id FROM domains WHERE domain_name = ?');
+        foreach ($accounts as $a) {
+            $entry = ['name' => $a['name'], 'status' => 'ok', 'note' => ''];
+            try {
+                if ($a['locked'] || $a['hash'] === null) {
+                    throw new RuntimeException($a['locked'] ? 'disabled on cPanel - not recreated' : 'no usable password hash - create it again in cPanel > FTP');
+                }
+                [$home, $domainName, $created] = [null, null, false];
+                foreach ($roots as $rel => $domainName) {
+                    if ($a['home_rel'] === $rel || str_starts_with($a['home_rel'], "$rel/")) {
+                        $home = rtrim(VhostService::effectiveDocroot($domainName) . substr($a['home_rel'], strlen($rel)), '/');
+                        break;
+                    }
+                    $domainName = null;
+                }
+                if ($home === null) {
+                    if ($mainDir === null) {
+                        throw new RuntimeException('its folder has no place on this server (main domain not migrated)');
+                    }
+                    $domainName = $this->mainDomain;
+                    $home = rtrim($mainDir . '/' . $a['home_rel'], '/');
+                    if (str_contains($a['home_rel'], '..') || !preg_match('#^[A-Za-z0-9._/ -]*$#', $a['home_rel'])) {
+                        throw new RuntimeException("unusual home folder ~/{$a['home_rel']}");
+                    }
+                }
+                if (!is_dir($home)) {
+                    @mkdir($home, 02775, true);
+                    $created = true;
+                }
+                $label = preg_replace('/[^a-z0-9_]/', '_', strtolower(strstr($a['name'] . '@', '@', true)));
+                $label = preg_match('/^[a-z]/', $label) ? $label : 'ftp_' . $label;
+                $name = substr($user . '_' . $label, 0, 31);
+                $exists = $this->pdo->prepare('SELECT user_id FROM ftp_accounts WHERE username = ?');
+                $exists->execute([$name]);
+                $owner = $exists->fetchColumn();
+                if ($owner !== false && (int) $owner === $userId) {
+                    $entry['status'] = 'ok';
+                    $entry['note'] = "SFTP login $name is already here";
+                    $this->report['ftp'][] = $entry;
+                    continue; // a mail/extras restore running again
+                }
+                if ($owner !== false) {
+                    $name = substr($user . '_' . $label, 0, 26) . '_' . substr(md5($a['name']), 0, 4);
+                }
+                SftpService::createUser($name, (string) $a['hash'], $home, 0);
+                $dom->execute([$domainName]);
+                $ins->execute([$userId, $dom->fetchColumn() ?: null, $name, $home]);
+                $entry['note'] = "SFTP login $name (same password), folder $home" . ($created && !in_array($a['home_rel'], array_keys($roots), true) && $home !== $mainDir ? ' - created empty: it wasn\'t part of the sites\' files' : '');
+            } catch (Throwable $e) {
+                $entry['status'] = str_contains($e->getMessage(), 'not recreated') ? 'skipped' : 'failed';
+                $entry['note'] = $e->getMessage();
+            }
+            $this->report['ftp'][] = $entry;
+        }
+    }
+
+    /** Cron jobs that run a PHP script of the account's sites, or fetch a URL. */
+    private function restoreCron(int $userId, CpanelBackupReader $r, array $domains, array $migrated): void
+    {
+        $tab = $r->crontab();
+        if (trim($tab) === '') {
+            return;
+        }
+        $map = [];
+        foreach ($domains as $d) {
+            if (in_array($d['name'], $migrated, true) && $d['docroot_rel']) {
+                $map[rtrim((string) $d['docroot_rel'], '/')] = $d['name'];
+            }
+        }
+        uksort($map, fn($a, $b) => strlen($b) <=> strlen($a));
+        $res = CronService::fromCpanel($tab, $r->username(), $map);
+        $dom = $this->pdo->prepare('SELECT id FROM domains WHERE domain_name = ? AND user_id = ?');
+        foreach ($res['jobs'] as $j) {
+            try {
+                $in = ['schedule' => $j['schedule'], 'kind' => $j['kind'], 'url' => $j['url'] ?? '', 'args' => $j['args'] ?? ''];
+                if ($j['kind'] === 'php') {
+                    $dom->execute([$j['domain'], $userId]);
+                    $in['domain_id'] = (int) $dom->fetchColumn();
+                    $abs = VhostService::effectiveDocroot($j['domain']) . '/' . $j['docroot_path'];
+                    $in['target'] = substr($abs, strlen(VhostService::siteDir($j['domain'])) + 1);
+                }
+                $same = $this->pdo->prepare('SELECT COUNT(*) FROM cron_jobs WHERE user_id = ? AND schedule = ? AND kind = ? AND (target = ? OR target = ?) AND args = ?');
+                $same->execute([$userId, $j['schedule'], $j['kind'], $j['url'] ?? '', isset($j['domain']) ? VhostService::effectiveDocroot($j['domain']) . '/' . $j['docroot_path'] : '', $in['args']]);
+                if ((int) $same->fetchColumn() > 0) {
+                    continue;
+                }
+                CronService::create(['id' => $userId], $in);
+                $this->report['info'][] = 'Cron job recreated: ' . $j['schedule'] . ' ' . ($j['kind'] === 'php' ? 'php ' . ($in['target'] ?? '') : $j['url']) . '.';
+            } catch (Throwable $e) {
+                $this->report['warnings'][] = 'Cron job not recreated (' . $e->getMessage() . '): ' . $j['schedule'];
+            }
+        }
+        foreach ($res['skipped'] as $line) {
+            $this->report['warnings'][] = "Cron job not recreated: $line";
+        }
     }
 
     /** Custom DNS records from the backup's zone files (CpanelZoneImporter decides what's kept). */
@@ -1106,7 +1253,7 @@ final class MigrationRunner
                 $this->report['warnings'][] = "The account exceeds its \"{$p['name']}\" package (" . implode(', ', $over) . '). Everything was migrated, but the user can\'t add more until you assign a bigger package.';
             }
         }
-        $this->report['info'][] = 'Not migrated (re-create if needed): email forwarders & autoresponders, cron jobs, SSL certificates (AutoSSL issues new ones), FTP accounts.';
+        $this->report['info'][] = 'Not migrated: SSL certificates (new ones are issued automatically once DNS points here).';
         $this->report['info'][] = 'The sites go live once DNS for each domain points at this server (' . Config::SERVER_IP . ').';
     }
 

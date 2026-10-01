@@ -547,7 +547,7 @@ final class CpanelBackupReader
         }
         foreach (scandir($dir) ?: [] as $f) {
             $file = "$dir/$f";
-            if (!filter_var($f, FILTER_VALIDATE_EMAIL) || !is_file($file) || is_link($file)) {
+            if (str_ends_with($f, '.json') || !filter_var($f, FILTER_VALIDATE_EMAIL) || !is_file($file) || is_link($file)) {
                 continue;
             }
             $raw = str_replace("\r\n", "\n", (string) file_get_contents($file, false, null, 0, 65536));
@@ -562,6 +562,47 @@ final class CpanelBackupReader
                 'starts_on' => $day($meta['start'] ?? null),
                 'ends_on' => $day($meta['stop'] ?? null),
             ];
+        }
+        return $out;
+    }
+
+    /** The account's crontab (cron/<user>), or ''. */
+    public function crontab(): string
+    {
+        $f = $this->path("cron/{$this->username}");
+        return ($f !== null && is_file($f) && filesize($f) < 262144) ? (string) file_get_contents($f) : '';
+    }
+
+    /**
+     * Extra FTP accounts (proftpdpasswd), not the account's own login or its
+     * "_logs" one.
+     *
+     * @return list<array{name:string, hash:?string, home_rel:string, locked:bool}> home_rel relative to the home directory
+     */
+    public function ftpAccounts(): array
+    {
+        $f = $this->path('proftpdpasswd');
+        if ($f === null || !is_file($f)) {
+            return [];
+        }
+        $out = [];
+        foreach (file($f, FILE_IGNORE_NEW_LINES) ?: [] as $line) {
+            $p = explode(':', $line);
+            if (count($p) < 7) {
+                continue;
+            }
+            [$name, $hash, , , , $home] = $p;
+            $name = strtolower($name);
+            if ($name === $this->username || $name === $this->username . '_logs' || !preg_match('/^[a-z0-9._@+-]{1,128}$/', $name)) {
+                continue;
+            }
+            $prefix = '#^/home\d*/' . preg_quote($this->username, '#') . '(?:/(.*))?$#';
+            if (!preg_match($prefix, rtrim($home, '/'), $m)) {
+                continue; // outside the home directory (e.g. the logs one)
+            }
+            $locked = str_starts_with($hash, '!');
+            $clean = ltrim($hash, '!');
+            $out[] = ['name' => $name, 'hash' => self::isCryptHash($clean) ? $clean : null, 'home_rel' => (string) ($m[1] ?? ''), 'locked' => $locked];
         }
         return $out;
     }

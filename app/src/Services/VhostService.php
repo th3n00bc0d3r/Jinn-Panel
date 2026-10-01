@@ -121,11 +121,15 @@ final class VhostService
             . "\tredir /jpanel https://{host}:2083/ 302\n"
             . "\tredir /jpanel/* https://{host}:2083/ 302\n";
 
+        // The domain, its aliases (parked domains) and www. of each.
+        $names = array_merge([$domain], DomainAliasService::forDomain($domain));
+        $addrs = fn(string $scheme, string $port) => implode(', ', array_merge(...array_map(fn($n) => ["$scheme$n$port", "{$scheme}www.$n$port"], $names)));
+
         // www.<domain> is served too: every DNS zone the panel creates has a
         // www record, and a name with no site block fails the TLS handshake
         // outright (browsers show ERR_SSL_PROTOCOL_ERROR, not a cert warning).
         $conf = <<<CADDY
-        https://{$domain}, https://www.{$domain} {
+        {$addrs('https://', '')} {
         {$tlsLine}
         	encode zstd br gzip
         	root * {$docroot}
@@ -137,7 +141,7 @@ final class VhostService
         	}
         }
 
-        https://{$domain}:2083, https://www.{$domain}:2083 {
+        {$addrs('https://', ':2083')} {
         {$tlsLine}
         	import jinnpanel_app
         }
@@ -149,7 +153,7 @@ final class VhostService
             // redirects HTTP to HTTPS on its own (and still answers ACME).
             $conf .= <<<CADDY
 
-            http://{$domain}, http://www.{$domain} {
+            {$addrs('http://', '')} {
             	encode zstd br gzip
             	root * {$docroot}
             {$panelHooks}
@@ -185,6 +189,10 @@ final class VhostService
 
     public static function remove(string $domain, string $phpVersion = 'default'): void
     {
+        // Its routing rules are root-owned (the worker writes them): the worker removes them.
+        if (is_file(self::rulesFile($domain)) || is_file(self::siteRulesFile($domain))) {
+            SystemWorkerService::enqueue('routes-' . $domain, ['type' => 'routes_remove', 'domain' => $domain]);
+        }
         $safeName = preg_replace('/[^a-z0-9.-]/i', '_', $domain);
         $confPath = Config::VHOSTS_CADDY_DIR . "/$safeName.caddyfile";
         if (is_file($confPath)) {
@@ -224,8 +232,9 @@ final class VhostService
         // the instance that executes its PHP; they end in php_server.
         $rules = self::rulesFile($domain);
         $body = is_file($rules) ? "route {\n\t\timport {$rules}\n\t}" : "try_files {path} /index.php\n\tphp_server";
+        $hosts = implode(', ', array_merge(...array_map(fn($n) => ["http://$n:$port", "http://www.$n:$port"], array_merge([$domain], DomainAliasService::forDomain($domain)))));
         $conf = <<<CADDY
-        http://{$domain}:{$port}, http://www.{$domain}:{$port} {
+        {$hosts} {
         	bind 127.0.0.1
         	root * {$docroot}
         	encode zstd br gzip

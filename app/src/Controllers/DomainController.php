@@ -45,9 +45,7 @@ final class DomainController
         }
 
         $pdo = Database::app();
-        $chk = $pdo->prepare('SELECT id FROM domains WHERE domain_name = ?');
-        $chk->execute([$domain]);
-        if ($chk->fetch()) {
+        if (DomainAliasService::nameTaken($domain)) {
             Flash::error('That domain is already registered on this server.');
             header('Location: /cpanel/domains');
             exit;
@@ -153,6 +151,7 @@ final class DomainController
             try { MailService::deleteDomain((string) $domain['mail_domain_id']); } catch (Throwable $e) { error_log($e->getMessage()); }
         }
         PhpSettingsService::remove((string) $domain['domain_name']);
+        DomainAliasService::removeAll($domain);
         $pdo->prepare('DELETE FROM email_accounts WHERE domain_id = ?')->execute([$id]);
 
         $del = $pdo->prepare('DELETE FROM domains WHERE id = ?');
@@ -187,6 +186,7 @@ final class DomainController
             'docroot' => VhostService::effectiveDocroot((string) $d['domain_name']),
             'routes' => is_file(VhostService::rulesFile((string) $d['domain_name'])),
             'php' => PhpSettingsService::get($d),
+            'aliases' => DomainAliasService::forDomain((string) $d['domain_name']),
             'phpLog' => PhpSettingsService::logFile((string) $d['domain_name']),
         ], 'cpanel');
     }
@@ -287,6 +287,34 @@ final class DomainController
         }
         header('Location: /cpanel/domains/' . (int) $d['id'] . '/routes');
         exit;
+    }
+
+    public static function aliasAdd(array $params): void
+    {
+        Auth::requireRole(['user']);
+        Csrf::requireValid();
+        $d = self::owned(Auth::user(), (int) ($params['id'] ?? 0));
+        try {
+            DomainAliasService::add($d, (string) ($_POST['alias'] ?? ''));
+        } catch (Throwable $e) {
+            self::backTo($d, $e->getMessage());
+        }
+        Flash::ok('Alias added - point its DNS here (nameservers or an A record) and it serves this site.');
+        self::backTo($d);
+    }
+
+    public static function aliasRemove(array $params): void
+    {
+        Auth::requireRole(['user']);
+        Csrf::requireValid();
+        $d = self::owned(Auth::user(), (int) ($params['id'] ?? 0));
+        try {
+            DomainAliasService::remove($d, (string) ($_POST['alias'] ?? ''));
+        } catch (Throwable $e) {
+            self::backTo($d, $e->getMessage());
+        }
+        Flash::ok('Alias removed.');
+        self::backTo($d);
     }
 
     public static function phpSettings(array $params): void

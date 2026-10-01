@@ -106,7 +106,7 @@ do them.
       from S3 by hand. Add WHM > cPanel Migration > "From backup files", and
       optionally an S3 source (bucket, prefix, credentials stored encrypted
       like `secret_enc`).
-- [ ] **DNS records during migration** are now imported
+- [x] **DNS records during migration** are now imported
       (`CpanelZoneImporter`), but only proven via
       `worker/dns-import-cpanel.php` on existing zones - verify on the next real
       migration.
@@ -124,8 +124,10 @@ do them.
       Editor aren't applied, and config files still reference
       `/home/<user>/` (listed in the migration report) - rewrite those paths
       or map them.
-- [ ] **Not migrated at all:** cron jobs, FTP accounts, parked domains.
-      (Email forwarders, autoresponders and default addresses: done.)
+- [x] **Not migrated at all:** cron jobs (new cPanel > Cron Jobs: PHP
+      scripts and URL fetches), FTP accounts (SFTP, same password), parked
+      domains (new domain aliases). Email forwarders, autoresponders and
+      default addresses: done too.
 - [ ] **Exposed leftovers.** Migrated docroots contain archives and data that
       were public on cPanel too (site `.zip` archives, `orders.json`,
       `_backups/` folders, `error_log`). Flag files like these after a

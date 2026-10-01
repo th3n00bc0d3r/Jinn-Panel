@@ -543,7 +543,9 @@ cat > /var/lib/frankenphp/site-ini/_dispatch.php <<'PHP'
 <?php
 // JinnPanel: apply this site's PHP settings (cPanel > Domains > domain > PHP settings).
 (static function (): void {
-    $root = (string) ($_SERVER['DOCUMENT_ROOT'] ?? '');
+    // DOCUMENT_ROOT for web requests; JINNPANEL_DOCROOT for cron jobs (the
+    // CLI always blanks DOCUMENT_ROOT).
+    $root = (string) ($_SERVER['DOCUMENT_ROOT'] ?? '') ?: (string) getenv('JINNPANEL_DOCROOT');
     if ($root !== '' && preg_match('#^/var/www/([a-z0-9][a-z0-9.-]*)/#', $root . '/', $m)) {
         $file = '/var/lib/frankenphp/site-ini/' . $m[1] . '.php';
         if (is_file($file)) {
@@ -836,6 +838,33 @@ systemctl daemon-reload
 systemctl enable jinnpanel-webmail >/dev/null 2>&1
 systemctl restart jinnpanel-webmail
 ok "Webmail (Cypht $CYPHT_VERSION) on 127.0.0.1:8009"
+
+# Customer cron jobs (cPanel > Cron Jobs), checked every minute.
+cat > /etc/systemd/system/jinnpanel-cron.service <<UNIT
+[Unit]
+Description=JinnPanel - start the customer cron jobs due this minute
+
+[Service]
+Type=oneshot
+User=frankenphp
+Group=webusers
+ExecStart=/usr/bin/php $APP_ROOT/worker/cron-run.php
+# The jobs are detached children that may run past this oneshot: leave them be.
+KillMode=process
+UNIT
+cat > /etc/systemd/system/jinnpanel-cron.timer <<'UNIT'
+[Unit]
+Description=JinnPanel customer cron jobs
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now jinnpanel-cron.timer >/dev/null 2>&1
 
 # Mail DNS (DKIM/SPF/DMARC/autoconfig), the autoconfig/MTA-STS site and
 # Stalwart's certificate: now, and daily (DKIM keys rotate, certs renew).

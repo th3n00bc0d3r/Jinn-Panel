@@ -25,6 +25,8 @@ final class AccountCleanupService
         foreach ($domains->fetchAll() as $d) {
             try { VhostService::remove($d['domain_name'], $d['php_version']); } catch (Throwable $e) { error_log($e->getMessage()); }
             try { DnsService::removeZone($d['domain_name']); } catch (Throwable $e) { error_log($e->getMessage()); }
+            try { DomainAliasService::removeAll($d); } catch (Throwable $e) { error_log($e->getMessage()); }
+            PhpSettingsService::remove((string) $d['domain_name']);
         }
 
         $droppedUsers = [];

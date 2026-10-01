@@ -8,6 +8,7 @@
 /** @var bool $routes */
 /** @var array<string,string> $php */
 /** @var string $phpLog */
+/** @var list<string> $aliases */
 $card = 'bg-white rounded-xl border border-slate-200 shadow-sm p-5';
 $btn = 'inline-flex items-center gap-2 rounded-lg text-sm font-medium px-4 py-2 transition-colors';
 $input = 'w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-500';
@@ -61,6 +62,30 @@ $st = $ssl['state'];
                 <span class="flex items-center rounded-lg bg-slate-50 border border-slate-200 px-2 text-xs font-mono text-slate-500"><?= e($siteDir) ?>/</span>
                 <input name="docroot" value="<?= e($rel) ?>" required class="<?= $input ?> font-mono">
                 <button class="<?= $btn ?> bg-slate-800 hover:bg-slate-700 text-white">Save</button>
+            </form>
+        </div>
+
+        <div class="<?= $card ?>">
+            <h3 class="text-sm font-semibold text-slate-700 mb-1">Aliases</h3>
+            <p class="text-xs text-slate-400 mb-3">Other domain names that show this same site (cPanel's "parked domains"), with www. of each.</p>
+            <?php if ($aliases): ?>
+            <ul class="mb-3 flex flex-wrap gap-2">
+                <?php foreach ($aliases as $al): ?>
+                <li>
+                    <form method="post" action="/cpanel/domains/<?= $id ?>/aliases/delete" class="inline-flex items-center gap-1 rounded-full bg-slate-100 pl-3 pr-1 py-1 text-xs text-slate-700" data-confirm="Stop serving this site on <?= e($al) ?>? Its DNS zone here is removed too.">
+                        <?= Csrf::field() ?>
+                        <input type="hidden" name="alias" value="<?= e($al) ?>">
+                        <?= e($al) ?>
+                        <button class="rounded-full p-0.5 text-slate-400 hover:text-red-600" title="Remove"><?= icon('close', 'h-3 w-3') ?></button>
+                    </form>
+                </li>
+                <?php endforeach; ?>
+            </ul>
+            <?php endif; ?>
+            <form method="post" action="/cpanel/domains/<?= $id ?>/aliases" class="flex gap-2">
+                <?= Csrf::field() ?>
+                <input name="alias" required placeholder="example.net" class="<?= $input ?>">
+                <button class="<?= $btn ?> bg-slate-800 hover:bg-slate-700 text-white">Add</button>
             </form>
         </div>
 
