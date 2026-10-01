@@ -148,6 +148,35 @@ the `db_user` index change) and also ship an upgrade file in
   cPanel backup; **not yet run against a real cPanel server**.
 - Account deletion and migration rollback share `AccountCleanupService::purge()`.
 
+## Moving parts added on 2026-10-01 (TODO.md has the why)
+
+- **Timers/units** (installer): `hostpanel-worker.timer` (root jobs, 5 s),
+  `jinnpanel-mail-dns.timer` (daily: `mail-dns-sync.php` - mail DNS records,
+  autoconfig/MTA-STS site, Stalwart's TLS cert from Caddy's, 587 listener,
+  pending mail-domain deletes - and `ssl-sync.php`, Let's Encrypt up/down),
+  `jinnpanel-cron.timer` (customer cron jobs, every minute, `KillMode=process`),
+  `jinnpanel-webmail.service` (Cypht, own FrankenPHP as user `webmail` on
+  127.0.0.1:8009 - Cypht putenv()s, which would leak into shared sites),
+  `valkey` (object cache, loopback, ACL user per account), transient
+  `jinnpanel-s3-fetch-<id>` units.
+- **Per-site runtime**: server-wide `auto_prepend_file`
+  (`app/runtime/dispatch.php` -> `/var/lib/frankenphp/site-ini/_dispatch.php`)
+  includes `site-ini/<domain>.php` (PhpSettingsService: ini_set()s, returns
+  the page-cache TTL) and `_pagecache.php`. CLI (cron) passes
+  `JINNPANEL_DOCROOT` because the CLI blanks DOCUMENT_ROOT.
+- **Routes**: `site-rules/<domain>.caddy` / `.site.caddy` are root-owned and
+  written only by the worker's `routes_apply` (re-validates with
+  `HtaccessTranslator::validate`, `frankenphp validate`, restores on failure).
+  Tests: `php tests/HtaccessTranslatorTest.php` (needs frankenphp).
+- **Mail**: Stalwart 0.16 takes no credentials in an Account create (create,
+  then patch `credentials/0`; one password per account). Panel acts as a
+  mailbox via the master login `<address>%<admin>`. Forwarders = mailing
+  lists (non-mailbox) or the mailbox's single panel Sieve script, which also
+  holds the autoresponder (Stalwart runs one active script).
+- **Domains**: `domains.docroot` is honoured (VhostService::effectiveDocroot),
+  aliases in `domain_aliases`, `<domain>/jpanel` -> `<domain>:2083` (panel per
+  domain; site blocks strip the panel session cookie).
+
 ## DNS zones (branch `dns-management`)
 
 - **Source of truth is the panel DB**: `dns_zones`, `dns_records`,
@@ -199,10 +228,13 @@ publicly, WHM > DNS Zones renders):
   the const was declared after the job loop (top-level `const` isn't hoisted
   like functions). It now sits with the other constants at the top.
 
-Still open:
-
-1. Not yet: record editing for cPanel users (own domains), AAAA for the
-   server's own names, importing DNS records during cPanel migration.
+Since done (2026-10-01): cPanel > DNS is an editor for the customer's own
+zones (the server's own names in the server zone stay WHM-only); AAAA
+records next to every A record pointing here; DNS records are imported from
+cPanel zone files during migration; subdomain sites are records in their
+parent zone. Records the panel keeps in sync itself carry
+`dns_records.managed` ('mail', 'ipv6', 'site') - `DnsService::syncManaged()`
+replaces a tag's set, and a customer record with the same name wins.
 
 ## Production readiness (review of 2026-09-30)
 
