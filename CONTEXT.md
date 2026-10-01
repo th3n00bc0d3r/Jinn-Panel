@@ -289,6 +289,20 @@ The security review of 2026-09-30 listed 19 items. Status after the work of
 | 18 | No tests/CI | **Fixed**: tests/UnitTest.php (TOTP RFC vectors, archives, FastCGI, rules rewrite, cron, ...), tests/HtaccessTranslatorTest.php, GitHub Actions CI |
 | 19 | Migration vs a real cPanel server; Stalwart hashes; SFTPGo SCP | **Partly**: Stalwart verified to accept imported `$6$`, `$1$` and bcrypt hashes; SFTPGo has `scp` enabled; a live cPanel source server was not available to test against |
 
+Known limits of the isolation (worth knowing before letting strangers host):
+
+- Caddy serves every site's static files as `frankenphp`, which can read
+  every account's files and the panel's `Config.php`. A symlink in a
+  docroot pointing elsewhere would be served. Symlinks can't be made by
+  customers today (PHP: open_basedir + exec/putenv disabled; SFTP: SFTPGo
+  refuses them; archives: the pool agent refuses them; migrations: rsync
+  --safe-links) - but an account with `php_exec` on could. Real fix: serve
+  static files from a separate, secret-less web server user in front of the
+  panel instance.
+- SFTPGo now holds CAP_DAC_OVERRIDE/CHOWN/FOWNER (to write as the account),
+  so its admin API (8090, open on the internet by the owner's choice) is
+  close to root on files. Binding it to 127.0.0.1 is strongly recommended.
+
 Still open (owner's side): rotating the root password, SSH password logins
 (kept on by choice; fail2ban added), restricting 8080/8090/9090, IPv6 rDNS
 at the provider, XFS user quotas (needs a reboot), a migration trial
