@@ -152,7 +152,7 @@ do them.
       copy, download), extract `.zip` (and `.tar.gz`) archives, compress the
       selection into a `.zip`, and view/change permissions (chmod) of files
       and folders - all confined to the account's own directories.
-- [ ] **Zone editor for customers** in the jpanel (cPanel > DNS): add,
+- [x] **Zone editor for customers** in the jpanel (cPanel > DNS): add,
       edit and delete records of their own domains' zones, with the same
       validation as WHM > DNS Zones; records the panel manages (mail, IPv6)
       shown read-only.

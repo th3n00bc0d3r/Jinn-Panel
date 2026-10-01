@@ -298,6 +298,79 @@ final class DnsService
     /** @param array<string,mixed> $in name, type, ttl, priority, content */
     public static function addRecord(int $zoneId, array $in, bool $publish = true): void
     {
+        [$name, $type, $ttl, $priority, $content] = self::validateRecord($zoneId, $in, null);
+        self::yieldManaged($zoneId, $name, $type);
+        Database::app()->prepare('INSERT INTO dns_records (zone_id, name, type, ttl, priority, content) VALUES (?, ?, ?, ?, ?, ?)')
+            ->execute([$zoneId, $name, $type, $ttl, $priority, $content]);
+        if ($publish) { // false for bulk imports; the caller publishes once
+            self::publish($zoneId);
+        }
+    }
+
+    /** Replaces one of the zone's own (not panel-managed) records, with the same checks as addRecord(). */
+    public static function updateRecord(int $zoneId, int $recordId, array $in): void
+    {
+        $stmt = Database::app()->prepare('SELECT * FROM dns_records WHERE id = ? AND zone_id = ? AND managed IS NULL');
+        $stmt->execute([$recordId, $zoneId]);
+        if (!$stmt->fetch()) {
+            throw new InvalidArgumentException('Record not found.');
+        }
+        [$name, $type, $ttl, $priority, $content] = self::validateRecord($zoneId, $in, $recordId);
+        self::yieldManaged($zoneId, $name, $type);
+        Database::app()->prepare('UPDATE dns_records SET name = ?, type = ?, ttl = ?, priority = ?, content = ? WHERE id = ?')
+            ->execute([$name, $type, $ttl, $priority, $content, $recordId]);
+        self::publish($zoneId);
+    }
+
+    /**
+     * A record the customer adds wins over the panel's own: drop managed
+     * records it would clash with (any, for a CNAME; a CNAME or the same
+     * type otherwise). The syncs then leave that name alone.
+     */
+    private static function yieldManaged(int $zoneId, string $name, string $type): void
+    {
+        if ($type === 'TXT') {
+            $type = 'CNAME'; // TXT records coexist (SPF, verification tokens): only a managed CNAME has to go
+            $sql = 'DELETE FROM dns_records WHERE zone_id = ? AND name = ? AND managed IS NOT NULL AND type = ?';
+            Database::app()->prepare($sql)->execute([$zoneId, $name, $type]);
+            return;
+        }
+        $sql = $type === 'CNAME'
+            ? 'DELETE FROM dns_records WHERE zone_id = ? AND name = ? AND managed IS NOT NULL'
+            : "DELETE FROM dns_records WHERE zone_id = ? AND name = ? AND managed IS NOT NULL AND type IN ('CNAME', ?)";
+        Database::app()->prepare($sql)->execute($type === 'CNAME' ? [$zoneId, $name] : [$zoneId, $name, $type]);
+    }
+
+    /**
+     * Names in the server's own zone that keep the server reachable (its
+     * hostname and everything under it, panel, ns1/ns2): only WHM may
+     * change those, not the customer who owns the zone's domain.
+     */
+    public static function isServerName(array $zone, string $name): bool
+    {
+        if ((int) $zone['is_server_zone'] !== 1) {
+            return false;
+        }
+        $zoneName = (string) $zone['zone_name'];
+        $name = strtolower($name);
+        $host = self::relativeName(strtolower(Config::SERVER_HOSTNAME), $zoneName);
+        $ns = self::nameservers();
+        foreach ([self::relativeName($ns['ns1_host'], $zoneName), self::relativeName($ns['ns2_host'], $zoneName)] as $n) {
+            if ($n !== null && $n !== '@' && $name === $n) {
+                return true;
+            }
+        }
+        return $host !== null && $host !== '@' && ($name === $host || str_ends_with($name, '.' . $host));
+    }
+
+    /**
+     * Validates and normalises a record for the zone; $exceptId is the
+     * record being edited (left out of the conflict checks).
+     *
+     * @return array{0:string,1:string,2:int,3:?int,4:string} name, type, ttl, priority, content
+     */
+    private static function validateRecord(int $zoneId, array $in, ?int $exceptId): array
+    {
         $zone = self::findZone($zoneId) ?? throw new InvalidArgumentException('Zone not found.');
         $zoneName = (string) $zone['zone_name'];
 
@@ -385,8 +458,8 @@ final class DnsService
         }
 
         $pdo = Database::app();
-        $stmt = $pdo->prepare('SELECT type, content, priority FROM dns_records WHERE zone_id = ? AND name = ?');
-        $stmt->execute([$zoneId, $name]);
+        $stmt = $pdo->prepare('SELECT type, content, priority FROM dns_records WHERE zone_id = ? AND name = ? AND id <> ? AND managed IS NULL');
+        $stmt->execute([$zoneId, $name, $exceptId ?? 0]);
         $existing = $stmt->fetchAll();
         $existingTypes = array_column($existing, 'type');
         if ($type === 'CNAME' && $existing) {
@@ -401,11 +474,7 @@ final class DnsService
             }
         }
 
-        $pdo->prepare('INSERT INTO dns_records (zone_id, name, type, ttl, priority, content) VALUES (?, ?, ?, ?, ?, ?)')
-            ->execute([$zoneId, $name, $type, $ttl, $priority, $content]);
-        if ($publish) { // false for bulk imports; the caller publishes once
-            self::publish($zoneId);
-        }
+        return [$name, $type, $ttl, $priority, $content];
     }
 
     public static function deleteRecord(int $zoneId, int $recordId): void
