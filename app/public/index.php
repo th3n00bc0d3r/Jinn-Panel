@@ -79,6 +79,7 @@ $router->get('/cpanel/domains/{id}', ['DomainController', 'show']);
 $router->post('/cpanel/domains/{id}/docroot', ['DomainController', 'docroot']);
 $router->post('/cpanel/domains/{id}/autossl', ['DomainController', 'autossl']);
 $router->post('/cpanel/domains/{id}/clear-cache', ['DomainController', 'clearCache']);
+$router->post('/cpanel/domains/{id}/php', ['DomainController', 'phpSettings']);
 $router->post('/cpanel/domains', ['DomainController', 'store']);
 $router->post('/cpanel/domains/{id}/delete', ['DomainController', 'destroy']);
 $router->post('/cpanel/domains/{id}/settings', ['DomainController', 'updateSettings']);

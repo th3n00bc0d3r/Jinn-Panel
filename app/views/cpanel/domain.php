@@ -6,6 +6,8 @@
 /** @var string $siteDir */
 /** @var string $docroot */
 /** @var bool $routes */
+/** @var array<string,string> $php */
+/** @var string $phpLog */
 $card = 'bg-white rounded-xl border border-slate-200 shadow-sm p-5';
 $btn = 'inline-flex items-center gap-2 rounded-lg text-sm font-medium px-4 py-2 transition-colors';
 $input = 'w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-500';
@@ -59,6 +61,32 @@ $st = $ssl['state'];
                 <span class="flex items-center rounded-lg bg-slate-50 border border-slate-200 px-2 text-xs font-mono text-slate-500"><?= e($siteDir) ?>/</span>
                 <input name="docroot" value="<?= e($rel) ?>" required class="<?= $input ?> font-mono">
                 <button class="<?= $btn ?> bg-slate-800 hover:bg-slate-700 text-white">Save</button>
+            </form>
+        </div>
+
+        <div class="<?= $card ?> lg:col-span-2">
+            <h3 class="text-sm font-semibold text-slate-700 mb-1">PHP settings</h3>
+            <p class="text-xs text-slate-400 mb-3">
+                Leave a field empty for the server default. Errors are logged to <span class="font-mono"><?= e($phpLog) ?></span>.
+                Upload and post size limits are server-wide.<?= $d['php_version'] !== 'default' ? ' These apply to sites on the default PHP version only.' : '' ?>
+            </p>
+            <form method="post" action="/cpanel/domains/<?= $id ?>/php" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-5 items-end">
+                <?= Csrf::field() ?>
+                <?php foreach (PhpSettingsService::SETTINGS as $key => [$kind, $lbl]): ?>
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1"><?= e($lbl) ?></label>
+                    <?php if ($kind === 'bool'): ?>
+                    <select name="<?= e($key) ?>" class="<?= $input ?> bg-white">
+                        <option value="">Default</option>
+                        <option value="On" <?= ($php[$key] ?? '') === 'On' ? 'selected' : '' ?>>On</option>
+                        <option value="Off" <?= ($php[$key] ?? '') === 'Off' ? 'selected' : '' ?>>Off</option>
+                    </select>
+                    <?php else: ?>
+                    <input name="<?= e($key) ?>" value="<?= e($php[$key] ?? '') ?>" placeholder="<?= e((string) ini_get($key)) ?>" class="<?= $input ?> font-mono">
+                    <?php endif; ?>
+                </div>
+                <?php endforeach; ?>
+                <div><button class="<?= $btn ?> bg-slate-800 hover:bg-slate-700 text-white">Save</button></div>
             </form>
         </div>
 

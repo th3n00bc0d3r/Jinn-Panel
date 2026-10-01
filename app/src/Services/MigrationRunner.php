@@ -679,6 +679,16 @@ final class MigrationRunner
                     $entry['note'] = trim($entry['note'] . ' Copying files: ' . substr(trim((string) $out), -300));
                 }
                 $entry['source_docroot'] = '~/' . $d['docroot_rel'];
+                // MultiPHP INI Editor settings (FrankenPHP ignores .user.ini).
+                try {
+                    $row = $this->pdo->prepare('SELECT * FROM domains WHERE domain_name = ?');
+                    $row->execute([$name]);
+                    foreach (PhpSettingsService::importCpanelIni($row->fetch(), $docroot) as $n) {
+                        $this->report['info'][] = "$name: $n.";
+                    }
+                } catch (Throwable $e) {
+                    $this->report['warnings'][] = "$name: PHP settings from cPanel not imported: " . $e->getMessage();
+                }
             }
         }
         $this->report['domains'][] = $entry;
@@ -1038,7 +1048,9 @@ final class MigrationRunner
         $user = $r->username();
         $htaccess = [];
         $hardcoded = [];
-        $candidates = ['wp-config.php', 'configuration.php', '.env', 'config.php', 'app/etc/env.php', 'sites/default/settings.php', '.user.ini', 'php.ini'];
+        // (.user.ini/php.ini aren't listed: their settings are imported and
+        // their error_log path replaced - see PhpSettingsService.)
+        $candidates = ['wp-config.php', 'configuration.php', '.env', 'config.php', 'app/etc/env.php', 'sites/default/settings.php'];
         foreach ($domains as $domain) {
             $docroot = VhostService::docroot($domain);
             if (is_file("$docroot/.htaccess")) {

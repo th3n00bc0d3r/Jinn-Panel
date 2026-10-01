@@ -526,6 +526,31 @@ fi
 ( cd "$APP_ROOT" && tailwindcss -i public/assets/css/input.css -o public/assets/css/app.css --minify )
 chown frankenphp:webusers "$APP_ROOT/public/assets/css/app.css"
 
+# Per-site PHP settings: FrankenPHP ignores .user.ini, so a server-wide
+# auto_prepend_file includes the site's generated settings file
+# (PhpSettingsService) - one is_file() per request.
+mkdir -p /var/lib/frankenphp/site-ini
+chown frankenphp:webusers /var/lib/frankenphp/site-ini
+chmod 2775 /var/lib/frankenphp/site-ini
+cat > /var/lib/frankenphp/site-ini/_dispatch.php <<'PHP'
+<?php
+// JinnPanel: apply this site's PHP settings (cPanel > Domains > domain > PHP settings).
+(static function (): void {
+    $root = (string) ($_SERVER['DOCUMENT_ROOT'] ?? '');
+    if ($root !== '' && preg_match('#^/var/www/([a-z0-9][a-z0-9.-]*)/#', $root . '/', $m)) {
+        $file = '/var/lib/frankenphp/site-ini/' . $m[1] . '.php';
+        if (is_file($file)) {
+            include $file;
+        }
+    }
+})();
+PHP
+chown root:webusers /var/lib/frankenphp/site-ini/_dispatch.php
+chmod 0644 /var/lib/frankenphp/site-ini/_dispatch.php
+semanage fcontext -a -t httpd_sys_rw_content_t '/var/lib/frankenphp/site-ini(/.*)?' 2>/dev/null || true
+restorecon -R /var/lib/frankenphp/site-ini
+echo "auto_prepend_file = /var/lib/frankenphp/site-ini/_dispatch.php" > /etc/php-zts/conf.d/99-jinnpanel-site-ini.ini
+
 # Real Let's Encrypt certificate once the panel hostname resolves here
 # publicly (Caddy's automatic HTTPS, HTTP-01/TLS-ALPN on 80/443); until then
 # Caddy's local CA, which browsers warn about. A re-run upgrades it.
@@ -566,6 +591,8 @@ http://$PANEL_HOSTNAME {
 CADDY
 
 frankenphp reload --config /etc/frankenphp/Caddyfile --force || systemctl restart frankenphp
+# Per-site PHP settings files (and cPanel .user.ini imports) for every site.
+runuser -u frankenphp -- php "$APP_ROOT/worker/php-settings-import.php" >/dev/null || warn "Writing per-site PHP settings failed."
 # Re-render every site file from the current template (and reload once).
 runuser -u frankenphp -- php "$APP_ROOT/worker/vhost-rebuild.php" || warn "Rewriting the site configs failed - see $APP_ROOT/storage/logs/reload.log"
 ok "JinnPanel deployed to $APP_ROOT"

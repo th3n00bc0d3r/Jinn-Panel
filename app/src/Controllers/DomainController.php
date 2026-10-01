@@ -152,6 +152,7 @@ final class DomainController
         if ($domain['mail_domain_id']) {
             try { MailService::deleteDomain((string) $domain['mail_domain_id']); } catch (Throwable $e) { error_log($e->getMessage()); }
         }
+        PhpSettingsService::remove((string) $domain['domain_name']);
         $pdo->prepare('DELETE FROM email_accounts WHERE domain_id = ?')->execute([$id]);
 
         $del = $pdo->prepare('DELETE FROM domains WHERE id = ?');
@@ -185,6 +186,8 @@ final class DomainController
             'siteDir' => VhostService::siteDir((string) $d['domain_name']),
             'docroot' => VhostService::effectiveDocroot((string) $d['domain_name']),
             'routes' => is_file(VhostService::rulesFile((string) $d['domain_name'])),
+            'php' => PhpSettingsService::get($d),
+            'phpLog' => PhpSettingsService::logFile((string) $d['domain_name']),
         ], 'cpanel');
     }
 
@@ -242,6 +245,21 @@ final class DomainController
             self::backTo($d, 'Could not update the site: ' . $e->getMessage());
         }
         Flash::ok("AutoSSL started for $name - the certificate normally arrives within a minute. Reload this page to see it.");
+        self::backTo($d);
+    }
+
+    public static function phpSettings(array $params): void
+    {
+        Auth::requireRole(['user']);
+        Csrf::requireValid();
+        $me = Auth::user();
+        $d = self::owned($me, (int) ($params['id'] ?? 0));
+        try {
+            PhpSettingsService::save($d, $_POST);
+        } catch (Throwable $e) {
+            self::backTo($d, $e->getMessage());
+        }
+        Flash::ok('PHP settings saved - they apply to the next request.');
         self::backTo($d);
     }
 

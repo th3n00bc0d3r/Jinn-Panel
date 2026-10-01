@@ -120,7 +120,7 @@ do them.
 - [x] **Custom document root.** Laravel-style apps serve from `public/`
       (handled with a site rule for now); let users set the docroot per
       domain.
-- [ ] **cPanel PHP settings.** `php.ini` / `.user.ini` from MultiPHP INI
+- [x] **cPanel PHP settings.** `php.ini` / `.user.ini` from MultiPHP INI
       Editor aren't applied, and config files still reference
       `/home/<user>/` (listed in the migration report) - rewrite those paths
       or map them.
