@@ -12,8 +12,9 @@ declare(strict_types=1);
  *  - only when the domain's MX points at this server (mail hosted elsewhere,
  *    e.g. Google, gets nothing - and loses records an earlier sync added);
  *  - the customer's own SPF/DMARC/records always win over Stalwart's;
- *  - SPF is "mx a ~all" and DMARC starts at p=none rather than Stalwart's
- *    strict defaults, so existing senders don't bounce on day one.
+ *  - SPF is "mx a ~all" and DMARC p=quarantine rather than Stalwart's
+ *    p=reject: failing mail lands in spam instead of bouncing, in case a
+ *    domain also sends through a third party nobody listed in SPF.
  *
  * Also: the Caddy site that answers mta-sts./autoconfig./autodiscover.
  * <domain> (proxied to Stalwart, only the paths those services use), and
@@ -34,7 +35,24 @@ final class MailDnsService
     public static function syncAll(): array
     {
         $log = [];
-        $rows = Database::app()->query('SELECT * FROM domains WHERE mail_domain_id IS NOT NULL ORDER BY domain_name')->fetchAll();
+        // Every hosted domain is a mail domain, so its sites can send mail()
+        // (only hosted-domain senders may relay) DKIM-signed. Its DNS records
+        // still only change when its MX points here.
+        $pdo = Database::app();
+        foreach ($pdo->query('SELECT id, domain_name FROM domains WHERE mail_domain_id IS NULL ORDER BY domain_name')->fetchAll() as $d) {
+            try {
+                $pdo->prepare('UPDATE domains SET mail_domain_id = ? WHERE id = ?')->execute([MailService::ensureDomain((string) $d['domain_name']), $d['id']]);
+                $log[] = "{$d['domain_name']}: mail domain created (for sending)";
+            } catch (Throwable $e) {
+                $log[] = "{$d['domain_name']}: FAILED to create the mail domain - " . $e->getMessage();
+            }
+        }
+        try {
+            $log[] = 'mail policy: ' . (implode('; ', MailService::ensureMailPolicy()) ?: 'unchanged');
+        } catch (Throwable $e) {
+            $log[] = 'mail policy: FAILED - ' . $e->getMessage();
+        }
+        $rows = $pdo->query('SELECT * FROM domains WHERE mail_domain_id IS NOT NULL ORDER BY domain_name')->fetchAll();
         foreach ($rows as $d) {
             try {
                 $log[] = "{$d['domain_name']}: " . self::syncDomain($d);
@@ -121,7 +139,7 @@ final class MailDnsService
             }
             if ($type === 'TXT' && $rel === '_dmarc') {
                 if (!$hasTxt('_dmarc', 'v=DMARC1')) {
-                    $desired[] = ['_dmarc', 'TXT', "v=DMARC1; p=none; rua=mailto:postmaster@$name", null];
+                    $desired[] = ['_dmarc', 'TXT', "v=DMARC1; p=quarantine; adkim=r; aspf=r; rua=mailto:postmaster@$name", null];
                 }
                 continue;
             }

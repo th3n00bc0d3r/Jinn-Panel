@@ -6,7 +6,7 @@ require __DIR__ . '/../src/bootstrap.php';
 $router = new Router();
 
 $router->get('/', function () {
-    header('Location: ' . (Auth::check() ? '/whm' : '/login'));
+    header('Location: ' . (Auth::check() ? (Auth::role() === 'user' ? '/cpanel' : '/whm') : '/login'));
     exit;
 });
 
@@ -14,6 +14,7 @@ $router->get('/setup', ['SetupController', 'index']);
 $router->post('/setup', ['SetupController', 'store']);
 
 $router->get('/login', ['AuthController', 'showLogin']);
+$router->get('/login/handoff', ['AuthController', 'handoff']);
 $router->post('/login', ['AuthController', 'login']);
 $router->get('/logout', ['AuthController', 'logout']);
 
@@ -132,10 +133,10 @@ try {
     $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) ?: '/';
     // WHM (and the first-run setup) only on the panel's own hostname: on a
     // customer's <domain>:2083 those pages would run in that domain's origin.
-    $panelHost = 'panel.' . strtolower(Config::SERVER_HOSTNAME);
-    $host = strtolower(preg_replace('/:\d+$/', '', (string) ($_SERVER['HTTP_HOST'] ?? '')));
-    if ((str_starts_with($path, '/whm') || $path === '/setup') && $host !== $panelHost && $host !== strtolower(Config::SERVER_IP)) {
-        header('Location: https://' . $panelHost . $_SERVER['REQUEST_URI'], true, 302);
+    if ((str_starts_with($path, '/whm') || $path === '/setup') && !Auth::onPanelHost()) {
+        // Logged in here as admin/reseller: carry the session over (cookies are per host).
+        $to = Auth::check() && Auth::role() !== 'user' ? Auth::handoffUrl($path) : 'https://' . Auth::panelHost() . $_SERVER['REQUEST_URI'];
+        header('Location: ' . $to, true, 302);
         exit;
     }
     if ($path !== '/setup' && !SetupController::isComplete()) {

@@ -45,11 +45,47 @@ final class Auth
             }
         }
 
+        self::loginAs($row);
+        return true;
+    }
+
+    /** Starts a session for a verified user row (password check or login handoff). */
+    public static function loginAs(array $row): void
+    {
         session_regenerate_id(true);
         $_SESSION['uid'] = (int) $row['id'];
         $_SESSION['role'] = $row['role'];
         $_SESSION['username'] = $row['username'];
-        return true;
+    }
+
+    /** The panel's own hostname (WHM lives only there). */
+    public static function panelHost(): string
+    {
+        return 'panel.' . strtolower(Config::SERVER_HOSTNAME);
+    }
+
+    public static function onPanelHost(): bool
+    {
+        $host = strtolower(preg_replace('/:\d+$/', '', (string) ($_SERVER['HTTP_HOST'] ?? '')));
+        return $host === self::panelHost() || $host === strtolower(Config::SERVER_IP);
+    }
+
+    /**
+     * URL on the panel hostname that logs the current admin/reseller in
+     * there and opens $next: a random single-use token, valid 60 seconds,
+     * stored only as a hash.
+     */
+    public static function handoffUrl(string $next = '/whm'): string
+    {
+        if (!preg_match('#^/whm(/[A-Za-z0-9/_.-]*)?$#', $next)) {
+            $next = '/whm';
+        }
+        $token = bin2hex(random_bytes(32));
+        $pdo = Database::app();
+        $pdo->exec('DELETE FROM login_handoffs WHERE expires_at < NOW()');
+        $pdo->prepare('INSERT INTO login_handoffs (token_hash, user_id, next_path, expires_at) VALUES (?, ?, ?, NOW() + INTERVAL 60 SECOND)')
+            ->execute([hash('sha256', $token), (int) self::id(), $next]);
+        return 'https://' . self::panelHost() . '/login/handoff?token=' . $token;
     }
 
     public static function logout(): void

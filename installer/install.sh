@@ -894,6 +894,29 @@ UNIT
 systemctl daemon-reload
 systemctl enable --now jinnpanel-cron.timer >/dev/null 2>&1
 
+# PHP mail(): msmtp hands it to Stalwart on loopback, which relays only for
+# this server's mail domains and DKIM-signs it (MailService::ensureMailPolicy).
+dnf -y install msmtp >/dev/null
+cat > /etc/msmtprc-jinnpanel <<MSMTP
+# JinnPanel: PHP mail() -> Stalwart on 127.0.0.1:25 (see MailService::ensureMailPolicy).
+defaults
+syslog LOG_MAIL
+account local
+host 127.0.0.1
+port 25
+auth off
+tls off
+domain $HOSTNAME_FQDN
+from nobody@$HOSTNAME_FQDN
+account default : local
+MSMTP
+chmod 0644 /etc/msmtprc-jinnpanel
+MAIL_INI='sendmail_path = "/usr/bin/msmtp -C /etc/msmtprc-jinnpanel --read-envelope-from -t -i"'
+if [ "$(cat /etc/php-zts/conf.d/99-jinnpanel-mail.ini 2>/dev/null)" != "$MAIL_INI" ]; then
+    echo "$MAIL_INI" > /etc/php-zts/conf.d/99-jinnpanel-mail.ini
+    systemctl restart frankenphp   # PHP reads its ini files only at startup
+fi
+
 # Mail DNS (DKIM/SPF/DMARC/autoconfig), the autoconfig/MTA-STS site and
 # Stalwart's certificate: now, and daily (DKIM keys rotate, certs renew).
 log "Syncing mail DNS and the mail server certificate"

@@ -183,6 +183,54 @@ final class MailService
     }
 
     /**
+     * Server-wide mail policy the panel relies on (idempotent; daily sync):
+     *  - loopback may relay without a login, but only for senders on this
+     *    server's mail domains - that's PHP mail() (msmtp -> 127.0.0.1:25);
+     *  - such mail is DKIM-signed for the sender domain, like authenticated mail;
+     *  - outbound delivery prefers IPv6 (both families have matching rDNS);
+     *  - MTA-STS policy: enforce.
+     *
+     * @return list<string> what changed
+     */
+    public static function ensureMailPolicy(): array
+    {
+        $loop = "remote_ip == '127.0.0.1' || remote_ip == '::1'";
+        $want = [
+            'x:MtaStageRcpt' => ['allowRelaying' => ['match' => (object) ['0' => ['if' => "($loop) && is_local_domain(sender_domain)", 'then' => 'true']], 'else' => '!is_empty(authenticated_as)']],
+            'x:SenderAuth' => ['dkimSignDomain' => ['match' => (object) ['0' => ['if' => "is_local_domain(sender_domain) && (!is_empty(authenticated_as) || $loop)", 'then' => 'sender_domain']], 'else' => 'false']],
+            'x:MtaSts' => ['mode' => 'enforce'],
+        ];
+        $changed = [];
+        foreach ($want as $object => $props) {
+            $current = self::call([["$object/get", ['accountId' => self::accountId(), 'ids' => ['singleton'], 'properties' => array_keys($props)], '0']])[0][1]['list'][0] ?? [];
+            $patch = [];
+            foreach ($props as $k => $v) {
+                if (json_encode($current[$k] ?? null) !== json_encode(json_decode((string) json_encode($v), true))) {
+                    $patch[$k] = $v;
+                }
+            }
+            if ($patch) {
+                $r = self::call([["$object/set", ['accountId' => self::accountId(), 'update' => ['singleton' => $patch]], '0']])[0][1];
+                if (!array_key_exists('singleton', (array) ($r['updated'] ?? []))) {
+                    throw new RuntimeException("$object: " . self::reason($r['notUpdated']['singleton'] ?? $r));
+                }
+                $changed[] = "$object " . implode(',', array_keys($patch));
+            }
+        }
+        // MX delivery route: IPv6 first.
+        foreach (self::call([['x:MtaRoute/get', ['accountId' => self::accountId(), 'ids' => null], '0']])[0][1]['list'] ?? [] as $route) {
+            if (($route['@type'] ?? '') === 'Mx' && ($route['ipLookupStrategy'] ?? '') !== 'v6ThenV4') {
+                self::call([['x:MtaRoute/set', ['accountId' => self::accountId(), 'update' => (object) [$route['id'] => ['ipLookupStrategy' => 'v6ThenV4']]], '0']]);
+                $changed[] = 'MX route v6ThenV4';
+            }
+        }
+        if ($changed) {
+            self::call([['x:Action/set', ['accountId' => self::accountId(), 'create' => ['r' => ['@type' => 'ReloadSettings']]], '0']]);
+        }
+        return $changed;
+    }
+
+    /**
      * Port 587 (SMTP submission with STARTTLS): what most mail apps try
      * first. Stalwart's default setup only has 465. Idempotent.
      */
