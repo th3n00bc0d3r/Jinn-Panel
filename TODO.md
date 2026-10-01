@@ -63,12 +63,14 @@ do them.
       domain resolves to this server, fall back to self-signed otherwise, and
       show certificate status per domain (ACME failures are only in the
       FrankenPHP journal today: domains pointing elsewhere retry forever).
-- [ ] **Mailboxes fail to migrate.** Stalwart rejects the credentials the panel
-      sends (`invalidPatch ... "credentials"`) - the cPanel password hash
-      and/or the second temporary credential in
-      `MailService::createMailboxWithSecrets()`. All 26 migrated mailboxes and
-      their stored mail are missing. Fix, then add a "restore mail from
-      backup" action that doesn't redo the whole account.
+- [x] **Mailboxes fail to migrate.** Stalwart 0.16 rejects `credentials` in
+      an Account create and allows only one password per account, so every
+      mailbox create failed (cPanel > Email too). Fixed: create bare, set the
+      password with a `credentials/0` patch; migration imports with a temp
+      password, then swaps in the cPanel hash.
+- [ ] **Restore mail from backup** for an already-migrated account, without
+      redoing the whole account - needed to bring back the 26 mailboxes
+      (and their stored mail) that failed in the first migration.
 - [ ] **Default account inbox** (`~/mail/cur|new`, the cPanel user's own
       mailbox) isn't migrated or reported.
 - [ ] **Mail DNS for local mail.** Domains whose mail stays on this server get

@@ -740,10 +740,13 @@ final class MigrationRunner
                 $temp = $maildir ? bin2hex(random_bytes(24)) : null;
                 $entry = ['address' => $address, 'status' => 'ok', 'password' => $generated ? 'generated' : 'preserved', 'generated_password' => $generated, 'note' => ''];
 
+                // Stalwart allows one password per mailbox: while stored mail
+                // is imported the mailbox has only the temporary one, and the
+                // real (imported) password replaces it afterwards.
                 try {
-                    $accountId = MailService::createMailboxWithSecrets($mailDomainId, $local, array_values(array_filter([$real, $temp])));
+                    $accountId = MailService::createMailbox($mailDomainId, $local, $temp ?? $real);
                 } catch (Throwable $e) {
-                    if ($generated !== null) {
+                    if ($temp !== null || $generated !== null) {
                         $this->report['email'][] = ['address' => $address, 'status' => 'failed', 'note' => $e->getMessage()];
                         continue;
                     }
@@ -751,7 +754,7 @@ final class MigrationRunner
                     $real = $generated = Crypto::randomPassword(16);
                     $entry = array_merge($entry, ['password' => 'generated', 'generated_password' => $generated, 'note' => 'The original password hash was not accepted by the mail server; a new password was set.']);
                     try {
-                        $accountId = MailService::createMailboxWithSecrets($mailDomainId, $local, array_values(array_filter([$real, $temp])));
+                        $accountId = MailService::createMailbox($mailDomainId, $local, $real);
                     } catch (Throwable $e2) {
                         $this->report['email'][] = ['address' => $address, 'status' => 'failed', 'note' => $e2->getMessage()];
                         continue;
@@ -782,10 +785,19 @@ final class MigrationRunner
                         $entry['note'] = trim($entry['note'] . ' Stored mail was not imported: ' . $e->getMessage());
                     } finally {
                         try {
-                            MailService::setSecrets($accountId, [$real]);
+                            MailService::setPassword($accountId, $real);
                         } catch (Throwable $e) {
-                            $entry['status'] = 'partial';
-                            $this->report['warnings'][] = "Could not remove the temporary import credential from $address - reset that mailbox's password now.";
+                            try {
+                                if ($generated !== null) {
+                                    throw $e;
+                                }
+                                $real = $generated = Crypto::randomPassword(16);
+                                MailService::setPassword($accountId, $real);
+                                $entry = array_merge($entry, ['password' => 'generated', 'generated_password' => $generated, 'note' => trim('The original password hash was not accepted by the mail server; a new password was set. ' . $entry['note'])]);
+                            } catch (Throwable) {
+                                $entry['status'] = 'partial';
+                                $this->report['warnings'][] = "Could not set the password of $address after importing its mail - reset that mailbox's password now.";
+                            }
                         }
                     }
                 } elseif ($withData && !$maildir) {

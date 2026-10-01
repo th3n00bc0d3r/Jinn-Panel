@@ -7,10 +7,10 @@ declare(strict_types=1);
  * as a blob, then attached to the right mailbox with Email/import, keeping
  * its flags (seen/answered/flagged/draft) and original received date.
  *
- * It authenticates AS the mailbox user, with a random one-off credential
- * the migration runner adds to the account just for the import and removes
- * again right after - so no admin impersonation is needed, and the user's
- * real (imported) password is never known in plaintext.
+ * It authenticates AS the mailbox user, with a random one-off password the
+ * migration runner gives the account just for the import and replaces with
+ * the real (imported) password hash right after - so no admin impersonation
+ * is needed, and the user's real password is never known in plaintext.
  *
  * Maildir++ layout: the mailbox root's cur/ + new/ are INBOX; every
  * ".Name" or ".Parent.Child" subdirectory is a folder (Dovecot's "."

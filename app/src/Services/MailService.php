@@ -92,23 +92,19 @@ final class MailService
     }
 
     /**
-     * Creates a mailbox (name@domain) with a password credential.
-     * Returns the Stalwart account object id.
+     * Creates a mailbox (name@domain) with a password and returns the
+     * Stalwart account object id.
+     *
+     * The password may be plaintext or an existing crypt()-style hash
+     * ($6$/$5$/$1$/bcrypt) - Stalwart recognises and verifies hashed secrets
+     * natively, which is how a cPanel migration keeps a mailbox's password
+     * working without the panel ever knowing it. Plaintext passwords must
+     * pass Stalwart's strength check.
      */
     public static function createMailbox(string $mailDomainId, string $localPart, string $password): string
     {
-        return self::createMailboxWithSecrets($mailDomainId, $localPart, [$password]);
-    }
-
-    /**
-     * Creates a mailbox with one or more password credentials. Each secret
-     * may be plaintext or an existing crypt()-style hash ($6$/$5$/$1$/
-     * bcrypt) - Stalwart recognises and verifies hashed secrets natively,
-     * which is how a cPanel migration keeps a mailbox's password working
-     * without the panel ever knowing it.
-     */
-    public static function createMailboxWithSecrets(string $mailDomainId, string $localPart, array $secrets): string
-    {
+        // Stalwart (0.16) rejects `credentials` in an Account create; the
+        // account has to be created bare and its password set by a patch.
         $responses = self::call([
             ['x:Account/set', [
                 'accountId' => self::accountId(),
@@ -116,36 +112,49 @@ final class MailService
                     '@type' => 'User',
                     'name' => $localPart,
                     'domainId' => $mailDomainId,
-                    'credentials' => self::credentials($secrets),
                 ]],
             ], '0'],
         ]);
         $result = $responses[0][1] ?? [];
-        if (isset($result['created']['a1']['id'])) {
-            return $result['created']['a1']['id'];
+        $id = $result['created']['a1']['id'] ?? null;
+        if ($id === null) {
+            throw new RuntimeException("Could not create mailbox '$localPart': " . self::reason($result['notCreated']['a1'] ?? $result));
         }
-        $reason = json_encode($result['notCreated'] ?? $result);
-        throw new RuntimeException("Could not create mailbox '$localPart': $reason");
+        try {
+            self::setPassword($id, $password);
+        } catch (Throwable $e) {
+            // Don't leave a mailbox nobody can log in to behind.
+            try { self::deleteMailbox($id); } catch (Throwable) {}
+            throw $e;
+        }
+        return $id;
     }
 
-    /** Replaces a mailbox's password credentials (e.g. to drop a temporary import credential). */
-    public static function setSecrets(string $mailAccountId, array $secrets): void
+    /**
+     * Replaces a mailbox's password (plaintext or crypt()-style hash).
+     * Stalwart allows only one password credential per account, and patching
+     * index 0 replaces it.
+     */
+    public static function setPassword(string $mailAccountId, string $password): void
     {
         $responses = self::call([
             ['x:Account/set', [
                 'accountId' => self::accountId(),
-                'update' => [$mailAccountId => ['credentials' => self::credentials($secrets)]],
+                'update' => [$mailAccountId => [
+                    'credentials/0' => ['@type' => 'Password', 'secret' => $password],
+                ]],
             ], '0'],
         ]);
         $result = $responses[0][1] ?? [];
         if (!array_key_exists($mailAccountId, (array) ($result['updated'] ?? []))) {
-            throw new RuntimeException('Could not update mailbox credentials: ' . json_encode($result['notUpdated'] ?? $result));
+            throw new RuntimeException('Could not set the mailbox password: ' . self::reason($result['notUpdated'][$mailAccountId] ?? $result));
         }
     }
 
-    private static function credentials(array $secrets): array
+    /** Stalwart's SetError description (e.g. "Password is too weak...") when it gave one. */
+    private static function reason(array $error): string
     {
-        return array_values(array_map(fn(string $s) => ['@type' => 'Password', 'secret' => $s], $secrets));
+        return $error['description'] ?? json_encode($error);
     }
 
     public static function deleteMailbox(string $mailAccountId): void
