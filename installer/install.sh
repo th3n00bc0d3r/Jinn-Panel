@@ -159,6 +159,10 @@ log "Installing FrankenPHP"
 curl -fsSL https://frankenphp.dev/install.sh -o /tmp/frankenphp-install.sh
 sh /tmp/frankenphp-install.sh
 dnf -y install php-zts-pdo php-zts-pdo_mysql php-zts-mysqlnd
+# Extensions customer sites expect on shared hosting (WordPress and most PHP
+# apps need mysqli; gd/imagick/intl/zip are near-universal plugin requirements).
+dnf -y install php-zts-mysqli php-zts-gd php-zts-imagick php-zts-intl php-zts-zip php-zts-bcmath \
+    php-zts-gmp php-zts-soap php-zts-sqlite3 php-zts-pdo_sqlite php-zts-xsl php-zts-bz2 php-zts-gettext php-zts-ftp
 
 groupadd -f webusers
 usermod -aG webusers frankenphp
@@ -511,9 +515,16 @@ fi
 ( cd "$APP_ROOT" && tailwindcss -i public/assets/css/input.css -o public/assets/css/app.css --minify )
 chown frankenphp:webusers "$APP_ROOT/public/assets/css/app.css"
 
+# Real Let's Encrypt certificate once the panel hostname resolves here
+# publicly (Caddy's automatic HTTPS, HTTP-01/TLS-ALPN on 80/443); until then
+# Caddy's local CA, which browsers warn about. A re-run upgrades it.
+PANEL_TLS_LINE="	tls internal"
+if [ "$(dig +short A "$PANEL_HOSTNAME" @1.1.1.1 2>/dev/null | tail -n1)" = "$SERVER_IP" ]; then
+    PANEL_TLS_LINE=""
+fi
 cat > "/etc/frankenphp/Caddyfile.d/panel.caddyfile" <<CADDY
 https://$PANEL_HOSTNAME {
-	tls internal
+$PANEL_TLS_LINE
 	root * $APP_ROOT/public
 	encode zstd br gzip
 	try_files {path} /index.php

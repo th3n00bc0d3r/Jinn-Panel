@@ -21,7 +21,7 @@ final class VhostService
         return Config::VHOSTS_DOCROOT_BASE . '/' . $domain . '/public';
     }
 
-    public static function create(string $domain, string $phpVersion = 'default', string $sslMode = 'self_signed'): string
+    public static function create(string $domain, string $phpVersion = 'default', string $sslMode = 'self_signed', bool $reload = true): string
     {
         if (!preg_match('/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/i', $domain)) {
             throw new InvalidArgumentException('Invalid domain name.');
@@ -58,15 +58,18 @@ final class VhostService
         $safeName = preg_replace('/[^a-z0-9.-]/i', '_', $domain);
         $confPath = Config::VHOSTS_CADDY_DIR . "/$safeName.caddyfile";
 
+        // www.<domain> is served too: every DNS zone the panel creates has a
+        // www record, and a name with no site block fails the TLS handshake
+        // outright (browsers show ERR_SSL_PROTOCOL_ERROR, not a cert warning).
         $conf = <<<CADDY
-        https://{$domain} {
+        https://{$domain}, https://www.{$domain} {
         {$tlsLine}
         	encode zstd br gzip
 
         	{$phpBlock}
         }
 
-        http://{$domain} {
+        http://{$domain}, http://www.{$domain} {
         	root * {$docroot}
         	encode zstd br gzip
 
@@ -76,7 +79,9 @@ final class VhostService
         CADDY;
 
         file_put_contents($confPath, $conf);
-        self::reload();
+        if ($reload) { // false when rewriting many sites; the caller reloads once
+            self::reload();
+        }
 
         return $docroot;
     }
@@ -119,7 +124,7 @@ final class VhostService
         // instance already terminates real TLS before reverse_proxy'ing here.
         $port = PhpVersionService::port($phpVersion);
         $conf = <<<CADDY
-        http://{$domain}:{$port} {
+        http://{$domain}:{$port}, http://www.{$domain}:{$port} {
         	bind 127.0.0.1
         	root * {$docroot}
         	encode zstd br gzip
