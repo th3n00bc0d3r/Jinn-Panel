@@ -21,13 +21,46 @@ final class VhostService
         return Config::VHOSTS_DOCROOT_BASE . '/' . $domain . '/public';
     }
 
+    /** The site directory: everything a domain's document root may be inside. */
+    public static function siteDir(string $domain): string
+    {
+        return Config::VHOSTS_DOCROOT_BASE . '/' . $domain;
+    }
+
+    /**
+     * The domain's document root as stored (cPanel > Domains > domain), when
+     * it's a real directory inside the site directory; else the default.
+     */
+    public static function effectiveDocroot(string $domain): string
+    {
+        try {
+            $s = Database::app()->prepare('SELECT docroot FROM domains WHERE domain_name = ?');
+            $s->execute([$domain]);
+            $stored = $s->fetchColumn();
+        } catch (Throwable) {
+            $stored = false;
+        }
+        if (is_string($stored) && $stored !== '' && self::isInsideSite($domain, $stored)) {
+            return rtrim($stored, '/');
+        }
+        return self::docroot($domain);
+    }
+
+    /** Whether $path is an existing directory inside the domain's site directory (no symlink escapes). */
+    public static function isInsideSite(string $domain, string $path): bool
+    {
+        $base = realpath(self::siteDir($domain));
+        $real = realpath($path);
+        return $base !== false && $real !== false && is_dir($real) && str_starts_with($real . '/', $base . '/') && $real !== $base;
+    }
+
     public static function create(string $domain, string $phpVersion = 'default', string $sslMode = 'self_signed', bool $reload = true, bool $seedIndex = true): string
     {
         if (!preg_match('/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/i', $domain)) {
             throw new InvalidArgumentException('Invalid domain name.');
         }
 
-        $docroot = self::docroot($domain);
+        $docroot = self::effectiveDocroot($domain);
         if (!is_dir($docroot)) {
             mkdir($docroot, 02775, true);
         }

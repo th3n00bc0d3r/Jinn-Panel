@@ -75,6 +75,10 @@ $router->post('/whm/dns/{id}/delete', ['WhmDnsController', 'destroyZone']);
 // cPanel (end user)
 $router->get('/cpanel', ['CpanelDashboardController', 'index']);
 $router->get('/cpanel/domains', ['DomainController', 'index']);
+$router->get('/cpanel/domains/{id}', ['DomainController', 'show']);
+$router->post('/cpanel/domains/{id}/docroot', ['DomainController', 'docroot']);
+$router->post('/cpanel/domains/{id}/autossl', ['DomainController', 'autossl']);
+$router->post('/cpanel/domains/{id}/clear-cache', ['DomainController', 'clearCache']);
 $router->post('/cpanel/domains', ['DomainController', 'store']);
 $router->post('/cpanel/domains/{id}/delete', ['DomainController', 'destroy']);
 $router->post('/cpanel/domains/{id}/settings', ['DomainController', 'updateSettings']);
@@ -103,6 +107,14 @@ $router->get('/cpanel/files/download', ['FileManagerController', 'download']);
 
 try {
     $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) ?: '/';
+    // WHM (and the first-run setup) only on the panel's own hostname: on a
+    // customer's <domain>:2083 those pages would run in that domain's origin.
+    $panelHost = 'panel.' . strtolower(Config::SERVER_HOSTNAME);
+    $host = strtolower(preg_replace('/:\d+$/', '', (string) ($_SERVER['HTTP_HOST'] ?? '')));
+    if ((str_starts_with($path, '/whm') || $path === '/setup') && $host !== $panelHost && $host !== strtolower(Config::SERVER_IP)) {
+        header('Location: https://' . $panelHost . $_SERVER['REQUEST_URI'], true, 302);
+        exit;
+    }
     if ($path !== '/setup' && !SetupController::isComplete()) {
         header('Location: /setup');
         exit;

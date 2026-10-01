@@ -17,8 +17,10 @@
                 <?php foreach ($domains as $d): ?>
                 <tr class="hover:bg-slate-50/70">
                     <td class="px-5 py-3">
-                        <a href="https://<?= e($d['domain_name']) ?>" target="_blank" class="font-medium text-sky-700 hover:underline"><?= e($d['domain_name']) ?></a>
+                        <a href="/cpanel/domains/<?= (int) $d['id'] ?>" class="font-medium text-sky-700 hover:underline"><?= e($d['domain_name']) ?></a>
+                        <a href="https://<?= e($d['domain_name']) ?>" target="_blank" rel="noopener" class="ml-1 text-xs text-slate-400 hover:text-sky-700" title="Open the site">&#8599;</a>
                         <p class="text-xs text-slate-400 font-mono mt-0.5"><?= e($d['docroot']) ?></p>
+                        <p class="text-xs text-slate-400 mt-0.5">Panel: <span class="font-mono"><?= e($d['domain_name']) ?>/jpanel</span></p>
                     </td>
                     <td class="px-5 py-3">
                         <span class="text-xs font-medium <?= $d['dns_provisioned'] ? 'text-emerald-700' : 'text-amber-700' ?>"><?= $d['dns_provisioned'] ? 'Provisioned' : 'Pending' ?></span>

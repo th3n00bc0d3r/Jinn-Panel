@@ -169,4 +169,113 @@ final class DomainController
         }
         return 'default';
     }
+
+    /** cPanel > Domains > domain: URLs, SSL, document root, cache. */
+    public static function show(array $params): void
+    {
+        Auth::requireRole(['user']);
+        $me = Auth::user();
+        $d = self::owned($me, (int) ($params['id'] ?? 0));
+        View::render('cpanel/domain', [
+            'title' => $d['domain_name'],
+            'd' => $d,
+            'ssl' => SslService::status((string) $d['domain_name'], (string) $d['ssl_mode']),
+            'cert' => SslService::certificate((string) $d['domain_name']),
+            'addresses' => SslService::addresses((string) $d['domain_name']),
+            'siteDir' => VhostService::siteDir((string) $d['domain_name']),
+            'docroot' => VhostService::effectiveDocroot((string) $d['domain_name']),
+            'routes' => is_file(VhostService::rulesFile((string) $d['domain_name'])),
+        ], 'cpanel');
+    }
+
+    /** Document root: a directory inside /var/www/<domain>/ (e.g. public/, or public/app/public for Laravel). */
+    public static function docroot(array $params): void
+    {
+        Auth::requireRole(['user']);
+        Csrf::requireValid();
+        $me = Auth::user();
+        $d = self::owned($me, (int) ($params['id'] ?? 0));
+        $rel = trim(str_replace('\\', '/', (string) ($_POST['docroot'] ?? '')), '/');
+        $siteDir = VhostService::siteDir((string) $d['domain_name']);
+        if ($rel === '' || str_contains($rel, '..') || !preg_match('#^[A-Za-z0-9._/-]{1,200}$#', $rel)) {
+            self::backTo($d, 'Enter a folder inside ' . $siteDir . '/, e.g. public or public/app/public.');
+        }
+        $path = $siteDir . '/' . $rel;
+        if (!VhostService::isInsideSite((string) $d['domain_name'], $path)) {
+            self::backTo($d, "$path doesn't exist (create it in the File Manager first) or is outside the site's folder.");
+        }
+        $old = (string) $d['docroot'];
+        $pdo = Database::app();
+        $pdo->prepare('UPDATE domains SET docroot = ? WHERE id = ?')->execute([realpath($path), $d['id']]);
+        try {
+            VhostService::create((string) $d['domain_name'], (string) $d['php_version'], (string) $d['ssl_mode'], true, false);
+        } catch (Throwable $e) {
+            $pdo->prepare('UPDATE domains SET docroot = ? WHERE id = ?')->execute([$old, $d['id']]);
+            self::backTo($d, 'Could not update the site: ' . $e->getMessage());
+        }
+        Flash::ok('Document root set to ' . realpath($path) . '.');
+        self::backTo($d);
+    }
+
+    /**
+     * "Run AutoSSL": re-checks DNS and makes Caddy (re)issue the Let's
+     * Encrypt certificate now - after DNS was fixed, for an expired or
+     * stuck certificate. Rewriting the site and reloading starts
+     * certificate management for it afresh.
+     */
+    public static function autossl(array $params): void
+    {
+        Auth::requireRole(['user']);
+        Csrf::requireValid();
+        $me = Auth::user();
+        $d = self::owned($me, (int) ($params['id'] ?? 0));
+        $name = (string) $d['domain_name'];
+        if (!SslService::resolvesHere($name)) {
+            $where = SslService::addresses($name);
+            self::backTo($d, "$name resolves to " . ($where ? implode(', ', $where) : 'nothing') . ', not this server (' . Config::SERVER_IP
+                . "). Let's Encrypt can only issue once its DNS points here.");
+        }
+        try {
+            VhostService::create($name, (string) $d['php_version'], 'letsencrypt', true, false);
+            Database::app()->prepare("UPDATE domains SET ssl_mode = 'letsencrypt' WHERE id = ?")->execute([$d['id']]);
+        } catch (Throwable $e) {
+            self::backTo($d, 'Could not update the site: ' . $e->getMessage());
+        }
+        Flash::ok("AutoSSL started for $name - the certificate normally arrives within a minute. Reload this page to see it.");
+        self::backTo($d);
+    }
+
+    /** Clears the domain's cached PHP code (OPcache), plus its page cache when enabled. */
+    public static function clearCache(array $params): void
+    {
+        Auth::requireRole(['user']);
+        Csrf::requireValid();
+        $me = Auth::user();
+        $d = self::owned($me, (int) ($params['id'] ?? 0));
+        $n = CacheService::clearDomain($d);
+        Flash::ok("Cache cleared for {$d['domain_name']}" . ($n['opcache'] ? " ({$n['opcache']} cached PHP files" . ($n['pages'] !== null ? ", {$n['pages']} cached pages" : '') . ')' : '') . '.');
+        self::backTo($d);
+    }
+
+    private static function owned(array $me, int $id): array
+    {
+        $stmt = Database::app()->prepare('SELECT * FROM domains WHERE id = ? AND user_id = ?');
+        $stmt->execute([$id, $me['id']]);
+        $d = $stmt->fetch();
+        if (!$d) {
+            Flash::error('Domain not found.');
+            header('Location: /cpanel/domains');
+            exit;
+        }
+        return $d;
+    }
+
+    private static function backTo(array $d, ?string $error = null): never
+    {
+        if ($error !== null) {
+            Flash::error($error);
+        }
+        header('Location: /cpanel/domains/' . (int) $d['id']);
+        exit;
+    }
 }

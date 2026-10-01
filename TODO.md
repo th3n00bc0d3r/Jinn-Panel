@@ -117,7 +117,7 @@ do them.
 - [x] **IPv6.** Zones get AAAA records next to every A record pointing here
       (managed='ipv6'). IPv6 rDNS is set at the provider (owner, pending) -
       until then, outbound mail over IPv6 may be rejected by big providers.
-- [ ] **Custom document root.** Laravel-style apps serve from `public/`
+- [x] **Custom document root.** Laravel-style apps serve from `public/`
       (handled with a site rule for now); let users set the docroot per
       domain.
 - [ ] **cPanel PHP settings.** `php.ini` / `.user.ini` from MultiPHP INI
@@ -138,11 +138,11 @@ do them.
       `https://<domain>:2083`, where every hosted domain serves the panel
       with its own certificate - a separate origin from the site. Site
       blocks strip the panel session cookie (cookies aren't per port).
-- [ ] **Show it to customers:** "Your control panel: <domain>/jpanel" in
-      cPanel > Domains and the welcome email; WHM-only pages could be
-      limited to the panel hostname.
+- [x] **Show it to customers:** "<domain>/jpanel" in cPanel > Domains and
+      the domain page; WHM and /setup only on the panel hostname (a customer
+      domain's :2083 redirects there). (There is no welcome email yet.)
 
-- [ ] **SSL section per domain** (cPanel > Domains > *domain*): certificate
+- [x] **SSL section per domain** (cPanel > Domains > *domain*): certificate
       details and a "Run AutoSSL" button that re-checks DNS and asks Caddy
       to issue/renew now - for an expired certificate, one stuck retrying,
       or right after DNS was fixed.
