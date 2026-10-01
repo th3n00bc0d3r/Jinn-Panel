@@ -2,7 +2,7 @@
 include __DIR__ . '/_helpers.php';
 $finished = in_array($m['status'], MigrationService::FINISHED, true);
 $active = in_array($m['status'], MigrationService::ACTIVE, true);
-$retryable = $finished && !empty($m['secret_enc']) && (bool) array_filter($items, fn($i) => in_array($i['status'], ['failed', 'cancelled'], true));
+$retryable = $finished && MigrationService::canRetry($m) && (bool) array_filter($items, fn($i) => in_array($i['status'], ['failed', 'cancelled'], true));
 $btn = 'inline-flex items-center gap-2 rounded-lg text-sm font-medium px-4 py-2 transition-colors';
 $badges = [];
 foreach (['pending', 'queued', 'running', 'backing_up', 'transferring', 'restoring', 'completed', 'completed_with_errors', 'failed', 'cancelled', 'stalled'] as $s) {
@@ -23,7 +23,7 @@ $secretLine = function (?string $pw): string {
                 <?= e(migration_source_label($m['source_type'])) ?> &middot; <?= e($m['transfer_mode']) ?> transfer
                 <?php if ($m['started_at']): ?> &middot; started <?= e(substr((string) $m['started_at'], 0, 16)) ?><?php endif; ?>
                 <?php if ($m['finished_at']): ?> &middot; finished <?= e(substr((string) $m['finished_at'], 0, 16)) ?><?php endif; ?>
-                &middot; <?= !empty($m['secret_enc']) ? 'source credentials stored (encrypted)' : 'source credentials deleted' ?>
+                &middot; <?= $m['transfer_mode'] === 'file' ? 'from backup files on this server' : (!empty($m['secret_enc']) ? 'source credentials stored (encrypted)' : 'source credentials deleted') ?>
             </p>
         </div>
         <div class="flex flex-wrap gap-2">

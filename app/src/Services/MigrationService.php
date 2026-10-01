@@ -22,6 +22,100 @@ final class MigrationService
         return defined('Config::MIGRATION_DIR') ? (string) constant('Config::MIGRATION_DIR') : '/var/lib/jinnpanel/migrations';
     }
 
+    /**
+     * Where `file` mode looks for backups already on this server (e.g. copied
+     * from offsite storage): <user>.tar.gz, cpmove-<user>.tar.gz or
+     * backup-<date>_<user>.tar.gz, readable by frankenphp.
+     */
+    public static function importDir(): string
+    {
+        return self::workDir() . '/import';
+    }
+
+    /** Backup archive for $user in importDir(), or null. Newest wins if there are several. */
+    public static function backupFile(string $user): ?string
+    {
+        if (!preg_match(CpanelBackupReader::USERNAME_RE, $user)) {
+            return null;
+        }
+        $dir = self::importDir();
+        $found = [];
+        foreach (scandir($dir) ?: [] as $f) {
+            if ($f === "$user.tar.gz" || $f === "cpmove-$user.tar.gz" || preg_match('/^backup-[0-9._-]+_' . preg_quote($user, '/') . '\.tar\.gz$/', $f)) {
+                $path = "$dir/$f";
+                if (is_file($path) && !is_link($path)) {
+                    $found[$path] = (int) filemtime($path);
+                }
+            }
+        }
+        arsort($found);
+        return array_key_first($found);
+    }
+
+    /** Accounts that have a backup in importDir(): username => archive path. */
+    public static function availableBackupFiles(): array
+    {
+        $out = [];
+        foreach (scandir(self::importDir()) ?: [] as $f) {
+            if (preg_match('/^(?:cpmove-|backup-[0-9._-]+_)?([a-z][a-z0-9_]{2,31})\.tar\.gz$/', $f, $m) && !isset($out[$m[1]])) {
+                $file = self::backupFile($m[1]);
+                if ($file !== null) {
+                    $out[$m[1]] = $file;
+                }
+            }
+        }
+        ksort($out);
+        return $out;
+    }
+
+    /**
+     * Queues a `file` mode migration of $usernames from importDir(). No
+     * source server and no credentials: the runner restores straight from
+     * the archives. Admin only (same reach as a WHM root source).
+     *
+     * @param string[] $usernames
+     */
+    public static function startFromFiles(array $me, array $usernames, array $options = []): int
+    {
+        if ($me['role'] !== 'admin') {
+            throw new RuntimeException('Only an admin can import backup files.');
+        }
+        $usernames = array_values(array_unique($usernames));
+        if (!$usernames) {
+            throw new InvalidArgumentException('No accounts given.');
+        }
+        foreach ($usernames as $u) {
+            if (self::backupFile($u) === null) {
+                throw new InvalidArgumentException("No backup for \"$u\" in " . self::importDir() . '.');
+            }
+        }
+        $pdo = Database::app();
+        $pdo->beginTransaction();
+        try {
+            $pdo->prepare(
+                "INSERT INTO migrations (created_by, source_type, source_host, source_port, source_user, auth_type, secret_enc, verify_tls, transfer_mode, options, status)
+                 VALUES (?, 'root', 'backup files', 0, 'import', 'password', NULL, 1, 'file', ?, 'draft')"
+            )->execute([$me['id'], json_encode(self::defaultOptions())]);
+            $id = (int) $pdo->lastInsertId();
+            $ins = $pdo->prepare('INSERT INTO migration_items (migration_id, source_username, selected, report) VALUES (?, ?, 0, ?)');
+            foreach ($usernames as $u) {
+                $ins->execute([$id, $u, json_encode(['source' => ['file' => basename((string) self::backupFile($u))]])]);
+            }
+            $pdo->commit();
+        } catch (Throwable $e) {
+            $pdo->rollBack();
+            throw $e;
+        }
+        self::start($id, $options, $usernames);
+        return $id;
+    }
+
+    /** Whether failed items can be retried: file imports need no stored credentials. */
+    public static function canRetry(array $m): bool
+    {
+        return $m['transfer_mode'] === 'file' || !empty($m['secret_enc']);
+    }
+
     public static function logFile(int $id): string
     {
         return __DIR__ . "/../../storage/logs/migration-{$id}.log";
@@ -213,7 +307,7 @@ final class MigrationService
     /** Re-queues failed/cancelled items. The runner rolls back whatever a previous attempt half-created first. */
     public static function retry(array $m): int
     {
-        if (empty($m['secret_enc'])) {
+        if (!self::canRetry($m)) {
             throw new RuntimeException('The source credentials for this migration were discarded. Start a new migration instead.');
         }
         $pdo = Database::app();

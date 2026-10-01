@@ -549,9 +549,11 @@ restorecon -R /opt/php-versions
 # Scratch space for WHM > cPanel Migration: backups are received/downloaded
 # and unpacked here by the migration runner (frankenphp:webusers), and in
 # push mode SFTPGo (also in webusers) writes incoming backups into it.
-mkdir -p /var/lib/jinnpanel/migrations
-chown frankenphp:webusers /var/lib/jinnpanel /var/lib/jinnpanel/migrations
-chmod 2770 /var/lib/jinnpanel/migrations
+# import/ holds backups to restore without a source server (file mode,
+# worker/migration-import.php); files there must be readable by frankenphp.
+mkdir -p /var/lib/jinnpanel/migrations/import
+chown frankenphp:webusers /var/lib/jinnpanel /var/lib/jinnpanel/migrations /var/lib/jinnpanel/migrations/import
+chmod 2770 /var/lib/jinnpanel/migrations /var/lib/jinnpanel/migrations/import
 semanage fcontext -a -t httpd_sys_rw_content_t '/var/lib/jinnpanel(/.*)?' 2>/dev/null || true
 restorecon -R /var/lib/jinnpanel
 chmod 755 "$APP_ROOT/worker/migration-runner.php" 2>/dev/null || true

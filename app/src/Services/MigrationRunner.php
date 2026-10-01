@@ -15,6 +15,9 @@ declare(strict_types=1);
  *             single-use SFTPGo user on this server (port 2022)
  *       pull: Backup::fullbackup_to_homedir, then download it over a cPanel
  *             session (create_user_session / login)
+ *       file: no source server - use an archive already on this server in
+ *             MigrationService::importDir() (e.g. from cPanel's scheduled
+ *             backups, copied from offsite storage); it is left in place
  *  2. Verify (gzip -t) and extract as an unprivileged user
  *  3. Restore: account (same username + password hash) -> domains + vhosts
  *     + DNS -> site files -> databases (same names, users, password hashes)
@@ -61,10 +64,12 @@ final class MigrationRunner
 
         try {
             $this->preflight();
-            if (empty($m['secret_enc'])) {
-                throw new RuntimeException('Source credentials were discarded - start a new migration.');
+            if ($m['transfer_mode'] !== 'file') {
+                if (empty($m['secret_enc'])) {
+                    throw new RuntimeException('Source credentials were discarded - start a new migration.');
+                }
+                $this->api = CpanelApiClient::fromMigration($m, Crypto::decrypt($m['secret_enc']));
             }
-            $this->api = CpanelApiClient::fromMigration($m, Crypto::decrypt($m['secret_enc']));
 
             $stmt = $this->pdo->prepare("SELECT * FROM migration_items WHERE migration_id = ? AND selected = 1 AND status = 'pending' ORDER BY is_reseller DESC, id");
             $stmt->execute([$this->migrationId]);
@@ -162,9 +167,11 @@ final class MigrationRunner
 
         $sftpUser = null;
         try {
-            $archive = $this->m['transfer_mode'] === 'push'
-                ? $this->pushBackup($user, $sftpUser)
-                : $this->pullBackup($user);
+            $archive = match ($this->m['transfer_mode']) {
+                'push' => $this->pushBackup($user, $sftpUser),
+                'file' => $this->localBackup($user),
+                default => $this->pullBackup($user),
+            };
             if ($sftpUser) {
                 $this->deleteSftpUser($sftpUser);
                 $sftpUser = null;
@@ -172,7 +179,9 @@ final class MigrationRunner
 
             $this->setItem(['status' => 'restoring', 'step' => 'Extracting the backup', 'progress' => 45]);
             $this->extract($archive, $this->work . '/extract');
-            @unlink($archive);
+            if ($this->m['transfer_mode'] !== 'file') {
+                @unlink($archive); // our own download; a file-mode archive belongs to the operator
+            }
 
             $reader = new CpanelBackupReader($this->work . '/extract', $user);
             $this->restore($reader);
@@ -350,6 +359,21 @@ final class MigrationRunner
         $this->log("$user: downloaded {$target['name']} (" . self::mb((int) filesize($local)) . ')');
         $this->report['info'][] = "The backup file {$target['path']} was left in the source account's home directory - delete it there once you've checked the migration.";
         return $local;
+    }
+
+    private function localBackup(string $user): string
+    {
+        $this->setItem(['status' => 'transferring', 'step' => 'Verifying the backup file', 'progress' => 20]);
+        $file = MigrationService::backupFile($user);
+        if ($file === null) {
+            throw new RuntimeException("No backup file for \"$user\" in " . MigrationService::importDir() . '.');
+        }
+        if (!is_readable($file) || !self::gzipOk($file)) {
+            throw new RuntimeException(basename($file) . ' is not readable or not a valid gzip archive.');
+        }
+        $this->log("$user: using " . basename($file) . ' (' . self::mb((int) filesize($file)) . ')');
+        $this->report['info'][] = 'Restored from ' . basename($file) . ' in ' . MigrationService::importDir() . ' - delete it there once you\'ve checked the migration.';
+        return $file;
     }
 
     private function remoteHome(string $user): string

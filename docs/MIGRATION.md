@@ -77,6 +77,29 @@ format), created on the source with UAPI `Backup::fullbackup_to_*`.
 
 "Automatic" picks pull, except in that one token-only case.
 
+### From backup files (no source server)
+
+If the old server is gone but you have its cPanel full backups (cPanel's
+scheduled backups, `cpmove-<user>.tar.gz`, or `backup-<date>_<user>.tar.gz`,
+for example copied back from offsite storage), restore them directly:
+
+1. Copy the archives into `/var/lib/jinnpanel/migrations/import/`, named
+   `<user>.tar.gz` (as cPanel's scheduled backups name them),
+   `cpmove-<user>.tar.gz` or `backup-<date>_<user>.tar.gz`, and make them
+   readable by frankenphp:
+   `chown frankenphp:webusers /var/lib/jinnpanel/migrations/import/*`
+2. Check what's there, then queue the accounts (as an admin):
+
+   ```
+   cd /var/www/hostpanel
+   runuser -u frankenphp -- php worker/migration-import.php --list
+   runuser -u frankenphp -- php worker/migration-import.php <admin-username> <user> [<user> ...]
+   ```
+
+The restore is the same as for the other modes, and progress, the report and
+Retry appear under WHM > cPanel Migration. The archives are left in place;
+delete them once you've checked the result.
+
 ## What is migrated, and how
 
 - **Account** - same username, same cPanel password (the original SHA-512

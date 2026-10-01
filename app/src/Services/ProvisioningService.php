@@ -208,6 +208,11 @@ final class ProvisioningService
         if (stripos($line, '_0900_') !== false) {
             $line = preg_replace('/\butf8mb4_0900_[a-z_]+\b/i', 'utf8mb4_unicode_ci', $line);
         }
+        // MariaDB 11.x defaults to UCA 14.0 collations, which 10.11 doesn't have.
+        if (stripos($line, 'uca1400') !== false) {
+            $line = preg_replace('/\b(utf8mb[34])_uca1400_[a-z_]+\b/i', '$1_unicode_ci', $line);
+            $line = preg_replace('/\bCOLLATE([= ]+)uca1400_[a-z_]+\b/i', 'COLLATE$1utf8mb4_unicode_ci', $line);
+        }
         return $line;
     }
 }
