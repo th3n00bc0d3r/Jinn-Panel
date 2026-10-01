@@ -34,6 +34,8 @@ $router->post('/whm/packages/{id}/delete', ['PackageController', 'destroy']);
 $router->get('/whm/migrations', ['MigrationController', 'index']);
 $router->get('/whm/migrations/create', ['MigrationController', 'create']);
 $router->post('/whm/migrations/connect', ['MigrationController', 'connect']);
+$router->post('/whm/migrations/from-files', ['MigrationController', 'fromFiles']);
+$router->post('/whm/migrations/s3-fetch', ['MigrationController', 's3Fetch']);
 $router->get('/whm/migrations/{id}', ['MigrationController', 'show']);
 $router->get('/whm/migrations/{id}/select', ['MigrationController', 'select']);
 $router->get('/whm/migrations/{id}/status', ['MigrationController', 'status']);

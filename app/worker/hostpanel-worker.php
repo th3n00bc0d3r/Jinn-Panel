@@ -84,6 +84,9 @@ if (is_dir(QUEUE_DIR)) {
                 case 'migration_stop':
                     stopMigrationRunner((int) ($job['migration_id'] ?? 0), $log);
                     break;
+                case 's3_fetch':
+                    startS3Fetch((int) ($job['fetch_id'] ?? 0), $log);
+                    break;
                 default:
                     throw new RuntimeException('Unknown job type: ' . $job['type']);
             }
@@ -475,6 +478,28 @@ function deletePhpVersionRow(string $version, callable $log): void
  * vhosts, databases and mail), outside FrankenPHP's sandbox and request
  * lifecycle. `journalctl -u jinnpanel-migration-<id>` shows its output.
  */
+/** Background download of cPanel backups from S3 into the import folder (S3FetchService). */
+function startS3Fetch(int $id, callable $log): void
+{
+    if ($id <= 0) {
+        throw new RuntimeException('Invalid fetch id');
+    }
+    $unit = "jinnpanel-s3-fetch-$id";
+    exec('systemctl is-active --quiet ' . escapeshellarg("$unit.service"), $out, $code);
+    if ($code === 0) {
+        $log("$unit is already running");
+        return;
+    }
+    exec('systemctl reset-failed ' . escapeshellarg("$unit.service") . ' 2>/dev/null');
+    run('systemd-run --quiet --collect'
+        . ' --unit=' . escapeshellarg($unit)
+        . ' --description=' . escapeshellarg("JinnPanel S3 backup fetch #$id")
+        . ' --uid=frankenphp --gid=webusers --property=Nice=10 --property=UMask=0027'
+        . ' --setenv=HOME=' . escapeshellarg(MIGRATION_DIR)
+        . ' ' . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(dirname(MIGRATION_RUNNER) . '/s3-fetch.php') . ' ' . $id);
+    $log("started $unit");
+}
+
 function startMigrationRunner(int $id, callable $log): void
 {
     if ($id <= 0) {

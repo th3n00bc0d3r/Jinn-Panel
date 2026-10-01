@@ -32,6 +32,9 @@ final class MigrationController
             $migrations = [];
         }
         View::render('whm/migrations/index', [
+            'backupFiles' => Auth::isAdmin() ? MigrationService::availableBackupFiles() : [],
+            'importDir' => MigrationService::importDir(),
+            's3Fetches' => Auth::isAdmin() ? S3FetchService::recent(5) : [],
             'title' => 'Migrations',
             'migrations' => $migrations,
             'me' => $me,
@@ -137,6 +140,37 @@ final class MigrationController
 
         Flash::ok('Connected to ' . $host . ' - ' . count($accounts) . ' account' . (count($accounts) === 1 ? '' : 's') . ' found.');
         header("Location: /whm/migrations/$id/select");
+        exit;
+    }
+
+    /** WHM > cPanel Migration > From backup files: a draft listing every archive in the import folder. */
+    public static function fromFiles(): void
+    {
+        Auth::requireRole(['admin']);
+        Csrf::requireValid();
+        try {
+            $id = MigrationService::draftFromFiles(Auth::user());
+        } catch (Throwable $e) {
+            Flash::error($e->getMessage());
+            header('Location: /whm/migrations');
+            exit;
+        }
+        header("Location: /whm/migrations/$id/select");
+        exit;
+    }
+
+    /** From backup files > Fetch from S3. */
+    public static function s3Fetch(): void
+    {
+        Auth::requireRole(['admin']);
+        Csrf::requireValid();
+        try {
+            $id = S3FetchService::create(Auth::user(), $_POST);
+            Flash::ok("Fetching the backups from S3 (#$id) - progress shows below; then choose the accounts.");
+        } catch (Throwable $e) {
+            Flash::error($e->getMessage());
+        }
+        header('Location: /whm/migrations');
         exit;
     }
 

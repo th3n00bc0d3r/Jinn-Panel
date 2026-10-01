@@ -101,7 +101,7 @@ do them.
       Stalwart's IMAP/SMTP on localhost. Needs: a Caddy site per
       `mail.<domain>` (with its TLS cert), the login prefilled with the
       domain, and a "Webmail" link in cPanel > Email.
-- [ ] **Imports from offsite backups need a UI.** File-mode migration
+- [x] **Imports from offsite backups need a UI.** File-mode migration
       (`worker/migration-import.php`) is CLI-only; the archives were fetched
       from S3 by hand. Add WHM > cPanel Migration > "From backup files", and
       optionally an S3 source (bucket, prefix, credentials stored encrypted

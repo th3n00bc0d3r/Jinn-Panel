@@ -77,12 +77,26 @@ final class MigrationService
      */
     public static function startFromFiles(array $me, array $usernames, array $options = []): int
     {
+        $id = self::draftFromFiles($me, $usernames);
+        self::start($id, $options, array_values(array_unique($usernames)));
+        return $id;
+    }
+
+    /**
+     * A draft `file` migration listing the given accounts (default: every
+     * backup in importDir()), for WHM > cPanel Migration > From backup files
+     * to choose accounts and options on the usual select page.
+     *
+     * @param string[]|null $usernames
+     */
+    public static function draftFromFiles(array $me, ?array $usernames = null): int
+    {
         if ($me['role'] !== 'admin') {
             throw new RuntimeException('Only an admin can import backup files.');
         }
-        $usernames = array_values(array_unique($usernames));
+        $usernames = array_values(array_unique($usernames ?? array_keys(self::availableBackupFiles())));
         if (!$usernames) {
-            throw new InvalidArgumentException('No accounts given.');
+            throw new InvalidArgumentException('No backup files in ' . self::importDir() . ' - copy cpmove-<user>.tar.gz or backup-<date>_<user>.tar.gz files there first.');
         }
         foreach ($usernames as $u) {
             if (self::backupFile($u) === null) {
@@ -99,14 +113,14 @@ final class MigrationService
             $id = (int) $pdo->lastInsertId();
             $ins = $pdo->prepare('INSERT INTO migration_items (migration_id, source_username, selected, report) VALUES (?, ?, 0, ?)');
             foreach ($usernames as $u) {
-                $ins->execute([$id, $u, json_encode(['source' => ['file' => basename((string) self::backupFile($u))]])]);
+                $file = (string) self::backupFile($u);
+                $ins->execute([$id, $u, json_encode(['source' => ['file' => basename($file), 'disk_used_mb' => (int) ceil(((int) @filesize($file)) / 1048576)]])]);
             }
             $pdo->commit();
         } catch (Throwable $e) {
             $pdo->rollBack();
             throw $e;
         }
-        self::start($id, $options, $usernames);
         return $id;
     }
 
