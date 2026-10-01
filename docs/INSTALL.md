@@ -102,9 +102,10 @@ behind each of these):
    there).
 4. **Stalwart Mail** - installs it, then completes its setup wizard for you
    via its JMAP API (no browser needed) using the detected hostname as the
-   mail domain.
-5. **SFTPGo** - installs it, moves its admin UI off port 8080 (Stalwart
-   already owns that), creates the API admin account the panel uses to
+   mail domain. Its HTTP/admin listeners (8080, 8443) are bound to
+   127.0.0.1; only the mail ports are opened in the firewall.
+5. **SFTPGo** - installs it, moves its admin UI/API off port 8080 (Stalwart
+   already owns that) to 127.0.0.1:8090, creates the API admin account the panel uses to
    provision SFTP users.
 6. **Knot DNS** - installs it (via EPEL + a Fedora COPR for a dependency),
    configures it to listen on all interfaces.

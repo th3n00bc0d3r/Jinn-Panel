@@ -282,12 +282,12 @@ The security review of 2026-09-30 listed 19 items. Status after the work of
 | 1 | No isolation between customers / customers and the panel | **Fixed**: per-account Linux users + PHP-FPM pools, panel file work inside the pool, Config.php 0640 root:frankenphp, panel code root-owned (docs/ARCHITECTURE.md "Customer isolation") |
 | 2 | Root worker trusts a customer-writable queue | **Fixed**: customers no longer run as frankenphp; jobs are HMAC-signed, plain files of frankenphp/root only, every job type validates its input (settings: fixed key list + value shapes); root writes only to root-owned `/var/lib/jinnpanel/worker/`; root's PHP runs with `auto_prepend_file=` empty |
 | 3 | Reserved usernames | **Fixed**: `Usernames` (reserved names, `hostpanel*`/`mysql*`/`pma*` prefixes, lowercase, existing system users) - accounts, resellers, migrations |
-| 4 | Admin APIs on the internet (8080/8090) | **Open by the owner's choice** (2026-10-01: leave 8080/8090/9090 open). Caddy's admin API (127.0.0.1:2019, unauthenticated) moved to a Unix socket |
+| 4 | Admin APIs on the internet (8080/8090) | **Fixed**: Stalwart's HTTP listeners (8080, 8443) and SFTPGo's API (8090) bind to 127.0.0.1 only, and the firewall no longer opens 8080/8090 or Cockpit (9090). The panel and Caddy's autoconfig/MTA-STS proxy reach them on loopback. Caddy's admin API (127.0.0.1:2019, unauthenticated) moved to a Unix socket |
 | 5 | Panel over http://, tls internal | **Fixed**: http:// redirects to https (308), real certificate once DNS resolves (already the case here), cookies always Secure, HSTS on the panel host |
 | 6 | No throttling/2FA, 8-char passwords | **Fixed**: `LoginThrottle`, TOTP two-factor for all roles (WHM/cPanel > shield icon; admins can reset), 10+ chars and no common passwords (`Passwords`) |
 | 7 | /setup open until the first admin | **Fixed**: one-time setup token from install.sh |
 | 8 | Suspension only blocks login | **Fixed**: `SuspensionService` - sites 503 + pools stopped, mail logins off (Stalwart `authenticate` permission), SFTP off, MySQL users locked, Valkey login off, cron skipped, sessions ended |
-| 9 | Quotas counted, not enforced; resellers unlimited | **Fixed (soft) / hard with XFS quotas**: `UsageService` measures files+DBs+mail and monthly bandwidth hourly; over disk -> uploads/new DBs/mailboxes/domains refused; over bandwidth -> sites 509; resellers limited by `packages.max_accounts`. Hard per-user limits: XFS user quotas (`JINNPANEL_XFS_QUOTA=1` adds `rootflags=uquota`; on this server since 2026-10-01, active after the next reboot), applied at boot (`jinnpanel-usage-boot`) and hourly as each account's package disk quota on its Linux user (files; DBs/mail are counted softly) |
+| 9 | Quotas counted, not enforced; resellers unlimited | **Fixed (soft) / hard with XFS quotas**: `UsageService` measures files+DBs+mail and monthly bandwidth hourly; over disk -> uploads/new DBs/mailboxes/domains refused; over bandwidth -> sites 509; resellers limited by `packages.max_accounts`. Hard per-user limits: XFS user quotas (`JINNPANEL_XFS_QUOTA=1` adds `rootflags=uquota`; on and enforced on this server since the 2026-10-01 reboot), applied at boot (`jinnpanel-usage-boot`) and hourly as each account's package disk quota on its Linux user (files; DBs/mail are counted softly) |
 | 10 | Domains not verified | **Fixed (policy)**: `DomainPolicy` refuses the server's names, names under/above another account's domain, public suffixes and the most impersonated domains. Ownership is proven by DNS (Let's Encrypt only issues when it points here) |
 | 11 | No backups | **Fixed**: `BackupService` - daily per-account (files, DBs, mail via IMAP) + server (panel DB, configs), retention, optional S3 copy, restore per part, customer downloads (WHM/cPanel > Backups) |
 | 12 | DNS: ns1.<domain>, one NS, no SPF/DKIM/DMARC | **Fixed** earlier (DNS work): ns1/ns2 of the server zone, SPF, DKIM (RSA + Ed25519), DMARC on every mail domain |
@@ -306,10 +306,9 @@ Known limits of the isolation (worth knowing before letting strangers host):
   each account's own static server (nginx as the account, links to others'
   files refused), so a symlink reaches nothing the account can't read.
 - SFTPGo now holds CAP_DAC_OVERRIDE/CHOWN/FOWNER (to write as the account),
-  so its admin API (8090, open on the internet by the owner's choice) is
-  close to root on files. Binding it to 127.0.0.1 is strongly recommended.
+  so its admin API (8090) is close to root on files. It listens on
+  127.0.0.1 only (since 2026-10-01); keep it that way.
 
 Still open (owner's side): rotating the root password, SSH password logins
-(kept on by choice; fail2ban added), restricting 8080/8090/9090, IPv6 rDNS
-at the provider, the reboot that turns XFS user quotas on, a migration trial
-against a real cPanel server.
+(kept on by choice; fail2ban added), IPv6 rDNS at the provider, a migration
+trial against a real cPanel server.
