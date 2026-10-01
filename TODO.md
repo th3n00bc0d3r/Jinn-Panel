@@ -57,7 +57,7 @@ does this per domain:
 Each of these had to be done by hand for the migrated accounts; make the panel
 do them.
 
-- [ ] **Let's Encrypt by default.** New domains and migrations default to
+- [x] **Let's Encrypt by default.** New domains and migrations default to
       `self_signed` (browser warning). The migrated domains were switched with
       `worker/vhost-rebuild.php letsencrypt`. Default to Let's Encrypt when the
       domain resolves to this server, fall back to self-signed otherwise, and
@@ -78,12 +78,12 @@ do them.
       system mail and catch-all deliveries) is migrated to
       `<user>@<main domain>` with the cPanel account password, when it holds
       mail. 9 of 13 accounts had some (538 messages).
-- [ ] **Catch-all addresses.** Most domains had cPanel's default
+- [x] **Catch-all addresses.** Most domains had cPanel's default
       `*: <user>` (unknown addresses -> default mailbox); not recreated, so
       that mail is now rejected. Add a per-domain "default address" setting
       (reject / deliver to a mailbox / forward) in cPanel > Email, and
       offer to migrate it.
-- [ ] **Mail DNS for local mail.** Domains whose mail stays on this server get
+- [x] **Mail DNS for local mail.** Domains whose mail stays on this server get
       only the panel's MX. The zone template should also publish:
   - `mail.<domain>` when it's missing: A/AAAA to the server, or a CNAME to
     the server hostname (and the MX can then point at it);
@@ -94,7 +94,7 @@ do them.
   - autoconfig/autodiscover so mail clients set themselves up:
     `autoconfig.<domain>` / `autodiscover.<domain>` (CNAME to the server)
     and SRV records `_imaps._tcp`, `_submission._tcp`, `_autodiscover._tcp`.
-- [ ] **Webmail at `mail.<domain>`.** When `mail.<domain>` points at this
+- [x] **Webmail at `mail.<domain>`.** When `mail.<domain>` points at this
       server, serve a web mail client there so users can read mail in a
       browser: [Cypht](https://github.com/cypht-org/cypht) (PHP, runs on
       FrankenPHP), installed once and shared by every domain, pre-set to
@@ -112,10 +112,11 @@ do them.
       migration.
 - [ ] **Subdomain sites get their own zone** (e.g. `admin.example.com`)
       while the parent zone also holds their records. Create subdomain sites as records in the parent zone instead.
-- [ ] **No www for the server zone.** `www.<server zone>` has no DNS record,
+- [x] **No www for the server zone.** `www.<server zone>` has no DNS record,
       so its certificate can't be issued.
-- [ ] **IPv6.** The server has IPv6 but zones get no AAAA records and the
-      installer doesn't configure IPv6 rDNS.
+- [x] **IPv6.** Zones get AAAA records next to every A record pointing here
+      (managed='ipv6'). IPv6 rDNS is set at the provider (owner, pending) -
+      until then, outbound mail over IPv6 may be rejected by big providers.
 - [ ] **Custom document root.** Laravel-style apps serve from `public/`
       (handled with a site rule for now); let users set the docroot per
       domain.
@@ -123,8 +124,8 @@ do them.
       Editor aren't applied, and config files still reference
       `/home/<user>/` (listed in the migration report) - rewrite those paths
       or map them.
-- [ ] **Not migrated at all:** cron jobs, email forwarders/autoresponders,
-      FTP accounts, parked domains.
+- [ ] **Not migrated at all:** cron jobs, FTP accounts, parked domains.
+      (Email forwarders, autoresponders and default addresses: done.)
 - [ ] **Exposed leftovers.** Migrated docroots contain archives and data that
       were public on cPanel too (site `.zip` archives, `orders.json`,
       `_backups/` folders, `error_log`). Flag files like these after a
@@ -145,7 +146,7 @@ do them.
       details and a "Run AutoSSL" button that re-checks DNS and asks Caddy
       to issue/renew now - for an expired certificate, one stuck retrying,
       or right after DNS was fixed.
-- [ ] **Mail client settings card** in cPanel > Email: IMAP/POP3/SMTP host,
+- [x] **Mail client settings card** in cPanel > Email: IMAP/POP3/SMTP host,
       ports, security and username, for setting up a mail app by hand.
 - [ ] **File manager:** select multiple files/folders (bulk delete, move,
       copy, download), extract `.zip` (and `.tar.gz`) archives, compress the

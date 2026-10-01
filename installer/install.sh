@@ -692,6 +692,117 @@ elif [ "$DNS_BOOTSTRAP_FAILED" = 0 ]; then
     warn "$HOSTNAME_FQDN isn't a public hostname - no server DNS zone was published."
 fi
 
+# ---------------------------------------------------------------------------
+# Webmail (Cypht) at https://mail.<domain>/
+# ---------------------------------------------------------------------------
+# Its own FrankenPHP instance as the "webmail" user on 127.0.0.1:8009: Cypht
+# putenv()s its settings, which in the shared FrankenPHP process would leak
+# into every customer site, and this keeps it away from site files too.
+# The main Caddy proxies mail.<domain> to it (MailDnsService writes those).
+log "Installing webmail (Cypht)"
+CYPHT_VERSION="2.12.2"
+CYPHT_SHA256="2461f0c692d4c89e7107a0e7f4c8978e8682cecd208f00f04e47daf2436d4057"
+WEBMAIL_HOME=/opt/jinnpanel-webmail
+WEBMAIL_DATA=/var/lib/jinnpanel-webmail
+CYPHT_DIR="$WEBMAIL_HOME/cypht-$CYPHT_VERSION"
+id webmail >/dev/null 2>&1 || useradd --system --home-dir "$WEBMAIL_DATA" --shell /sbin/nologin webmail
+mkdir -p "$WEBMAIL_HOME" "$WEBMAIL_DATA"/{users,attachments,app_data,sessions,caddy}
+if [ ! -f "$CYPHT_DIR/index.php" ]; then
+    curl -sL -o /tmp/cypht.tar.gz "https://github.com/cypht-org/cypht/releases/download/v$CYPHT_VERSION/cypht.tar.gz"
+    if [ "$(sha256sum /tmp/cypht.tar.gz | awk '{print $1}')" != "$CYPHT_SHA256" ]; then
+        rm -f /tmp/cypht.tar.gz
+        warn "Cypht $CYPHT_VERSION download doesn't match its checksum - not installing webmail."
+        exit 1
+    fi
+    mkdir -p "$CYPHT_DIR" && tar -xzf /tmp/cypht.tar.gz -C "$CYPHT_DIR" && rm -f /tmp/cypht.tar.gz
+fi
+cat > "$CYPHT_DIR/.env" <<ENV
+APP_NAME=Webmail
+ENABLE_DEBUG=false
+LOG_LEVEL=WARNING
+SESSION_TYPE=PHP
+AUTH_TYPE=IMAP
+IMAP_AUTH_NAME=Mail
+IMAP_AUTH_SERVER=$HOSTNAME_FQDN
+IMAP_AUTH_PORT=993
+IMAP_AUTH_TLS=true
+IMAP_AUTH_SIEVE_CONF_HOST=
+DEFAULT_SMTP_NAME=Mail
+DEFAULT_SMTP_SERVER=$HOSTNAME_FQDN
+DEFAULT_SMTP_PORT=465
+DEFAULT_SMTP_TLS=true
+USER_CONFIG_TYPE=file
+USER_SETTINGS_DIR=$WEBMAIL_DATA/users
+ATTACHMENT_DIR=$WEBMAIL_DATA/attachments
+APP_DATA_DIR=$WEBMAIL_DATA/app_data
+CYPHT_MODULES=core,contacts,local_contacts,imap,smtp,account,idle_timer,themes,profiles,inline_message,imap_folders,keyboard_shortcuts,tags,saved_searches,advanced_search,highlights,history,brute_force
+ENV
+# Regenerates site/ for this path, with this install's own SITE_ID (the
+# release ships the CI machine's).
+( cd "$CYPHT_DIR" && php scripts/config_gen.php >/dev/null )
+# "info" on mail.example.com logs in as info@example.com.
+cat > "$WEBMAIL_HOME/prepend.php" <<'PHP'
+<?php
+if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['username'], $_POST['password'])
+    && is_string($_POST['username']) && $_POST['username'] !== '' && !str_contains($_POST['username'], '@')
+    && preg_match('/^mail\.([a-z0-9.-]+)$/', strtolower((string) ($_SERVER['HTTP_HOST'] ?? '')), $m)) {
+    $_POST['username'] = trim($_POST['username']) . '@' . $m[1];
+}
+PHP
+ln -sfn "$CYPHT_DIR" "$WEBMAIL_HOME/current"
+chown -R root:webmail "$WEBMAIL_HOME" && chmod -R g+rX,o-rwx "$WEBMAIL_HOME"
+chown -R webmail:webmail "$WEBMAIL_DATA" && chmod 0700 "$WEBMAIL_DATA"
+semanage fcontext -a -t httpd_sys_content_t "$WEBMAIL_HOME(/.*)?" 2>/dev/null || true
+semanage fcontext -a -t httpd_sys_rw_content_t "$WEBMAIL_DATA(/.*)?" 2>/dev/null || true
+restorecon -R "$WEBMAIL_HOME" "$WEBMAIL_DATA"
+mkdir -p /etc/jinnpanel
+cat > /etc/jinnpanel/webmail.caddyfile <<CADDY
+{
+	admin off
+	auto_https off
+	storage file_system $WEBMAIL_DATA/caddy
+	frankenphp {
+		php_ini session.save_path $WEBMAIL_DATA/sessions
+		php_ini auto_prepend_file $WEBMAIL_HOME/prepend.php
+		php_ini upload_max_filesize 25M
+		php_ini post_max_size 26M
+	}
+}
+
+http://:8009 {
+	bind 127.0.0.1
+	root * $WEBMAIL_HOME/current/site
+	encode zstd br gzip
+	php_server {
+		env HTTPS on
+	}
+}
+CADDY
+cat > /etc/systemd/system/jinnpanel-webmail.service <<UNIT
+[Unit]
+Description=JinnPanel webmail (Cypht) on 127.0.0.1:8009
+After=network.target
+
+[Service]
+User=webmail
+Group=webmail
+Environment=XDG_DATA_HOME=$WEBMAIL_DATA XDG_CONFIG_HOME=$WEBMAIL_DATA
+ExecStart=/usr/bin/frankenphp run --config /etc/jinnpanel/webmail.caddyfile
+Restart=on-failure
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=$WEBMAIL_DATA
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable jinnpanel-webmail >/dev/null 2>&1
+systemctl restart jinnpanel-webmail
+ok "Webmail (Cypht $CYPHT_VERSION) on 127.0.0.1:8009"
+
 # Mail DNS (DKIM/SPF/DMARC/autoconfig), the autoconfig/MTA-STS site and
 # Stalwart's certificate: now, and daily (DKIM keys rotate, certs renew).
 log "Syncing mail DNS and the mail server certificate"

@@ -260,6 +260,7 @@ final class MailDnsService
                                            WHERE r.managed = 'mail' AND r.type = 'CNAME' AND r.name IN ($in) ORDER BY 1");
         $stmt->execute(self::SERVICE_LABELS);
         $hosts = array_values(array_filter($stmt->fetchAll(PDO::FETCH_COLUMN), fn($h) => preg_match('/^[a-z0-9.-]+$/', (string) $h)));
+        $webmail = self::webmailHosts();
         $file = Config::VHOSTS_CADDY_DIR . '/' . self::SERVICES_FILE;
         $conf = '';
         if ($hosts) {
@@ -277,6 +278,18 @@ final class MailDnsService
 
             CADDY;
         }
+        if ($webmail) {
+            $sites = implode(', ', array_map(fn($h) => "https://$h", $webmail));
+            $conf .= <<<CADDY
+
+            # Webmail (Cypht, its own FrankenPHP instance - see install.sh).
+            $sites {
+            	encode zstd br gzip
+            	reverse_proxy 127.0.0.1:8009
+            }
+
+            CADDY;
+        }
         $old = is_file($file) ? (string) file_get_contents($file) : '';
         if ($old === $conf) {
             return false;
@@ -288,6 +301,22 @@ final class MailDnsService
         }
         VhostService::reload();
         return true;
+    }
+
+    /**
+     * mail.<domain> for every domain with a mailbox, when that name
+     * resolves here (otherwise Caddy would retry its certificate forever)
+     * and isn't a hosted site of its own.
+     *
+     * @return list<string>
+     */
+    public static function webmailHosts(): array
+    {
+        $rows = Database::app()->query(
+            "SELECT DISTINCT CONCAT('mail.', d.domain_name) FROM domains d JOIN email_accounts e ON e.domain_id = d.id
+              WHERE CONCAT('mail.', d.domain_name) NOT IN (SELECT domain_name FROM domains) ORDER BY 1"
+        )->fetchAll(PDO::FETCH_COLUMN);
+        return array_values(array_filter($rows, fn($h) => preg_match('/^[a-z0-9.-]+$/', (string) $h) && SslService::resolvesHere((string) $h)));
     }
 
     /**

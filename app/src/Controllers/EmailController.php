@@ -25,11 +25,12 @@ final class EmailController
 
         View::render('cpanel/email', [
             'title' => 'Email Accounts',
-            'accounts' => $stmt->fetchAll(),
-            'domains' => $domainsStmt->fetchAll(),
+            'accounts' => $accounts = $stmt->fetchAll(),
+            'domains' => $domainRows = $domainsStmt->fetchAll(),
             'forwarders' => $fwd->fetchAll(),
             'autoresponders' => array_column($auto->fetchAll(), null, 'email_account_id'),
             'mailHost' => strtolower(Config::SERVER_HOSTNAME),
+            'webmail' => self::webmailHosts($accounts, $domainRows),
             'usage' => Quota::usage($me['id']),
             'pkg' => Quota::package($me['id']),
         ], 'cpanel');
@@ -215,6 +216,19 @@ final class EmailController
         }
         Flash::ok("Default address for {$domain['domain_name']} saved.");
         self::back();
+    }
+
+    /** mail.<domain> of the customer's domains with mailboxes, where webmail is served (it resolves here). */
+    private static function webmailHosts(array $accounts, array $domains): array
+    {
+        $out = [];
+        $hosted = array_column($domains, 'domain_name');
+        foreach (array_unique(array_column($accounts, 'domain_name')) as $d) {
+            if (!in_array("mail.$d", $hosted, true) && SslService::resolvesHere("mail.$d")) {
+                $out["mail.$d"] = true;
+            }
+        }
+        return $out;
     }
 
     /** @return array{0:array,1:array} the user and their mailbox from {id} (POST + CSRF checked) */

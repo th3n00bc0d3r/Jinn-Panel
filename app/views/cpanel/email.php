@@ -4,6 +4,7 @@
 /** @var list<array<string,mixed>> $forwarders */
 /** @var array<int,array<string,mixed>> $autoresponders keyed by email_account_id */
 /** @var string $mailHost */
+/** @var array<string,int> $webmail mail.<domain> hosts with webmail */
 $input = 'w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-500';
 $label = 'block text-xs font-medium text-slate-600 mb-1';
 $btn = 'rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-sm font-medium px-4 py-2 transition-colors';
@@ -32,7 +33,9 @@ foreach ($forwarders as $f) {
                         <span class="font-medium text-slate-700"><?= e($addr) ?></span>
                         <?php if ($ar): ?><span class="inline-flex text-xs font-medium rounded-full px-2 py-0.5 bg-amber-50 text-amber-700">Autoresponder on</span><?php endif; ?>
                         <span class="ml-auto flex items-center gap-1">
+                            <?php if (isset($webmail['mail.' . $a['domain_name']])): ?>
                             <a href="https://mail.<?= e($a['domain_name']) ?>/" target="_blank" rel="noopener" class="text-xs font-medium text-sky-700 hover:text-sky-600 px-2 py-1">Webmail</a>
+                            <?php endif; ?>
                             <form method="post" action="/cpanel/email/<?= (int) $a['id'] ?>/delete" data-confirm="Delete mailbox <?= e($addr) ?> and all its mail?">
                                 <?= Csrf::field() ?>
                                 <button class="p-2 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50" title="Delete"><?= icon('trash', 'h-4 w-4') ?></button>
