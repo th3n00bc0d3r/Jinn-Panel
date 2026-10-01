@@ -859,6 +859,7 @@ final class MigrationRunner
             try {
                 $mailDomainId = MailService::ensureDomain($domain);
                 $this->pdo->prepare('UPDATE domains SET mail_domain_id = ? WHERE id = ?')->execute([$mailDomainId, $domainRow['id']]);
+                MailDnsService::syncAfterMailDomain((int) $domainRow['id']);
             } catch (Throwable $e) {
                 foreach (array_keys($accounts) as $local) {
                     $this->report['email'][] = ['address' => "$local@$domain", 'status' => 'failed', 'note' => 'Mail domain: ' . $e->getMessage()];

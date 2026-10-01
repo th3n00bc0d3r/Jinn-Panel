@@ -93,6 +93,54 @@ final class MailService
         throw new RuntimeException("Could not create or find mail domain '$domainName': $reason");
     }
 
+    /** The DNS records Stalwart wants for a mail domain, as a zone-file snippet (DKIM, SPF, DMARC, SRV, ...). */
+    public static function dnsZoneFile(string $mailDomainId): string
+    {
+        $responses = self::call([
+            ['x:Domain/get', ['accountId' => self::accountId(), 'ids' => [$mailDomainId], 'properties' => ['dnsZoneFile']], '0'],
+        ]);
+        $zone = $responses[0][1]['list'][0]['dnsZoneFile'] ?? null;
+        if (!is_string($zone)) {
+            throw new RuntimeException("Mail domain $mailDomainId not found on the mail server.");
+        }
+        return $zone;
+    }
+
+    /**
+     * Makes $pem/$key Stalwart's certificate for $host (and its default for
+     * clients without SNI), unless it already has that exact one. Older
+     * certificates for the same name are removed.
+     */
+    public static function installCertificate(string $host, string $pem, string $key, int $validTo): string
+    {
+        $list = self::call([['x:Certificate/get', ['accountId' => self::accountId(), 'ids' => null,
+            'properties' => ['subjectAlternativeNames', 'notValidAfter']], '0']])[0][1]['list'] ?? [];
+        $old = [];
+        foreach ($list as $c) {
+            if (!array_key_exists($host, (array) ($c['subjectAlternativeNames'] ?? []))) {
+                continue;
+            }
+            if (strtotime((string) $c['notValidAfter']) === $validTo) {
+                return 'unchanged (valid until ' . gmdate('Y-m-d', $validTo) . ')';
+            }
+            $old[] = (string) $c['id'];
+        }
+        $created = self::call([['x:Certificate/set', ['accountId' => self::accountId(), 'create' => ['c1' => [
+            'certificate' => ['@type' => 'Text', 'value' => $pem],
+            'privateKey' => ['@type' => 'Text', 'secret' => $key],
+        ]]], '0']])[0][1];
+        $id = $created['created']['c1']['id'] ?? null;
+        if ($id === null) {
+            throw new RuntimeException('Mail server refused the certificate: ' . self::reason($created['notCreated']['c1'] ?? $created));
+        }
+        self::call([
+            ['x:SystemSettings/set', ['accountId' => self::accountId(), 'update' => ['singleton' => ['defaultCertificateId' => $id]]], '0'],
+            ['x:Certificate/set', ['accountId' => self::accountId(), 'destroy' => $old], '1'],
+            ['x:Action/set', ['accountId' => self::accountId(), 'create' => ['r' => ['@type' => 'ReloadTlsCertificates']]], '2'],
+        ]);
+        return 'installed (valid until ' . gmdate('Y-m-d', $validTo) . ')';
+    }
+
     /**
      * Creates a mailbox (name@domain) with a password and returns the
      * Stalwart account object id.

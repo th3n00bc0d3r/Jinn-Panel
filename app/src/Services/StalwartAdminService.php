@@ -73,7 +73,6 @@ final class StalwartAdminService
                 CURLOPT_ENCODING => '',
             ]);
             $raw = curl_exec($ch);
-            curl_close($ch);
             $res['body'] = json_decode($raw, true);
         }
         if (!is_array($res['body'])) {

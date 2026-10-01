@@ -70,6 +70,7 @@ final class EmailController
                 $mailDomainId = MailService::ensureDomain($domain['domain_name']);
                 $upd = $pdo->prepare('UPDATE domains SET mail_domain_id = ? WHERE id = ?');
                 $upd->execute([$mailDomainId, $domain['id']]);
+                MailDnsService::syncAfterMailDomain((int) $domain['id']);
             }
             $mailAccountId = MailService::createMailbox($mailDomainId, $localPart, $password);
         } catch (Throwable $e) {

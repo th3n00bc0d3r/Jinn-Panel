@@ -74,6 +74,9 @@ else
 fi
 SERVER_IP=$(ip route get 1.1.1.1 2>/dev/null | awk '/src/ {for(i=1;i<=NF;i++) if ($i=="src") print $(i+1)}')
 [ -z "$SERVER_IP" ] && SERVER_IP=$(hostname -I | awk '{print $1}')
+# Public IPv6 (empty if none): zones get AAAA records next to the A records.
+SERVER_IPV6=$(ip -6 route get 2606:4700:4700::1111 2>/dev/null | awk '/src/ {for(i=1;i<=NF;i++) if ($i=="src") print $(i+1)}')
+case "$SERVER_IPV6" in fe80:*|fd*|fc*|::1) SERVER_IPV6="" ;; esac
 PANEL_HOSTNAME="panel.$HOSTNAME_FQDN"
 
 ok "Hostname: $HOSTNAME_FQDN"
@@ -503,6 +506,7 @@ sed \
     -e "s/__SFTP_ADMIN_PASS__/$SFTPGO_ADMIN_PASS/" \
     -e "s/__SERVER_HOSTNAME__/$HOSTNAME_FQDN/" \
     -e "s/__SERVER_IP__/$SERVER_IP/" \
+    -e "s/__SERVER_IPV6__/$SERVER_IPV6/" \
     "$APP_ROOT/src/Config.php.template" > "$APP_ROOT/src/Config.php"
 rm -f "$APP_ROOT/src/Config.php.template"
 
@@ -537,6 +541,12 @@ cat > "/etc/frankenphp/Caddyfile.d/panel.caddyfile" <<CADDY
 	encode zstd br gzip
 	try_files {path} /index.php
 	php_server
+}
+
+# The bare hostname: the MX and mail clients use it, so Caddy keeps a real
+# certificate for it that MailDnsService hands to Stalwart.
+https://$HOSTNAME_FQDN {
+	redir https://$PANEL_HOSTNAME{uri}
 }
 
 https://$PANEL_HOSTNAME {
@@ -681,6 +691,37 @@ if [ "$DNS_ZONE" != "-" ]; then
 elif [ "$DNS_BOOTSTRAP_FAILED" = 0 ]; then
     warn "$HOSTNAME_FQDN isn't a public hostname - no server DNS zone was published."
 fi
+
+# Mail DNS (DKIM/SPF/DMARC/autoconfig), the autoconfig/MTA-STS site and
+# Stalwart's certificate: now, and daily (DKIM keys rotate, certs renew).
+log "Syncing mail DNS and the mail server certificate"
+cat > /etc/systemd/system/jinnpanel-mail-dns.service <<UNIT
+[Unit]
+Description=JinnPanel - sync mail DNS records, autoconfig site and mail TLS certificate
+After=stalwart.service frankenphp.service
+
+[Service]
+Type=oneshot
+User=frankenphp
+Group=webusers
+ExecStart=/usr/bin/php $APP_ROOT/worker/mail-dns-sync.php
+UNIT
+cat > /etc/systemd/system/jinnpanel-mail-dns.timer <<'UNIT'
+[Unit]
+Description=Daily JinnPanel mail DNS / certificate sync
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1d
+RandomizedDelaySec=30min
+
+[Install]
+WantedBy=timers.target
+UNIT
+systemctl daemon-reload
+systemctl enable jinnpanel-mail-dns.timer >/dev/null 2>&1
+systemctl start jinnpanel-mail-dns.timer
+runuser -u frankenphp -- /usr/bin/php "$APP_ROOT/worker/mail-dns-sync.php" | sed 's/^/    /' || warn "Mail DNS sync reported problems (above); the daily timer retries."
 
 if [ "$PUBLIC_A" = "$SERVER_IP" ]; then
     DNS_NOTE="    1. DNS is live: $PANEL_HOSTNAME already resolves to $SERVER_IP."

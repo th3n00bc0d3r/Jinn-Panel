@@ -404,12 +404,109 @@ final class DnsService
 
     public static function deleteRecord(int $zoneId, int $recordId): void
     {
-        $stmt = Database::app()->prepare('DELETE FROM dns_records WHERE id = ? AND zone_id = ?');
+        $stmt = Database::app()->prepare('DELETE FROM dns_records WHERE id = ? AND zone_id = ? AND managed IS NULL');
         $stmt->execute([$recordId, $zoneId]);
         if ($stmt->rowCount() === 0) {
-            throw new InvalidArgumentException('Record not found.');
+            throw new InvalidArgumentException('Record not found (records the panel manages itself can\'t be deleted - add your own record with that name to replace one).');
         }
         self::publish($zoneId);
+    }
+
+    // ------------------------------------------------------------------
+    // Records the panel manages itself
+    // ------------------------------------------------------------------
+
+    /**
+     * Makes the zone's records tagged $tag exactly $desired (rows of
+     * [name, type, content, priority]) and publishes if anything changed.
+     * Callers leave out names the customer already uses, so a managed record
+     * never shadows or duplicates one of theirs. Returns whether it changed.
+     *
+     * @param list<array{0:string,1:string,2:string,3:?int}> $desired
+     */
+    public static function syncManaged(int $zoneId, string $tag, array $desired, bool $publish = true): bool
+    {
+        $pdo = Database::app();
+        $key = fn(array $r) => strtolower($r[0]) . '|' . $r[1] . '|' . $r[2] . '|' . (int) $r[3];
+        $stmt = $pdo->prepare('SELECT name, type, content, priority FROM dns_records WHERE zone_id = ? AND managed = ?');
+        $stmt->execute([$zoneId, $tag]);
+        $have = array_map(fn($r) => $key([$r['name'], $r['type'], $r['content'], $r['priority']]), $stmt->fetchAll());
+        $want = array_values(array_unique(array_map($key, $desired)));
+        sort($have);
+        sort($want);
+        if ($have === $want) {
+            return false;
+        }
+        $pdo->beginTransaction();
+        try {
+            $pdo->prepare('DELETE FROM dns_records WHERE zone_id = ? AND managed = ?')->execute([$zoneId, $tag]);
+            $ins = $pdo->prepare('INSERT INTO dns_records (zone_id, name, type, ttl, priority, content, managed) VALUES (?, ?, ?, ?, ?, ?, ?)');
+            $done = [];
+            foreach ($desired as [$name, $type, $content, $priority]) {
+                if (!isset($done[$k = $key([$name, $type, $content, $priority])])) {
+                    $done[$k] = true;
+                    $ins->execute([$zoneId, $name, $type, self::DEFAULT_TTL, $priority, $content, $tag]);
+                }
+            }
+            $pdo->commit();
+        } catch (Throwable $e) {
+            $pdo->rollBack();
+            throw $e;
+        }
+        if ($publish) {
+            self::publish($zoneId);
+        }
+        return true;
+    }
+
+    public static function managedLabel(string $tag): string
+    {
+        return match ($tag) {
+            'mail' => 'Automatic (mail)',
+            'ipv6' => 'Automatic (IPv6)',
+            'site' => 'Automatic (subdomain site)',
+            default => 'Automatic',
+        };
+    }
+
+    /** Names in the zone that hold records the customer (not the panel) manages, with their types. */
+    public static function customerNames(int $zoneId, ?string $exceptTag = null): array
+    {
+        $stmt = Database::app()->prepare('SELECT name, type FROM dns_records WHERE zone_id = ? AND (managed IS NULL OR managed <> ?)');
+        $stmt->execute([$zoneId, $exceptTag ?? '']);
+        $out = [];
+        foreach ($stmt->fetchAll() as $r) {
+            $out[strtolower($r['name'])][] = $r['type'];
+        }
+        return $out;
+    }
+
+    /** Server's public IPv6, or null when it has none. */
+    public static function serverIpv6(): ?string
+    {
+        $v6 = defined('Config::SERVER_IPV6') ? (string) constant('Config::SERVER_IPV6') : '';
+        return filter_var($v6, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? strtolower($v6) : null;
+    }
+
+    /**
+     * AAAA next to every A record that points at this server (when it has
+     * IPv6), unless that name already has an AAAA of its own.
+     */
+    public static function syncIpv6(int $zoneId, bool $publish = true): bool
+    {
+        $v6 = self::serverIpv6();
+        $desired = [];
+        if ($v6 !== null) {
+            $stmt = Database::app()->prepare("SELECT DISTINCT name FROM dns_records WHERE zone_id = ? AND type = 'A' AND content = ?");
+            $stmt->execute([$zoneId, Config::SERVER_IP]);
+            $names = self::customerNames($zoneId, 'ipv6');
+            foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $name) {
+                if (!in_array('AAAA', $names[strtolower($name)] ?? [], true)) {
+                    $desired[] = [$name, 'AAAA', $v6, null];
+                }
+            }
+        }
+        return self::syncManaged($zoneId, 'ipv6', $desired, $publish);
     }
 
     // ------------------------------------------------------------------
@@ -419,6 +516,7 @@ final class DnsService
     /** Bump the serial, render, and queue the worker to write + reload. */
     public static function publish(int $zoneId): void
     {
+        self::syncIpv6($zoneId, false);
         $zone = self::findZone($zoneId) ?? throw new InvalidArgumentException('Zone not found.');
         $serial = self::nextSerial((int) $zone['serial']);
         Database::app()->prepare('UPDATE dns_zones SET serial = ? WHERE id = ?')->execute([$serial, $zoneId]);

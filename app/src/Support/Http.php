@@ -36,11 +36,9 @@ final class Http
         $raw = curl_exec($ch);
         if ($raw === false) {
             $err = curl_error($ch);
-            curl_close($ch);
             throw new RuntimeException("HTTP request failed: $err");
         }
         $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
 
         $body = json_decode($raw, true);
         return ['status' => $status, 'body' => $body, 'raw' => $raw];
