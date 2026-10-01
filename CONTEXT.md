@@ -3,7 +3,8 @@
 Read this first. It's the orientation for anyone (human or AI assistant)
 working on the codebase: what JinnPanel is, how it's put together, the
 conventions to follow, and where it stands. Deeper detail lives in `docs/`
-(ARCHITECTURE, FEATURES, INSTALL, MIGRATION, TROUBLESHOOTING, ICONS).
+(ARCHITECTURE, FEATURES, INSTALL, OPERATIONS, MIGRATION, TROUBLESHOOTING,
+COMPARISON, ICONS).
 
 Last reviewed: 2026-10-01.
 

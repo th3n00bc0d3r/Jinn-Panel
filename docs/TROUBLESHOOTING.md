@@ -125,3 +125,40 @@ private IPs, `.local` domains, or anything behind NAT without port
 forwarding - no panel can shortcut this. Caddy will log the failed ACME
 attempt and keep retrying; switch the domain back to self-signed if it's
 not meant to be public.
+
+## Domains stop resolving after a Knot restart or reboot
+
+`knotc conf-set` only changes Knot's memory - `knot.conf` is a plain text
+file, not a configuration database. Zones registered that way are gone
+after a restart, and Knot comes up serving nothing. The worker therefore
+writes the live zone list to `/etc/knot/zones.conf` after every
+registration, and the installer adds `include: "zones.conf"` to
+`knot.conf`. Check: `knotc zone-status | wc -l` equals
+`ls /var/lib/knot/*.zone | wc -l`. Don't use `knotc conf-export` as a
+substitute (it exports knotc's view of the file, not the running zones),
+and don't use `knotc zone-check` as a validator (Knot 3.5+ reports "no such
+zone" for loaded zones).
+
+## Stalwart or SFTPGo admin UI "doesn't load"
+
+On purpose: their admin interfaces listen on 127.0.0.1 only (8080/8443 and
+8090). Use an SSH tunnel -
+`ssh -L 8090:127.0.0.1:8090 -L 8080:127.0.0.1:8080 root@<server>` - and
+open `http://localhost:8090` / `http://localhost:8080`. Credentials are in
+`/root/.jinnpanel/`. Don't open these ports in the firewall: SFTPGo can
+write as any account.
+
+## Stalwart taking port 443
+
+Stalwart's default listeners include HTTPS on :443, which FrankenPHP
+needs. Whichever starts first wins, so a reboot could leave the panel
+crash-looping on "address already in use". The installer moves Stalwart's
+HTTPS listener to 127.0.0.1:8443 through its API; re-run it if
+`ss -ltnp | grep ':443 '` shows `stalwart`.
+
+## systemd units that run scripts from `/root`
+
+SELinux won't let systemd execute a script stored under `/root` (wrong
+file context). Put helper scripts for units in `/usr/local/bin` or
+`/usr/local/lib`, and install them with `install` (a file moved with `mv`
+from `/tmp` keeps the `user_tmp_t` label, which systemd also refuses).
