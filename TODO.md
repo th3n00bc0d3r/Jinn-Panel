@@ -141,6 +141,16 @@ do them.
       cPanel > Domains and the welcome email; WHM-only pages could be
       limited to the panel hostname.
 
+- [ ] **SSL section per domain** (cPanel > Domains > *domain*): certificate
+      details and a "Run AutoSSL" button that re-checks DNS and asks Caddy
+      to issue/renew now - for an expired certificate, one stuck retrying,
+      or right after DNS was fixed.
+- [ ] **Mail client settings card** in cPanel > Email: IMAP/POP3/SMTP host,
+      ports, security and username, for setting up a mail app by hand.
+- [ ] **File manager:** select multiple files/folders (bulk delete, move,
+      copy, download), extract `.zip` (and `.tar.gz`) archives, compress the
+      selection into a `.zip`, and view/change permissions (chmod) of files
+      and folders - all confined to the account's own directories.
 - [ ] **Zone editor for customers** in the jpanel (cPanel > DNS): add,
       edit and delete records of their own domains' zones, with the same
       validation as WHM > DNS Zones; records the panel manages (mail, IPv6)

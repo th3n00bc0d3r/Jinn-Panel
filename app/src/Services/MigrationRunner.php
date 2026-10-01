@@ -273,7 +273,7 @@ final class MigrationRunner
                 $sftpUser = null;
             }
             $this->setItem(['step' => 'Extracting mail from the backup', 'progress' => 45]);
-            $this->extract($archive, $this->work . '/extract', ['*/cp/*', '*/shadow', '*/va/*', '*/homedir/etc/*', '*/homedir/mail/*', '*/homedir.tar']);
+            $this->extract($archive, $this->work . '/extract', ['*/cp/*', '*/shadow', '*/va/*', '*/homedir/etc/*', '*/homedir/mail/*', '*/homedir/.autorespond/*', '*/homedir.tar']);
             if ($this->m['transfer_mode'] !== 'file') {
                 @unlink($archive);
             }
@@ -320,8 +320,8 @@ final class MigrationRunner
 
     private function hasFailures(): bool
     {
-        foreach (['domains', 'databases', 'db_users', 'email'] as $k) {
-            foreach ($this->report[$k] as $r) {
+        foreach (['domains', 'databases', 'db_users', 'email', 'forwarders'] as $k) {
+            foreach ($this->report[$k] ?? [] as $r) {
                 if (in_array($r['status'] ?? '', ['failed', 'partial'], true)) {
                     return true;
                 }
@@ -837,7 +837,8 @@ final class MigrationRunner
         $catchAll = $r->catchAllDomains();
         if ($catchAll) {
             $this->report['info'][] = 'On cPanel, mail to unknown addresses at ' . implode(', ', $catchAll)
-                . " went to the account's default mailbox (catch-all). That isn't recreated here - unknown addresses are rejected.";
+                . " went to the account's default mailbox (catch-all)."
+                . (($this->opt['catch_all'] ?? 'reject') === 'keep' ? '' : ' Not kept: unknown addresses are rejected (cPanel > Email > Default address to change it).');
         }
 
         foreach ($domains as $domain) {
@@ -920,6 +921,78 @@ final class MigrationRunner
                 }
                 $this->report['email'][] = $entry;
                 $this->log("{$r->username()}: mailbox $address {$entry['status']}" . (isset($entry['messages']) ? " ({$entry['messages']} messages)" : ''));
+            }
+        }
+        $this->restoreMailRules($userId, $r, $domains);
+    }
+
+    /**
+     * cPanel forwarders and autoresponders, and - when the migration keeps
+     * them - the domains' default addresses. Idempotent (a mail restore runs
+     * it again): forwarders merge their destinations, autoresponders are
+     * overwritten.
+     */
+    private function restoreMailRules(int $userId, CpanelBackupReader $r, array $domains): void
+    {
+        $this->report['forwarders'] ??= [];
+        $dRow = $this->pdo->prepare('SELECT * FROM domains WHERE domain_name = ? AND user_id = ?');
+        $box = $this->pdo->prepare('SELECT e.id FROM email_accounts e JOIN domains d ON d.id = e.domain_id WHERE d.user_id = ? AND d.domain_name = ? AND e.local_part = ?');
+        $keepDefault = ($this->opt['catch_all'] ?? 'reject') === 'keep';
+        $main = $r->mainDomain();
+
+        foreach ($domains as $domain) {
+            $dRow->execute([$domain, $userId]);
+            $row = $dRow->fetch();
+            if (!$row) {
+                continue;
+            }
+            $fw = $r->forwarders($domain);
+            foreach ($fw['forwarders'] as $local => $dests) {
+                $address = "$local@$domain";
+                $this->report['forwarders'] = array_values(array_filter($this->report['forwarders'], fn($e) => ($e['address'] ?? '') !== $address));
+                try {
+                    MailRulesService::addForwarder($userId, $row, $local, implode(',', $dests));
+                    $this->report['forwarders'][] = ['address' => $address, 'status' => 'ok', 'note' => 'to ' . implode(', ', $dests)];
+                } catch (Throwable $e) {
+                    $this->report['forwarders'][] = ['address' => $address, 'status' => 'failed', 'note' => $e->getMessage()];
+                }
+                $dRow->execute([$domain, $userId]);
+                $row = $dRow->fetch(); // mail_domain_id may have been set
+            }
+            foreach ($fw['skipped'] as $s) {
+                $this->report['warnings'][] = "Forwarder not recreated (pipes to programs and :fail:/:blackhole: rules aren't supported): $s";
+            }
+
+            if ($keepDefault && ($target = $r->defaultAddress($domain)) !== null && $target[0] !== ':') {
+                $address = str_contains($target, '@') ? strtolower($target) : ($main !== null ? strtolower("$target@$main") : null);
+                try {
+                    if ($address === null || !filter_var($address, FILTER_VALIDATE_EMAIL)) {
+                        throw new RuntimeException("unsupported target \"$target\"");
+                    }
+                    $mailDomainId = $row['mail_domain_id'] ?: MailService::ensureDomain($domain);
+                    $this->pdo->prepare('UPDATE domains SET mail_domain_id = ? WHERE id = ?')->execute([$mailDomainId, $row['id']]);
+                    MailService::setCatchAll((string) $mailDomainId, $address);
+                    $this->pdo->prepare('UPDATE domains SET catch_all = ? WHERE id = ?')->execute([$address, $row['id']]);
+                    $this->report['info'][] = "Default address of $domain kept: mail to unknown addresses goes to $address.";
+                } catch (Throwable $e) {
+                    $this->report['warnings'][] = "Default address of $domain not kept: " . $e->getMessage();
+                }
+            }
+        }
+
+        foreach ($r->autoresponders() as $address => $ar) {
+            [$local, $domain] = explode('@', $address, 2);
+            $box->execute([$userId, $domain, $local]);
+            $id = $box->fetchColumn();
+            if ($id === false) {
+                $this->report['warnings'][] = "Autoresponder for $address not recreated: it isn't a mailbox here (JinnPanel autoresponders belong to a mailbox).";
+                continue;
+            }
+            try {
+                MailRulesService::saveAutoresponder($userId, (int) $id, $ar);
+                $this->report['info'][] = "Autoresponder of $address recreated (\"{$ar['subject']}\").";
+            } catch (Throwable $e) {
+                $this->report['warnings'][] = "Autoresponder for $address not recreated: " . $e->getMessage();
             }
         }
     }

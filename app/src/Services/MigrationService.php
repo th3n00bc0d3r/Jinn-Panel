@@ -132,6 +132,7 @@ final class MigrationService
             'match_packages' => true,
             'owner' => 'none',
             'mail_passwords' => 'preserve',
+            'catch_all' => 'reject',
             'ssl_mode' => 'auto',
             'public_host' => Config::SERVER_IP,
             'public_port' => defined('Config::SFTP_PUBLIC_PORT') ? (int) constant('Config::SFTP_PUBLIC_PORT') : 2022,

@@ -48,6 +48,16 @@ final class MailDnsService
             $log[] = 'mail services site: FAILED - ' . $e->getMessage();
         }
         try {
+            $log = array_merge($log, MailService::retryPendingDomainDeletes());
+        } catch (Throwable $e) {
+            $log[] = 'pending mail domain deletes: FAILED - ' . $e->getMessage();
+        }
+        try {
+            $log[] = 'mail listeners: ' . MailService::ensureSubmissionListener();
+        } catch (Throwable $e) {
+            $log[] = 'mail listeners: FAILED - ' . $e->getMessage();
+        }
+        try {
             $log[] = 'mail TLS: ' . self::syncTls();
         } catch (Throwable $e) {
             $log[] = 'mail TLS: FAILED - ' . $e->getMessage();

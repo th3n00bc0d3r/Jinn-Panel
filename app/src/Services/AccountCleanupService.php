@@ -60,6 +60,13 @@ final class AccountCleanupService
             }
         }
 
+        // Forwarders and the mail domains themselves (with any DKIM keys).
+        $mailDomains = $pdo->prepare('SELECT mail_domain_id FROM domains WHERE user_id = ? AND mail_domain_id IS NOT NULL');
+        $mailDomains->execute([$userId]);
+        foreach ($mailDomains->fetchAll(PDO::FETCH_COLUMN) as $mailDomainId) {
+            try { MailService::deleteDomain((string) $mailDomainId); } catch (Throwable $e) { error_log($e->getMessage()); }
+        }
+
         $ftps = $pdo->prepare('SELECT * FROM ftp_accounts WHERE user_id = ?');
         $ftps->execute([$userId]);
         foreach ($ftps->fetchAll() as $row) {

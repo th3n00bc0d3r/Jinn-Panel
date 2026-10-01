@@ -483,6 +483,89 @@ final class CpanelBackupReader
         return null;
     }
 
+    /**
+     * cPanel forwarders of $domain (va/<domain>: "local@domain: dest, dest").
+     *
+     * @return array{forwarders: array<string, list<string>>, skipped: list<string>}
+     *   skipped: entries JinnPanel can't recreate (pipes to programs, :fail:/:blackhole: on one address)
+     */
+    public function forwarders(string $domain): array
+    {
+        $out = ['forwarders' => [], 'skipped' => []];
+        $file = $this->root . '/va/' . $domain;
+        if (!preg_match(self::DOMAIN_RE, $domain) || !is_file($file)) {
+            return $out;
+        }
+        foreach (file($file, FILE_IGNORE_NEW_LINES) ?: [] as $line) {
+            if (!preg_match('/^([^:\s]+)@' . preg_quote($domain, '/') . ':\s*(.+)$/i', trim($line), $m)) {
+                continue;
+            }
+            $local = strtolower($m[1]);
+            $dests = [];
+            foreach (preg_split('/\s*,\s*/', trim($m[2])) as $d) {
+                $d = strtolower(trim($d, " \t\""));
+                if (filter_var($d, FILTER_VALIDATE_EMAIL)) {
+                    $dests[] = $d;
+                } elseif ($d !== '') {
+                    $out['skipped'][] = "$local@$domain -> $d";
+                }
+            }
+            if ($dests && preg_match(self::LOCALPART_RE, $local)) {
+                $out['forwarders'][$local] = array_values(array_unique(array_merge($out['forwarders'][$local] ?? [], $dests)));
+            }
+        }
+        return $out;
+    }
+
+    /** cPanel's default address for $domain: an address, a bare local user, ":fail: ...", ":blackhole:", or null. */
+    public function defaultAddress(string $domain): ?string
+    {
+        $file = $this->root . '/va/' . $domain;
+        if (!preg_match(self::DOMAIN_RE, $domain) || !is_file($file)) {
+            return null;
+        }
+        foreach (file($file, FILE_IGNORE_NEW_LINES) ?: [] as $line) {
+            if (preg_match('/^\*:\s*(.+)$/', trim($line), $m)) {
+                return trim($m[1], " \t\"");
+            }
+        }
+        return null;
+    }
+
+    /**
+     * cPanel autoresponders: homedir/.autorespond/<address> (headers, a
+     * blank line, the body) with <address>.json for interval/start/stop.
+     *
+     * @return array<string, array{subject:string, body:string, interval_days:int, starts_on:?string, ends_on:?string}>
+     */
+    public function autoresponders(): array
+    {
+        $dir = self::inside($this->homedir(), '.autorespond');
+        $out = [];
+        if ($dir === null || !is_dir($dir)) {
+            return $out;
+        }
+        foreach (scandir($dir) ?: [] as $f) {
+            $file = "$dir/$f";
+            if (!filter_var($f, FILTER_VALIDATE_EMAIL) || !is_file($file) || is_link($file)) {
+                continue;
+            }
+            $raw = str_replace("\r\n", "\n", (string) file_get_contents($file, false, null, 0, 65536));
+            [$head, $body] = array_pad(explode("\n\n", $raw, 2), 2, '');
+            $subject = preg_match('/^Subject:\s*(.*)$/mi', $head, $m) ? trim($m[1]) : 'Auto-reply';
+            $meta = json_decode((string) @file_get_contents("$file.json"), true) ?: [];
+            $day = fn($t) => is_numeric($t) && (int) $t > 0 ? gmdate('Y-m-d', (int) $t) : null;
+            $out[strtolower($f)] = [
+                'subject' => mb_substr($subject, 0, 200),
+                'body' => trim($body),
+                'interval_days' => max(1, (int) round(((int) ($meta['interval'] ?? 24)) / 24)),
+                'starts_on' => $day($meta['start'] ?? null),
+                'ends_on' => $day($meta['stop'] ?? null),
+            ];
+        }
+        return $out;
+    }
+
     /** Domains whose cPanel catch-all ("default address", va/<domain> "*:") delivered to this account. */
     public function catchAllDomains(): array
     {

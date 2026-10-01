@@ -124,6 +124,7 @@ $secretLine = function (?string $pw): string {
             'db_users' => ['MySQL users', fn($d) => e($d['name'])
                 . (!empty($d['databases']) ? ' <span class="text-slate-400">&rarr; ' . e(implode(', ', $d['databases'])) . '</span>' : '')
                 . (($d['password'] ?? '') === 'generated' ? ' &middot; new password:' . $secretLine($d['generated_password'] ?? null) : '')],
+            'forwarders' => ['Forwarders', fn($d) => e($d['address'])],
             'email' => ['Email accounts', fn($d) => e($d['address'])
                 . (isset($d['messages']) ? ' <span class="text-slate-400">' . (int) $d['messages'] . ' messages</span>' : '')
                 . (($d['password'] ?? '') === 'generated' ? ' &middot; new password:' . $secretLine($d['generated_password'] ?? null) : '')],

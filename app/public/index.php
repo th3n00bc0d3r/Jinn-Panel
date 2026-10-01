@@ -84,6 +84,12 @@ $router->post('/cpanel/databases/{id}/delete', ['DatabaseController', 'destroy']
 $router->get('/cpanel/email', ['EmailController', 'index']);
 $router->post('/cpanel/email', ['EmailController', 'store']);
 $router->post('/cpanel/email/{id}/delete', ['EmailController', 'destroy']);
+$router->post('/cpanel/email/{id}/password', ['EmailController', 'password']);
+$router->post('/cpanel/email/{id}/autoresponder', ['EmailController', 'autoresponderSave']);
+$router->post('/cpanel/email/{id}/autoresponder/delete', ['EmailController', 'autoresponderDestroy']);
+$router->post('/cpanel/email-forwarders', ['EmailController', 'forwarderStore']);
+$router->post('/cpanel/email-forwarders/{id}/delete', ['EmailController', 'forwarderDestroy']);
+$router->post('/cpanel/email-default-address', ['EmailController', 'defaultAddress']);
 $router->get('/cpanel/ftp', ['FtpController', 'index']);
 $router->post('/cpanel/ftp', ['FtpController', 'store']);
 $router->post('/cpanel/ftp/{id}/delete', ['FtpController', 'destroy']);

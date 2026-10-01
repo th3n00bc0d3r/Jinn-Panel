@@ -148,11 +148,16 @@ final class DomainController
 
         try { VhostService::remove($domain['domain_name'], $domain['php_version']); } catch (Throwable $e) { error_log($e->getMessage()); }
         try { DnsService::removeZone($domain['domain_name']); } catch (Throwable $e) { error_log($e->getMessage()); }
+        // Its mailboxes, forwarders and mail domain - otherwise they'd keep receiving mail.
+        if ($domain['mail_domain_id']) {
+            try { MailService::deleteDomain((string) $domain['mail_domain_id']); } catch (Throwable $e) { error_log($e->getMessage()); }
+        }
+        $pdo->prepare('DELETE FROM email_accounts WHERE domain_id = ?')->execute([$id]);
 
         $del = $pdo->prepare('DELETE FROM domains WHERE id = ?');
         $del->execute([$id]);
 
-        Flash::ok("Domain \"{$domain['domain_name']}\" removed. Files were left in place on disk.");
+        Flash::ok("Domain \"{$domain['domain_name']}\" removed with its mailboxes and forwarders. Files were left in place on disk.");
         header('Location: /cpanel/domains');
         exit;
     }

@@ -93,6 +93,181 @@ final class MailService
         throw new RuntimeException("Could not create or find mail domain '$domainName': $reason");
     }
 
+    // ------------------------------------------------------------------
+    // Forwarders (mailing lists), catch-all, listeners
+    // ------------------------------------------------------------------
+
+    /**
+     * Removes a mail domain with its mailboxes, lists and DKIM keys. Stalwart
+     * deletes accounts in the background, so the domain itself may still be
+     * "linked" right after; then it's queued and retryPendingDomainDeletes()
+     * (daily sync) finishes the job. Returns whether the domain is gone.
+     */
+    public static function deleteDomain(string $mailDomainId): bool
+    {
+        $acc = self::accountId();
+        $filter = ['domainId' => $mailDomainId];
+        $r = self::call([
+            ['x:Account/query', ['accountId' => $acc, 'filter' => $filter], 'a'],
+            ['x:Account/set', ['accountId' => $acc, '#destroy' => ['resultOf' => 'a', 'name' => 'x:Account/query', 'path' => '/ids']], 'b'],
+            ['x:MailingList/query', ['accountId' => $acc, 'filter' => $filter], 'c'],
+            ['x:MailingList/set', ['accountId' => $acc, '#destroy' => ['resultOf' => 'c', 'name' => 'x:MailingList/query', 'path' => '/ids']], 'd'],
+            ['x:DkimSignature/query', ['accountId' => $acc, 'filter' => $filter], 'e'],
+            ['x:DkimSignature/set', ['accountId' => $acc, '#destroy' => ['resultOf' => 'e', 'name' => 'x:DkimSignature/query', 'path' => '/ids']], 'f'],
+            ['x:Domain/set', ['accountId' => $acc, 'destroy' => [$mailDomainId]], 'g'],
+        ]);
+        $gone = in_array($mailDomainId, (array) ($r[6][1]['destroyed'] ?? []), true)
+            || (($r[6][1]['notDestroyed'][$mailDomainId]['type'] ?? '') === 'notFound');
+        $pending = json_decode((string) self::pendingSetting(), true) ?: [];
+        $pending = array_values(array_diff($pending, [$mailDomainId]));
+        if (!$gone) {
+            $pending[] = $mailDomainId;
+        }
+        DnsService::putSetting('mail_domains_pending_delete', json_encode($pending));
+        return $gone;
+    }
+
+    /** @return list<string> log lines */
+    public static function retryPendingDomainDeletes(): array
+    {
+        $out = [];
+        foreach (json_decode((string) self::pendingSetting(), true) ?: [] as $id) {
+            $out[] = "mail domain $id: " . (self::deleteDomain((string) $id) ? 'deleted' : 'still linked, retrying tomorrow');
+        }
+        return $out;
+    }
+
+    private static function pendingSetting(): ?string
+    {
+        $s = Database::app()->prepare("SELECT setting_value FROM panel_settings WHERE setting_key = 'mail_domains_pending_delete'");
+        $s->execute();
+        $v = $s->fetchColumn();
+        return $v === false ? null : (string) $v;
+    }
+
+    /** A forwarder for an address that isn't a mailbox: a Stalwart mailing list. Returns its id. */
+    public static function createList(string $mailDomainId, string $localPart, array $recipients): string
+    {
+        $r = self::call([['x:MailingList/set', ['accountId' => self::accountId(), 'create' => ['l' => [
+            'name' => $localPart, 'domainId' => $mailDomainId, 'recipients' => (object) array_fill_keys($recipients, true),
+        ]]], '0']])[0][1];
+        $id = $r['created']['l']['id'] ?? null;
+        if ($id === null) {
+            throw new RuntimeException("Could not create the forwarder: " . self::reason($r['notCreated']['l'] ?? $r));
+        }
+        return (string) $id;
+    }
+
+    public static function updateList(string $listId, array $recipients): void
+    {
+        $r = self::call([['x:MailingList/set', ['accountId' => self::accountId(),
+            'update' => (object) [$listId => ['recipients' => (object) array_fill_keys($recipients, true)]]], '0']])[0][1];
+        if (!array_key_exists($listId, (array) ($r['updated'] ?? []))) {
+            throw new RuntimeException('Could not update the forwarder: ' . self::reason($r['notUpdated'][$listId] ?? $r));
+        }
+    }
+
+    public static function deleteList(string $listId): void
+    {
+        self::call([['x:MailingList/set', ['accountId' => self::accountId(), 'destroy' => [$listId]], '0']]);
+    }
+
+    /** Where mail to unknown addresses of the domain goes; null = rejected. */
+    public static function setCatchAll(string $mailDomainId, ?string $address): void
+    {
+        $r = self::call([['x:Domain/set', ['accountId' => self::accountId(),
+            'update' => (object) [$mailDomainId => ['catchAllAddress' => $address]]], '0']])[0][1];
+        if (!array_key_exists($mailDomainId, (array) ($r['updated'] ?? []))) {
+            throw new RuntimeException('Could not set the default address: ' . self::reason($r['notUpdated'][$mailDomainId] ?? $r));
+        }
+    }
+
+    /**
+     * Port 587 (SMTP submission with STARTTLS): what most mail apps try
+     * first. Stalwart's default setup only has 465. Idempotent.
+     */
+    public static function ensureSubmissionListener(): string
+    {
+        $list = self::call([['x:NetworkListener/get', ['accountId' => self::accountId(), 'ids' => null, 'properties' => ['bind']], '0']])[0][1]['list'] ?? [];
+        foreach ($list as $l) {
+            foreach (array_keys((array) ($l['bind'] ?? [])) as $b) {
+                if (str_ends_with((string) $b, ':587')) {
+                    return 'submission on 587: present';
+                }
+            }
+        }
+        $r = self::call([['x:NetworkListener/set', ['accountId' => self::accountId(), 'create' => ['l' => [
+            'name' => 'submission', 'bind' => ['[::]:587' => true], 'protocol' => 'smtp', 'tlsImplicit' => false,
+        ]]], '0']])[0][1];
+        if (!isset($r['created']['l'])) {
+            throw new RuntimeException('Could not add the 587 listener: ' . self::reason($r['notCreated']['l'] ?? $r));
+        }
+        return 'submission on 587: added';
+    }
+
+    // ------------------------------------------------------------------
+    // Acting as a mailbox (master-user login: "<address>%<admin>")
+    // ------------------------------------------------------------------
+
+    /** @return array{0:string,1:callable} the mailbox's JMAP account id, and a call(methodCalls, using) function */
+    public static function asMailbox(string $address): array
+    {
+        $auth = $address . '%' . Config::MAIL_ADMIN_USER . ':' . Config::MAIL_ADMIN_PASS;
+        $session = Http::json('GET', Config::MAIL_API_BASE . '/jmap/session', null, [], $auth);
+        $acc = $session['body']['primaryAccounts']['urn:ietf:params:jmap:mail'] ?? null;
+        if ($session['status'] !== 200 || !is_string($acc)) {
+            throw new RuntimeException("Could not open the mailbox $address on the mail server.");
+        }
+        $call = function (array $methodCalls, array $using) use ($auth): array {
+            $res = Http::json('POST', Config::MAIL_API_BASE . '/jmap/', ['using' => $using, 'methodCalls' => $methodCalls], [], $auth);
+            if ($res['status'] !== 200) {
+                throw new RuntimeException('Mail server request failed (HTTP ' . $res['status'] . ').');
+            }
+            return $res['body']['methodResponses'] ?? [];
+        };
+        return [$acc, $call];
+    }
+
+    /**
+     * Makes $script the mailbox's active Sieve script named $name (or
+     * removes that script when $script is null). Stalwart runs one active
+     * script per mailbox, so the panel keeps forwarding and autoreplies in
+     * this single script.
+     */
+    public static function setSieveScript(string $address, string $name, ?string $script): void
+    {
+        [$acc, $call] = self::asMailbox($address);
+        $using = ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:sieve'];
+        $existing = null;
+        foreach ($call([['SieveScript/get', ['accountId' => $acc, 'properties' => ['name', 'isActive']], '0']], $using)[0][1]['list'] ?? [] as $s) {
+            if (($s['name'] ?? '') === $name) {
+                $existing = (string) $s['id'];
+            }
+        }
+        if ($script === null) {
+            if ($existing !== null) {
+                $call([['SieveScript/set', ['accountId' => $acc, 'onSuccessDeactivateScript' => true, 'destroy' => [$existing]], '0']], $using);
+            }
+            return;
+        }
+        $auth = $address . '%' . Config::MAIL_ADMIN_USER . ':' . Config::MAIL_ADMIN_PASS;
+        $ch = curl_init(Config::MAIL_API_BASE . '/jmap/upload/' . rawurlencode($acc) . '/');
+        curl_setopt_array($ch, [CURLOPT_POST => true, CURLOPT_RETURNTRANSFER => true, CURLOPT_USERPWD => $auth,
+            CURLOPT_HTTPHEADER => ['Content-Type: application/sieve'], CURLOPT_POSTFIELDS => $script, CURLOPT_TIMEOUT => 30]);
+        $blob = json_decode((string) curl_exec($ch), true)['blobId'] ?? null;
+        if (!is_string($blob)) {
+            throw new RuntimeException('Could not upload the mail filter.');
+        }
+        $set = $existing !== null
+            ? ['update' => (object) [$existing => ['blobId' => $blob]], 'onSuccessActivateScript' => $existing]
+            : ['create' => ['s' => ['name' => $name, 'blobId' => $blob]], 'onSuccessActivateScript' => '#s'];
+        $r = $call([['SieveScript/set', ['accountId' => $acc] + $set, '0']], $using)[0][1] ?? [];
+        $err = $r['notCreated']['s'] ?? ($existing !== null ? ($r['notUpdated'][$existing] ?? null) : null);
+        if ($err !== null || ($r['type'] ?? '') !== '' && !isset($r['accountId'])) {
+            throw new RuntimeException('The mail server rejected the mail filter: ' . self::reason((array) ($err ?? $r)));
+        }
+    }
+
     /** The DNS records Stalwart wants for a mail domain, as a zone-file snippet (DKIM, SPF, DMARC, SRV, ...). */
     public static function dnsZoneFile(string $mailDomainId): string
     {

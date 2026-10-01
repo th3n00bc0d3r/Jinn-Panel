@@ -722,7 +722,12 @@ UNIT
 systemctl daemon-reload
 systemctl enable jinnpanel-mail-dns.timer >/dev/null 2>&1
 systemctl start jinnpanel-mail-dns.timer
-runuser -u frankenphp -- /usr/bin/php "$APP_ROOT/worker/mail-dns-sync.php" | sed 's/^/    /' || warn "Mail DNS sync reported problems (above); the daily timer retries."
+MAIL_SYNC_OUT=$(runuser -u frankenphp -- /usr/bin/php "$APP_ROOT/worker/mail-dns-sync.php" 2>&1) || warn "Mail DNS sync reported problems (below); the daily timer retries."
+echo "$MAIL_SYNC_OUT" | grep -v '^Deprecated' | sed 's/^/    /'
+# Stalwart binds new listeners (587) only at startup.
+if grep -q 'submission on 587: added' <<< "$MAIL_SYNC_OUT"; then
+    systemctl restart stalwart
+fi
 
 if [ "$PUBLIC_A" = "$SERVER_IP" ]; then
     DNS_NOTE="    1. DNS is live: $PANEL_HOSTNAME already resolves to $SERVER_IP."

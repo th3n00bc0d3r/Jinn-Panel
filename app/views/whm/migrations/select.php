@@ -84,6 +84,13 @@ $hasResellers = (bool) array_filter($items, fn($i) => (int) $i['is_reseller'] ==
                     <option value="generate" <?= $opt['mail_passwords'] === 'generate' ? 'selected' : '' ?>>Generate new passwords (shown in the report)</option>
                 </select>
             </div>
+            <div class="pt-2">
+                <label class="block text-xs font-medium text-slate-600 mb-1.5">Default addresses (catch-all)</label>
+                <select name="catch_all" class="<?= $input ?>">
+                    <option value="reject" <?= ($opt['catch_all'] ?? 'reject') !== 'keep' ? 'selected' : '' ?>>Reject mail to unknown addresses (recommended)</option>
+                    <option value="keep" <?= ($opt['catch_all'] ?? '') === 'keep' ? 'selected' : '' ?>>Keep them as on cPanel</option>
+                </select>
+            </div>
         </div>
 
         <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-5 space-y-4">
