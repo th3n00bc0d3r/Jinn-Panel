@@ -197,7 +197,7 @@ final class MigrationController
             'email_data' => !empty($_POST['email_accounts']) && !empty($_POST['email_data']),
             'match_packages' => !empty($_POST['match_packages']),
             'mail_passwords' => ($_POST['mail_passwords'] ?? 'preserve') === 'generate' ? 'generate' : 'preserve',
-            'ssl_mode' => ($_POST['ssl_mode'] ?? '') === 'letsencrypt' ? 'letsencrypt' : 'self_signed',
+            'ssl_mode' => in_array($_POST['ssl_mode'] ?? '', ['letsencrypt', 'self_signed'], true) ? $_POST['ssl_mode'] : 'auto',
             'timeout_hours' => max(1, min(72, (int) ($_POST['timeout_hours'] ?? 12))),
             'first_byte_minutes' => max(10, min(720, (int) ($_POST['first_byte_minutes'] ?? 120))),
             'package_id' => null,

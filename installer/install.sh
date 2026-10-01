@@ -697,7 +697,7 @@ fi
 log "Syncing mail DNS and the mail server certificate"
 cat > /etc/systemd/system/jinnpanel-mail-dns.service <<UNIT
 [Unit]
-Description=JinnPanel - sync mail DNS records, autoconfig site and mail TLS certificate
+Description=JinnPanel - daily sync: mail DNS records, autoconfig site, mail TLS certificate, Let's Encrypt upgrades
 After=stalwart.service frankenphp.service
 
 [Service]
@@ -705,6 +705,7 @@ Type=oneshot
 User=frankenphp
 Group=webusers
 ExecStart=/usr/bin/php $APP_ROOT/worker/mail-dns-sync.php
+ExecStart=/usr/bin/php $APP_ROOT/worker/ssl-sync.php
 UNIT
 cat > /etc/systemd/system/jinnpanel-mail-dns.timer <<'UNIT'
 [Unit]

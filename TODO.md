@@ -141,6 +141,11 @@ do them.
       cPanel > Domains and the welcome email; WHM-only pages could be
       limited to the panel hostname.
 
+- [ ] **Zone editor for customers** in the jpanel (cPanel > DNS): add,
+      edit and delete records of their own domains' zones, with the same
+      validation as WHM > DNS Zones; records the panel manages (mail, IPv6)
+      shown read-only.
+
 ## 3. Caching
 
 - [ ] **Cache feature.** Nothing is cached today beyond PHP's OPcache
@@ -153,3 +158,12 @@ do them.
     a per-account ACL user and memory limit, shown in cPanel;
   - OPcache settings per PHP version in WHM (memory, revalidate frequency);
   - long `Cache-Control` headers for static assets by default.
+- [ ] **Clear cache per domain:** a "Clear cache" button for each domain in
+      cPanel > Domains (page cache for that host, plus the domain's object
+      cache keys / OPcache for its docroot).
+
+## 4. Look and feel
+
+- [ ] **Light animations, a more futuristic panel:** subtle transitions
+      (page fade-in, card hover lift, progress bars, number counters,
+      gradient/glow accents), respecting `prefers-reduced-motion`.

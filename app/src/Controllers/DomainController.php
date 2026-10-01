@@ -9,9 +9,14 @@ final class DomainController
         $me = Auth::user();
         $stmt = Database::app()->prepare('SELECT * FROM domains WHERE user_id = ? ORDER BY created_at DESC');
         $stmt->execute([$me['id']]);
+        $domains = $stmt->fetchAll();
+        foreach ($domains as &$d) {
+            $d['ssl'] = SslService::status((string) $d['domain_name'], (string) $d['ssl_mode']);
+        }
+        unset($d);
         View::render('cpanel/domains', [
             'title' => 'Domains',
-            'domains' => $stmt->fetchAll(),
+            'domains' => $domains,
             'usage' => Quota::usage($me['id']),
             'pkg' => Quota::package($me['id']),
             'phpVersions' => PhpVersionService::selectable(),
@@ -26,7 +31,7 @@ final class DomainController
 
         $domain = strtolower(trim((string) ($_POST['domain_name'] ?? '')));
         $phpVersion = self::validPhpVersion((string) ($_POST['php_version'] ?? 'default'));
-        $sslMode = ($_POST['ssl_mode'] ?? '') === 'letsencrypt' ? 'letsencrypt' : 'self_signed';
+        $sslRequested = (string) ($_POST['ssl_mode'] ?? 'auto');
 
         if (!Quota::withinLimit($me['id'], 'domains')) {
             Flash::error('You have reached your package\'s domain limit.');
@@ -48,6 +53,7 @@ final class DomainController
             exit;
         }
 
+        $sslMode = SslService::resolveMode($sslRequested, $domain);
         try {
             $docroot = VhostService::create($domain, $phpVersion, $sslMode);
         } catch (Throwable $e) {
@@ -73,8 +79,8 @@ final class DomainController
         ]);
 
         $sslNote = $sslMode === 'letsencrypt'
-            ? ' Requesting a Let\'s Encrypt certificate - this only succeeds if the domain publicly resolves to this server on 80/443.'
-            : '';
+            ? ' A Let\'s Encrypt certificate is being issued.'
+            : ($sslRequested === 'auto' ? ' It uses a self-signed certificate until its DNS points here, then switches to Let\'s Encrypt automatically.' : '');
         Flash::ok("Domain \"$domain\" is live" . ($dnsOk ? '.' : ', but DNS zone provisioning failed (web still works).') . $sslNote);
         header('Location: /cpanel/domains');
         exit;
@@ -98,7 +104,7 @@ final class DomainController
         }
 
         $phpVersion = self::validPhpVersion((string) ($_POST['php_version'] ?? $domain['php_version']));
-        $sslMode = ($_POST['ssl_mode'] ?? '') === 'letsencrypt' ? 'letsencrypt' : 'self_signed';
+        $sslMode = SslService::resolveMode((string) ($_POST['ssl_mode'] ?? $domain['ssl_mode']), $domain['domain_name']);
 
         try {
             // Re-creating the vhost fragment(s) is safe/idempotent and

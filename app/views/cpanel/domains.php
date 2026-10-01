@@ -44,6 +44,11 @@
                                 <option value="letsencrypt" <?= $d['ssl_mode'] === 'letsencrypt' ? 'selected' : '' ?>>AutoSSL (Let's Encrypt)</option>
                             </select>
                         </form>
+                        <?php $st = $d['ssl']['state']; ?>
+                        <p class="mt-1 text-xs font-medium <?= $st === 'ok' ? 'text-emerald-700' : ($st === 'no_dns' ? 'text-red-700' : 'text-amber-700') ?>" title="<?= e($d['ssl']['detail']) ?>">
+                            <?= e($d['ssl']['label']) ?>
+                        </p>
+                        <p class="text-xs text-slate-400 max-w-xs"><?= e($d['ssl']['detail']) ?></p>
                     </td>
                     <td class="px-5 py-3 text-right">
                         <form method="post" action="/cpanel/domains/<?= (int) $d['id'] ?>/delete" data-confirm="Remove <?= e($d['domain_name']) ?>? Files on disk are kept.">
@@ -81,8 +86,9 @@
             <div>
                 <label class="block text-xs font-medium text-slate-600 mb-1">SSL</label>
                 <select name="ssl_mode" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sky-500">
-                    <option value="self_signed">Self-signed (works immediately, browser warns once)</option>
-                    <option value="letsencrypt">AutoSSL - Let's Encrypt (needs public DNS + port 80/443)</option>
+                    <option value="auto" selected>Automatic - Let's Encrypt once the domain points here</option>
+                    <option value="letsencrypt">Let's Encrypt now (the domain must already point here)</option>
+                    <option value="self_signed">Self-signed only (browsers warn)</option>
                 </select>
             </div>
 

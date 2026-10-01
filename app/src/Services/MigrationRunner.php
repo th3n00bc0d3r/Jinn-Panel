@@ -637,8 +637,9 @@ final class MigrationRunner
 
         $siteDir = rtrim(Config::VHOSTS_DOCROOT_BASE, '/') . '/' . $name;
         $existed = is_dir($siteDir);
+        $ssl = SslService::resolveMode((string) $this->opt['ssl_mode'], $name);
         try {
-            $docroot = VhostService::create($name, 'default', $this->opt['ssl_mode'] === 'letsencrypt' ? 'letsencrypt' : 'self_signed');
+            $docroot = VhostService::create($name, 'default', $ssl);
         } catch (Throwable $e) {
             $this->report['domains'][] = ['name' => $name, 'type' => $d['type'], 'status' => 'failed', 'note' => 'Vhost: ' . $e->getMessage()];
             return false;
@@ -653,7 +654,7 @@ final class MigrationRunner
             $dnsOk = false;
         }
         $this->pdo->prepare("INSERT INTO domains (user_id, domain_name, docroot, dns_provisioned, php_version, php_port, ssl_mode) VALUES (?, ?, ?, ?, 'default', NULL, ?)")
-            ->execute([$userId, $name, $docroot, $dnsOk ? 1 : 0, $this->opt['ssl_mode'] === 'letsencrypt' ? 'letsencrypt' : 'self_signed']);
+            ->execute([$userId, $name, $docroot, $dnsOk ? 1 : 0, $ssl]);
 
         $entry = ['name' => $name, 'type' => $d['type'], 'status' => 'ok', 'note' => $dnsOk ? '' : 'DNS zone provisioning failed (site works; re-provision from cPanel > DNS).'];
         if ($existed) {

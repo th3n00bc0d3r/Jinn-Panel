@@ -122,8 +122,9 @@ $hasResellers = (bool) array_filter($items, fn($i) => (int) $i['is_reseller'] ==
             <div>
                 <label class="block text-xs font-medium text-slate-600 mb-1.5">HTTPS certificates for migrated domains</label>
                 <select name="ssl_mode" class="<?= $input ?>">
-                    <option value="self_signed" <?= $opt['ssl_mode'] !== 'letsencrypt' ? 'selected' : '' ?>>Self-signed for now (switch to AutoSSL per domain after DNS moves)</option>
-                    <option value="letsencrypt" <?= $opt['ssl_mode'] === 'letsencrypt' ? 'selected' : '' ?>>AutoSSL / Let's Encrypt (DNS already points here)</option>
+                    <option value="auto" <?= !in_array($opt['ssl_mode'], ['letsencrypt', 'self_signed'], true) ? 'selected' : '' ?>>Automatic - Let's Encrypt for domains that point here, the rest once their DNS moves</option>
+                    <option value="letsencrypt" <?= $opt['ssl_mode'] === 'letsencrypt' ? 'selected' : '' ?>>Let's Encrypt for all (DNS already points here)</option>
+                    <option value="self_signed" <?= $opt['ssl_mode'] === 'self_signed' ? 'selected' : '' ?>>Self-signed only</option>
                 </select>
             </div>
         </div>

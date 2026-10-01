@@ -128,6 +128,12 @@ final class DnsService
         }
 
         $wanted = [[$hostRel, 'A', $ip, null], [$panelRel, 'A', $ip, null]];
+        if ($hostRel !== '@') {
+            // www.<zone>: the zone apex is usually a hosted site too, and every
+            // site block serves www - without a record its certificate can't
+            // be issued. (Only added when the name is unused.)
+            $wanted[] = ['www', 'A', $ip, null];
+        }
         if ($isNew) {
             if ($hostRel !== '@') {
                 $wanted[] = ['@', 'A', $ip, null];
