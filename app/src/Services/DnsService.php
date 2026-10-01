@@ -290,7 +290,7 @@ final class DnsService
     }
 
     /** @param array<string,mixed> $in name, type, ttl, priority, content */
-    public static function addRecord(int $zoneId, array $in): void
+    public static function addRecord(int $zoneId, array $in, bool $publish = true): void
     {
         $zone = self::findZone($zoneId) ?? throw new InvalidArgumentException('Zone not found.');
         $zoneName = (string) $zone['zone_name'];
@@ -397,7 +397,9 @@ final class DnsService
 
         $pdo->prepare('INSERT INTO dns_records (zone_id, name, type, ttl, priority, content) VALUES (?, ?, ?, ?, ?, ?)')
             ->execute([$zoneId, $name, $type, $ttl, $priority, $content]);
-        self::publish($zoneId);
+        if ($publish) { // false for bulk imports; the caller publishes once
+            self::publish($zoneId);
+        }
     }
 
     public static function deleteRecord(int $zoneId, int $recordId): void

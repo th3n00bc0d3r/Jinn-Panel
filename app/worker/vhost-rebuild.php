@@ -26,7 +26,7 @@ $failed = 0;
 foreach ($pdo->query('SELECT id, domain_name, php_version, ssl_mode FROM domains ORDER BY domain_name') as $d) {
     $ssl = $mode !== '' ? $mode : (string) $d['ssl_mode'];
     try {
-        VhostService::create((string) $d['domain_name'], (string) ($d['php_version'] ?: 'default'), $ssl, false);
+        VhostService::create((string) $d['domain_name'], (string) ($d['php_version'] ?: 'default'), $ssl, false, false);
         $upd->execute([$ssl, $d['id']]);
         echo "ok      {$d['domain_name']} ($ssl)\n";
     } catch (Throwable $e) {

@@ -490,6 +490,7 @@ final class MigrationRunner
                 $migratedDomains[] = $d['name'];
             }
         }
+        $this->importDnsRecords($r, $migratedDomains);
         $this->setItem(['report' => $this->reportJson()]);
 
         if ($this->opt['databases']) {
@@ -569,6 +570,34 @@ final class MigrationRunner
         $this->report['domains'][] = $entry;
         $this->log("{$this->item['source_username']}: domain $name {$entry['status']}");
         return true;
+    }
+
+    /** Custom DNS records from the backup's zone files (CpanelZoneImporter decides what's kept). */
+    private function importDnsRecords(CpanelBackupReader $r, array $domains): void
+    {
+        $all = $this->pdo->query('SELECT domain_name FROM domains')->fetchAll(PDO::FETCH_COLUMN);
+        foreach ($domains as $domain) {
+            $file = $r->path("dnszones/$domain.db");
+            $zone = DnsService::findZoneByName($domain);
+            if ($file === null || !is_file($file) || $zone === null) {
+                continue;
+            }
+            try {
+                $rep = CpanelZoneImporter::import((int) $zone['id'], (string) file_get_contents($file), $all);
+                DnsService::publish((int) $zone['id']);
+                foreach ($this->report['domains'] as &$entry) {
+                    if ($entry['name'] === $domain) {
+                        $entry['dns_records'] = count($rep['added']) . ' imported' . ($rep['external_mail'] ? ', external mail kept' : '');
+                    }
+                }
+                unset($entry);
+                foreach ($rep['failed'] as $f) {
+                    $this->report['warnings'][] = "DNS record not imported for $domain: $f";
+                }
+            } catch (Throwable $e) {
+                $this->report['warnings'][] = "DNS records for $domain weren't imported: " . $e->getMessage();
+            }
+        }
     }
 
     private function restoreDatabases(int $userId, CpanelBackupReader $r): void
@@ -808,7 +837,7 @@ final class MigrationRunner
                 $this->report['warnings'][] = "The account exceeds its \"{$p['name']}\" package (" . implode(', ', $over) . '). Everything was migrated, but the user can\'t add more until you assign a bigger package.';
             }
         }
-        $this->report['info'][] = 'Not migrated (re-create if needed): email forwarders & autoresponders, cron jobs, custom DNS records, SSL certificates (AutoSSL issues new ones), FTP accounts.';
+        $this->report['info'][] = 'Not migrated (re-create if needed): email forwarders & autoresponders, cron jobs, SSL certificates (AutoSSL issues new ones), FTP accounts.';
         $this->report['info'][] = 'The sites go live once DNS for each domain points at this server (' . Config::SERVER_IP . ').';
     }
 

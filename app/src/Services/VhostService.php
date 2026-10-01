@@ -21,7 +21,7 @@ final class VhostService
         return Config::VHOSTS_DOCROOT_BASE . '/' . $domain . '/public';
     }
 
-    public static function create(string $domain, string $phpVersion = 'default', string $sslMode = 'self_signed', bool $reload = true): string
+    public static function create(string $domain, string $phpVersion = 'default', string $sslMode = 'self_signed', bool $reload = true, bool $seedIndex = true): string
     {
         if (!preg_match('/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/i', $domain)) {
             throw new InvalidArgumentException('Invalid domain name.');
@@ -34,8 +34,10 @@ final class VhostService
         chgrp(dirname($docroot), 'webusers');
         chgrp($docroot, 'webusers');
 
+        // Only for a brand-new site: rewriting an existing site's config must
+        // not drop a placeholder index.php in front of its own index.html.
         $indexFile = $docroot . '/index.php';
-        if (!is_file($indexFile)) {
+        if ($seedIndex && !is_file($indexFile)) {
             file_put_contents($indexFile, self::defaultIndex($domain));
         }
 
