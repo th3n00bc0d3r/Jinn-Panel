@@ -91,6 +91,12 @@ final class AccountController
             }
         }
 
+        // Limits come only from the package (Quota, UsageService): a hosting
+        // account without one could create nothing and would have no quota.
+        if (!$errors && $role === 'user' && !$packageId) {
+            $errors[] = 'Choose a hosting package for the account.';
+        }
+
         if (!$errors && $packageId) {
             $allowedIds = array_column(self::availablePackages($me), 'id');
             if (!in_array($packageId, $allowedIds, true)) {

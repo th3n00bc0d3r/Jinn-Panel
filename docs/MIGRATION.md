@@ -46,8 +46,9 @@ finishes. "Forget credentials" on a migration deletes it immediately.
 2. **Choose** - tick accounts. Accounts whose username or main domain
    already exists on this server are shown but can't be selected. Choose
    what to migrate (files, databases, email accounts, stored mail), which
-   package migrated accounts get (by default the package with the same name
-   as their cPanel plan), who owns them, and whether email passwords are
+   package migrated accounts get (the package with the same name as their
+   cPanel plan when there is one, otherwise the required fallback package),
+   who owns them, and whether email passwords are
    kept or regenerated.
 3. **Start** - one click. Accounts are processed one after another by a
    background runner; the page shows live progress and the runner's log,
@@ -105,9 +106,9 @@ delete them once you've checked the result.
 
 - **Account** - same username, same cPanel password (the original SHA-512
   crypt hash is kept and upgraded to bcrypt on first login). Contact email
-  from the backup. If the username isn't valid in JinnPanel (3-32
-  characters, `a-z 0-9 _`, starting with a letter) the account can't be
-  migrated.
+  from the backup. If the username isn't valid in JinnPanel (3-16
+  characters, `a-z 0-9`, starting with a letter, and not a reserved name
+  such as `admin` or `mysql*`) the account can't be migrated.
 - **Resellers** (WHM root, "Keep the cPanel reseller structure") - a cPanel
   reseller is both a WHM login and a hosting account. JinnPanel keeps those
   separate: the hosting account keeps the original username, and a

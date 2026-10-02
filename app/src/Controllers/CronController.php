@@ -40,8 +40,10 @@ final class CronController
     public static function runNow(array $params): void
     {
         $job = self::job($params);
-        exec('setsid ' . escapeshellarg(PHP_BINARY === '' ? '/usr/bin/php' : PHP_BINARY) . ' ' . escapeshellarg(__DIR__ . '/../../worker/cron-exec.php') . ' ' . (int) $job['id'] . ' > /dev/null 2>&1 &');
-        Flash::ok('Started - reload in a moment to see the output.');
+        // Through the root worker: PHP jobs run as the account's Linux user,
+        // which the web process (frankenphp) can't switch to.
+        SystemWorkerService::enqueue('cron-' . (int) $job['id'], ['type' => 'cron_run', 'cron_id' => (int) $job['id']]);
+        Flash::ok('Starting within a few seconds - reload in a moment to see the output.');
         self::back();
     }
 

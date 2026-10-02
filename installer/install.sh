@@ -344,6 +344,8 @@ setsebool -P httpd_can_network_connect on
 setsebool -P httpd_can_network_connect_db on
 
 firewall-cmd --permanent --add-service=http --add-service=https >/dev/null
+# HTTP/3 (QUIC): the https service only opens 443/tcp.
+firewall-cmd --permanent --add-port=443/udp >/dev/null
 # <domain>:2083 - each customer's own panel URL (<domain>/jpanel redirects
 # there). The policy labels 2083 radsec_port_t; FrankenPHP runs as httpd_t.
 # (udp too: Caddy also serves HTTP/3 there.)

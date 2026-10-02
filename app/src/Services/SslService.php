@@ -16,6 +16,12 @@ final class SslService
 {
     private const CADDY_CERTS = '/var/lib/frankenphp/.local/share/caddy/certificates';
 
+    /** Whether a requested mode is an explicit "self-signed only" (domains.ssl_pinned). */
+    public static function pinned(string $requested): bool
+    {
+        return $requested === 'self_signed';
+    }
+
     /** 'auto' from a form becomes the concrete mode for $domain now. */
     public static function resolveMode(string $requested, string $domain): string
     {
@@ -51,7 +57,7 @@ final class SslService
      * @return array{state:string, label:string, detail:string}
      *   state: ok | pending | self_signed | no_dns
      */
-    public static function status(string $domain, string $sslMode): array
+    public static function status(string $domain, string $sslMode, bool $pinned = false): array
     {
         $cert = self::certificate($domain);
         $addrs = self::addresses($domain);
@@ -65,6 +71,9 @@ final class SslService
             return $here
                 ? ['state' => 'pending', 'label' => "Let's Encrypt - issuing", 'detail' => 'The domain points here; the certificate normally arrives within a minute or two.']
                 : ['state' => 'no_dns', 'label' => "Let's Encrypt - can't issue", 'detail' => "$domain resolves to $where, not this server. Point its DNS here (or switch to self-signed)."];
+        }
+        if ($pinned) {
+            return ['state' => 'self_signed', 'label' => 'Self-signed only', 'detail' => "Browsers warn. Chosen on purpose, so it stays self-signed - pick Automatic or run AutoSSL to switch to Let's Encrypt."];
         }
         return $here
             ? ['state' => 'self_signed', 'label' => 'Self-signed', 'detail' => "The domain points here now - it moves to Let's Encrypt automatically within a day, or switch now."]
@@ -88,7 +97,8 @@ final class SslService
 
     /**
      * Self-signed sites whose domain now resolves here switch to Let's
-     * Encrypt (daily, from the mail/DNS sync timer).
+     * Encrypt (daily, from the mail/DNS sync timer) - unless the customer
+     * chose "self-signed only" (ssl_pinned).
      *
      * @return list<string> log lines
      */
@@ -98,7 +108,7 @@ final class SslService
         $log = [];
         $changed = false;
         $upd = $pdo->prepare("UPDATE domains SET ssl_mode = 'letsencrypt' WHERE id = ?");
-        foreach ($pdo->query("SELECT * FROM domains WHERE ssl_mode = 'self_signed' ORDER BY domain_name")->fetchAll() as $d) {
+        foreach ($pdo->query("SELECT * FROM domains WHERE ssl_mode = 'self_signed' AND ssl_pinned = 0 ORDER BY domain_name")->fetchAll() as $d) {
             if (!self::resolvesHere((string) $d['domain_name'])) {
                 continue;
             }

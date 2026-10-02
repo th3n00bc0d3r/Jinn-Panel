@@ -110,8 +110,8 @@ if ($canRoot) {
     </div>
     <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-5 text-sm text-slate-600 space-y-2">
         <h2 class="font-semibold text-slate-800">What gets migrated</h2>
-        <p>Main, addon and subdomains with their files; MySQL databases and users (with their passwords); email accounts (with their passwords) and all stored mail.</p>
-        <p class="text-slate-500">Not migrated: parked domains, forwarders, autoresponders, cron jobs, custom DNS records and SSL certificates. The report lists everything that needs attention.</p>
+        <p>Main, addon and subdomains with their files, DNS records, PHP settings and <span class="font-mono">.htaccess</span> rules (as Routes); parked domains as aliases; MySQL databases and users (with their passwords); email accounts (with their passwords) and all stored mail; forwarders, autoresponders and the default address; FTP accounts (as SFTP) and cron jobs.</p>
+        <p class="text-slate-500">Not migrated: SSL certificates (Let's Encrypt issues new ones once DNS points here), password-protected directories, Node.js/Python apps, and views, triggers and stored procedures. The report lists everything that needs attention.</p>
     </div>
 </div>
 </div>

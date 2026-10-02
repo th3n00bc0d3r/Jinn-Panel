@@ -10,9 +10,9 @@ final class PackageController
         $pdo = Database::app();
 
         if ($user['role'] === 'admin') {
-            $packages = $pdo->query('SELECT p.*, u.username AS owner_username FROM packages p LEFT JOIN users u ON u.id = p.owner_id ORDER BY p.owner_id IS NOT NULL, p.id')->fetchAll();
+            $packages = $pdo->query('SELECT p.*, u.username AS owner_username, (SELECT COUNT(*) FROM users a WHERE a.package_id = p.id) AS account_count FROM packages p LEFT JOIN users u ON u.id = p.owner_id ORDER BY p.owner_id IS NOT NULL, p.id')->fetchAll();
         } else {
-            $stmt = $pdo->prepare('SELECT p.*, u.username AS owner_username FROM packages p LEFT JOIN users u ON u.id = p.owner_id WHERE p.owner_id IS NULL OR p.owner_id = ? ORDER BY p.owner_id IS NOT NULL, p.id');
+            $stmt = $pdo->prepare('SELECT p.*, u.username AS owner_username, (SELECT COUNT(*) FROM users a WHERE a.package_id = p.id) AS account_count FROM packages p LEFT JOIN users u ON u.id = p.owner_id WHERE p.owner_id IS NULL OR p.owner_id = ? ORDER BY p.owner_id IS NOT NULL, p.id');
             $stmt->execute([$user['id']]);
             $packages = $stmt->fetchAll();
         }
@@ -74,6 +74,18 @@ final class PackageController
 
         if (!$pkg || ($user['role'] !== 'admin' && (int) $pkg['owner_id'] !== $user['id'])) {
             Flash::error('Package not found.');
+            header('Location: /whm/packages');
+            exit;
+        }
+
+        // users.package_id is ON DELETE SET NULL: deleting a package in use
+        // would leave its accounts with no limits at all (Quota denies
+        // everything, UsageService stops enforcing disk/bandwidth).
+        $inUse = Database::app()->prepare('SELECT COUNT(*) FROM users WHERE package_id = ?');
+        $inUse->execute([$id]);
+        $count = (int) $inUse->fetchColumn();
+        if ($count > 0) {
+            Flash::error("Package \"{$pkg['name']}\" is used by $count account" . ($count === 1 ? '' : 's') . '; it can only be deleted once no account uses it.');
             header('Location: /whm/packages');
             exit;
         }

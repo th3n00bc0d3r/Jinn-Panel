@@ -104,13 +104,13 @@ $hasResellers = (bool) array_filter($items, fn($i) => (int) $i['is_reseller'] ==
                 <label class="flex items-center gap-2 text-sm text-slate-700 mb-2"><input type="checkbox" name="match_packages" value="1" class="<?= $check ?>" <?= $opt['match_packages'] ? 'checked' : '' ?>>
                     Use the package with the same name as the cPanel plan, when there is one</label>
                 <label class="block text-xs font-medium text-slate-600 mb-1.5">Otherwise assign package</label>
-                <select name="package_id" class="<?= $input ?>">
-                    <option value="">No package</option>
+                <select name="package_id" required class="<?= $input ?>">
+                    <option value="">Choose a package</option>
                     <?php foreach ($packages as $p): ?>
                     <option value="<?= (int) $p['id'] ?>" <?= (int) ($opt['package_id'] ?? 0) === (int) $p['id'] ? 'selected' : '' ?>><?= e($p['name']) ?> &middot; <?= (int) $p['disk_quota_mb'] ?>MB / <?= (int) $p['max_domains'] ?> domains</option>
                     <?php endforeach; ?>
                 </select>
-                <p class="mt-1 text-xs text-slate-400">Accounts without a package can't add new domains, databases or mailboxes until you assign one.</p>
+                <p class="mt-1 text-xs text-slate-400">Every hosting account needs a package: it sets the account's limits (disk, bandwidth, domains, databases, mailboxes).</p>
             </div>
             <?php if ($me['role'] === 'admin'): ?>
             <div>

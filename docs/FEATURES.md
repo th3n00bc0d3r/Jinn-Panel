@@ -121,7 +121,7 @@ Hosting-account usernames are 3-16 lowercase letters or digits starting
 with a letter; reseller logins may be 3-32 characters with `_`. Reserved
 names (`root`, `admin`, `mail`, `www`, service names, anything starting with
 `hostpanel`, `jinnpanel`, `mysql` or `pma`, ...) and existing Linux users
-are refused. Username and email must be unique. A reseller can only pick
+are refused. Username and email must be unique; a hosting account needs a package. A reseller can only pick
 global packages or its own, and is stopped at its package's account limit.
 Creating a hosting account creates its Linux user and PHP home.
 
@@ -180,8 +180,9 @@ mail, 1 FTP), Business (5 GB, 50 GB/mo, 5, 5, 25, 3) and Reseller (20 GB,
 | Max accounts (for resellers) | Admin packages only: how many hosting accounts a reseller on this package may create (0 = none). |
 
 Disk, bandwidth, domains and databases must be at least 1; email and FTP
-may be 0. There is no "unlimited" value and no edit - delete and recreate.
-A hosting account with no package can't create anything.
+may be 0. There is no "unlimited" value and no edit. A package in use
+can't be deleted (the list shows how many accounts use each). Every
+hosting account gets a package when it's created or migrated.
 
 ### Resellers
 
@@ -346,13 +347,15 @@ names under or above another account's domain, public suffixes
 Ownership isn't checked - Let's Encrypt only issues once DNS points here.
 
 The list shows each domain with its docroot, `<domain>/jpanel`, DNS
-status, PHP version and SSL dropdowns (changes apply on select), SSL state
+status, PHP version and SSL dropdowns (Automatic / AutoSSL / Self-signed
+only; changes apply on select), SSL state
 (Let's Encrypt with expiry, issuing, can't issue with where DNS points, or
 self-signed) and delete. **Removing a domain** removes its vhost, DNS zone,
 mail domain (mailboxes and forwarders), aliases, PHP settings, page cache
 and cron jobs; files stay on disk. Self-signed sites also answer on plain
 `http://`; Let's Encrypt sites redirect it. A daily job switches every
-self-signed domain that now resolves here to Let's Encrypt, and a Let's
+self-signed domain that now resolves here to Let's Encrypt (except those
+set to *Self-signed only*), and a Let's
 Encrypt domain with no valid certificate that doesn't point here back to
 self-signed (so Caddy stops retrying).
 
@@ -426,7 +429,7 @@ cPanel-style: databases and users are separate. Names are
 Mail is Stalwart. Every hosted domain is a mail domain (so its sites can
 send DKIM-signed mail).
 
-- **Mailboxes** - create (`<name>@<domain>`, password 8+ characters),
+- **Mailboxes** - create (`<name>@<domain>`, password 10+ characters, not a common one),
   change password, delete (with all its mail), **Webmail** link when
   `mail.<domain>` resolves here and isn't a site of its own.
 - **Autoresponder** per mailbox - subject, message, optional From and Until
@@ -562,9 +565,9 @@ Checked against the code; none of these exist today.
 - **No account editing** - no change of package, email or password for an
   existing account, and no admin password reset. No "forgot password" on
   the login page either; two-factor has no recovery codes.
-- **No package editing** - create and delete only. Deleting a package
-  leaves the accounts on it with no package: they can't create anything
-  new and lose their disk/bandwidth limits.
+- **No package editing** - create and delete only. A package can only be
+  deleted once no account uses it, and since an account's package can't
+  be changed yet, a package in use stays until its accounts are removed.
 - **One admin** - only `/setup` creates an admin.
 - **No outgoing notifications** - no welcome email, no quota or
   suspension emails; the panel sends no mail of its own.

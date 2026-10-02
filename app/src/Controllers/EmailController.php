@@ -57,8 +57,8 @@ final class EmailController
             header('Location: /cpanel/email');
             exit;
         }
-        if (strlen($password) < 8) {
-            Flash::error('Mailbox password must be at least 8 characters.');
+        if (($problem = Passwords::problem($password, $localPart)) !== null) {
+            Flash::error('Mailbox: ' . $problem);
             header('Location: /cpanel/email');
             exit;
         }
@@ -137,8 +137,8 @@ final class EmailController
     {
         [$me, $row] = self::mailbox($params);
         $password = (string) ($_POST['password'] ?? '');
-        if (strlen($password) < 8) {
-            self::back('Mailbox password must be at least 8 characters.');
+        if (($problem = Passwords::problem($password, (string) $row['local_part'])) !== null) {
+            self::back('Mailbox: ' . $problem);
         }
         try {
             MailService::setPassword((string) $row['mail_account_id'], $password);

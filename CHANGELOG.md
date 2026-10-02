@@ -10,6 +10,24 @@ have been cut) - entries are grouped by development milestone instead.
 Everything below landed on `migration-file-import` (2026-10-01), on top of
 the DNS work further down. Upgrade by re-running the installer.
 
+### Fixed (2026-10-02)
+- Deleting a package that accounts still use is refused (it used to leave
+  them with no limits at all); the list shows each package's account count.
+  A hosting account can no longer be created or migrated without a package
+  (the migration's fallback package is required).
+- Create-account form: password (10+) and username rules now match what the
+  server enforces.
+- Mailbox and FTP passwords follow the same rule as panel logins (10+
+  characters, not common, not containing the name).
+- cPanel > Cron Jobs > **Run now** works for PHP jobs (it ran as the web
+  user, which can't switch to the account's user); it goes through the root
+  worker now.
+- **Self-signed only** sticks: the daily SSL job no longer moves those
+  domains to Let's Encrypt (new `domains.ssl_pinned`); *Automatic* is a
+  choice in the domain list too.
+- The migration page's "what gets migrated" text was out of date.
+- HTTP/3: the firewall opens 443/udp (it was only open on 2083).
+
 ### Security and isolation
 - **Per-account isolation**: every hosting account is a Linux user
   (`jp_<name>`); its PHP runs in its own PHP-FPM pool per PHP version

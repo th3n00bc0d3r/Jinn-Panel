@@ -11,12 +11,16 @@
         <div class="flex items-start justify-between">
             <div>
                 <h3 class="font-semibold text-slate-800"><?= e($p['name']) ?></h3>
-                <p class="text-xs text-slate-400 mt-0.5"><?= $p['owner_id'] ? 'Custom · ' . e($p['owner_username'] ?? '') : 'Global package' ?></p>
+                <p class="text-xs text-slate-400 mt-0.5"><?= $p['owner_id'] ? 'Custom · ' . e($p['owner_username'] ?? '') : 'Global package' ?> · <?= (int) $p['account_count'] ?> account<?= (int) $p['account_count'] === 1 ? '' : 's' ?></p>
             </div>
-            <form method="post" action="/whm/packages/<?= (int) $p['id'] ?>/delete" data-confirm="Delete package &quot;<?= e($p['name']) ?>&quot;? Accounts using it keep their current limits.">
+            <?php if ((int) $p['account_count'] === 0): ?>
+            <form method="post" action="/whm/packages/<?= (int) $p['id'] ?>/delete" data-confirm="Delete package &quot;<?= e($p['name']) ?>&quot;?">
                 <?= Csrf::field() ?>
                 <button class="p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50"><?= icon('trash', 'h-4 w-4') ?></button>
             </form>
+            <?php else: ?>
+            <span class="p-1.5 text-slate-300 cursor-not-allowed" title="In use by <?= (int) $p['account_count'] ?> account<?= (int) $p['account_count'] === 1 ? '' : 's' ?>"><?= icon('trash', 'h-4 w-4') ?></span>
+            <?php endif; ?>
         </div>
         <dl class="mt-4 space-y-1.5 text-sm text-slate-600">
             <div class="flex justify-between"><dt>Disk quota</dt><dd class="font-medium text-slate-800"><?= (int) $p['disk_quota_mb'] ?> MB</dd></div>

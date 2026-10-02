@@ -260,7 +260,7 @@ Open to the internet (firewalld):
 |---|---|---|
 | 22/tcp | sshd | Administration |
 | 53/udp+tcp | Knot DNS | Authoritative DNS |
-| 80/tcp, 443/tcp | FrankenPHP (Caddy) | Sites, panel, webmail, Let's Encrypt |
+| 80/tcp, 443/tcp, 443/udp | FrankenPHP (Caddy) | Sites, panel, webmail, Let's Encrypt; 443/udp is HTTP/3 |
 | 2083/tcp+udp | FrankenPHP | Customer panel on each domain (`<domain>/jpanel` redirects here; udp = HTTP/3) |
 | 25/tcp | Stalwart | Incoming mail (SMTP) |
 | 465/tcp, 587/tcp | Stalwart | Mail submission (implicit TLS / STARTTLS) |

@@ -34,6 +34,7 @@ const KNOT_ZONES_CONF = '/etc/knot/zones.conf';
 const PHP_VERSIONS_DIR = '/opt/php-versions';
 const APP_CONFIG = '/var/www/hostpanel/src/Config.php';
 const MIGRATION_RUNNER = '/var/www/hostpanel/worker/migration-runner.php';
+const CRON_EXEC = '/var/www/hostpanel/worker/cron-exec.php';
 const MIGRATION_DIR = '/var/lib/jinnpanel/migrations';
 // Per-account PHP: each hosting account is a Linux user (jp_<username>) whose
 // PHP-FPM pools run its sites; see accountSync().
@@ -275,6 +276,9 @@ function runJob(array $job, callable $log): void
             break;
         case 'backup_all':
             startUnit('jinnpanel-backup-all', 'JinnPanel backup of everything', ['backup-all']);
+            break;
+        case 'cron_run':
+            cronRunNow((int) ($job['cron_id'] ?? 0), $log);
             break;
         case 'backup_restore':
             backupRestoreStart((int) ($job['backup_id'] ?? 0), (array) ($job['parts'] ?? []), $log);
@@ -1656,6 +1660,29 @@ function backupRestoreStart(int $id, array $parts, callable $log): void
     }
     startUnit("jinnpanel-restore-$id", "JinnPanel restore of backup #$id", ['restore', (string) $id, implode(',', $parts)]);
     $log("restore of backup #$id started (" . implode(', ', $parts) . ')');
+}
+
+/**
+ * cPanel > Cron Jobs > Run now. Same path as jinnpanel-cron.timer's runs:
+ * cron-exec.php as root, which switches PHP jobs to the account's own user
+ * and skips suspended accounts (CronService::execute). Its own unit, so the
+ * job outlives this worker run.
+ */
+function cronRunNow(int $id, callable $log): void
+{
+    if ($id <= 0) {
+        throw new RuntimeException('Invalid cron job id');
+    }
+    $unit = "jinnpanel-cron-$id";
+    exec('systemctl is-active --quiet ' . escapeshellarg("$unit.service"), $o, $code);
+    if ($code === 0) {
+        $log("cron job #$id is already running");
+        return;
+    }
+    exec('systemctl reset-failed ' . escapeshellarg("$unit.service") . ' 2>/dev/null');
+    run('systemd-run --quiet --collect --unit=' . escapeshellarg($unit) . ' --description=' . escapeshellarg("JinnPanel cron job #$id (run now)")
+        . ' ' . escapeshellarg(PHP_BINARY) . ' -d auto_prepend_file= ' . escapeshellarg(CRON_EXEC) . ' ' . $id);
+    $log("cron job #$id started");
 }
 
 /** Runs this script with $args in a transient systemd unit, as root, at low priority. */
