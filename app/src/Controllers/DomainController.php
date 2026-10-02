@@ -11,7 +11,7 @@ final class DomainController
         $stmt->execute([$me['id']]);
         $domains = $stmt->fetchAll();
         foreach ($domains as &$d) {
-            $d['ssl'] = SslService::status((string) $d['domain_name'], (string) $d['ssl_mode']);
+            $d['ssl'] = SslService::status((string) $d['domain_name'], (string) $d['ssl_mode'], (bool) $d['ssl_pinned']);
         }
         unset($d);
         View::render('cpanel/domains', [
@@ -55,8 +55,8 @@ final class DomainController
         }
 
         // The row first: the vhost names the owning account's PHP pool.
-        $stmt = $pdo->prepare('INSERT INTO domains (user_id, domain_name, docroot, dns_provisioned, php_version, php_port, ssl_mode) VALUES (?, ?, ?, ?, ?, NULL, ?)');
-        $stmt->execute([$me['id'], $domain, VhostService::docroot($domain), $dnsOk ? 1 : 0, $phpVersion, $sslMode]);
+        $stmt = $pdo->prepare('INSERT INTO domains (user_id, domain_name, docroot, dns_provisioned, php_version, php_port, ssl_mode, ssl_pinned) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)');
+        $stmt->execute([$me['id'], $domain, VhostService::docroot($domain), $dnsOk ? 1 : 0, $phpVersion, $sslMode, SslService::pinned($sslRequested) ? 1 : 0]);
         try {
             VhostService::create($domain, $phpVersion, $sslMode);
         } catch (Throwable $e) {
@@ -100,7 +100,10 @@ final class DomainController
         }
 
         $phpVersion = self::validPhpVersion((string) ($_POST['php_version'] ?? $domain['php_version']));
-        $sslMode = SslService::resolveMode((string) ($_POST['ssl_mode'] ?? $domain['ssl_mode']), $domain['domain_name']);
+        // Only the SSL form sends ssl_mode; the PHP version form keeps it as it is.
+        $sslRequested = isset($_POST['ssl_mode']) ? (string) $_POST['ssl_mode'] : null;
+        $sslMode = $sslRequested === null ? (string) $domain['ssl_mode'] : SslService::resolveMode($sslRequested, $domain['domain_name']);
+        $sslPinned = $sslRequested === null ? (int) $domain['ssl_pinned'] : (SslService::pinned($sslRequested) ? 1 : 0);
 
         try {
             // Re-creating the vhost is safe/idempotent: it names the pool of
@@ -114,8 +117,8 @@ final class DomainController
             exit;
         }
 
-        $upd = $pdo->prepare('UPDATE domains SET php_version = ?, php_port = NULL, ssl_mode = ? WHERE id = ?');
-        $upd->execute([$phpVersion, $sslMode, $id]);
+        $upd = $pdo->prepare('UPDATE domains SET php_version = ?, php_port = NULL, ssl_mode = ?, ssl_pinned = ? WHERE id = ?');
+        $upd->execute([$phpVersion, $sslMode, $sslPinned, $id]);
         AccountRuntime::sync((int) $me['id']); // a pool in the new PHP version's FPM
 
         Flash::ok("Settings updated for \"{$domain['domain_name']}\".");
@@ -182,7 +185,7 @@ final class DomainController
         View::render('cpanel/domain', [
             'title' => $d['domain_name'],
             'd' => $d,
-            'ssl' => SslService::status((string) $d['domain_name'], (string) $d['ssl_mode']),
+            'ssl' => SslService::status((string) $d['domain_name'], (string) $d['ssl_mode'], (bool) $d['ssl_pinned']),
             'cert' => SslService::certificate((string) $d['domain_name']),
             'addresses' => SslService::addresses((string) $d['domain_name']),
             'siteDir' => VhostService::siteDir((string) $d['domain_name']),
@@ -243,7 +246,7 @@ final class DomainController
         }
         try {
             VhostService::create($name, (string) $d['php_version'], 'letsencrypt', true, false);
-            Database::app()->prepare("UPDATE domains SET ssl_mode = 'letsencrypt' WHERE id = ?")->execute([$d['id']]);
+            Database::app()->prepare("UPDATE domains SET ssl_mode = 'letsencrypt', ssl_pinned = 0 WHERE id = ?")->execute([$d['id']]);
         } catch (Throwable $e) {
             self::backTo($d, 'Could not update the site: ' . $e->getMessage());
         }

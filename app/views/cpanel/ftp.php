@@ -43,7 +43,7 @@
             </div>
             <div>
                 <label class="block text-xs font-medium text-slate-600 mb-1.5">Password</label>
-                <input type="password" name="password" required minlength="8"
+                <input type="password" name="password" required minlength="<?= Passwords::MIN_LENGTH ?>"
                        class="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-500">
             </div>
             <div>

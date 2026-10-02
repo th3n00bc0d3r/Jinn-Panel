@@ -4,12 +4,17 @@
 
 | Component | Role | Why this one |
 |---|---|---|
-| **FrankenPHP** | Web server (every site's TLS, static files) + the panel's own PHP | Caddy-based, automatic HTTPS built in |
-| **PHP-FPM** | The customer sites' PHP: one pool per hosting account, as that account's own Linux user | Process-level isolation between accounts, and between accounts and the panel |
+| **FrankenPHP** | Front web server for every site and the panel (TLS, HTTP/2, HTTP/3 on :2083, routing) + the panel's own PHP | Caddy-based, automatic HTTPS built in |
+| **PHP-FPM** | The customer sites' PHP: one master per PHP version, one pool per hosting account, as that account's own Linux user | Process-level isolation between accounts, and between accounts and the panel |
+| **nginx** (`jinnpanel-static@<account>`) | Each account's static files, served as that account, with a per-domain compressed response cache | Caddy (running as `frankenphp`) never reads customer file contents |
 | **MariaDB** | Database (panel's own state + every customer database) | Standard, well-understood, MySQL-wire-compatible |
-| **Stalwart Mail** | SMTP/IMAP/JMAP mail server | Single Rust binary combining what used to be Postfix+Dovecot, with a REST-ish management API instead of flat config files |
-| **SFTPGo** | SFTP server | Virtual users managed entirely via REST API - no local Linux user per hosting account |
-| **Knot DNS** | Authoritative DNS | Fast, scriptable via `knotc`, used for zones this panel provisions |
+| **Stalwart Mail** | SMTP, IMAP, POP3, JMAP, ManageSieve; DKIM signing, spam filtering | Single Rust binary combining what used to be Postfix+Dovecot+OpenDKIM+Rspamd, with a structured management API instead of flat config files |
+| **SFTPGo** | SFTP/SCP server | Virtual users managed via REST API; each login writes as its account's Linux user |
+| **Knot DNS** | Authoritative DNS | Fast, scriptable via `knotc`, used for every zone this panel serves |
+| **Valkey** | Object cache (Redis-compatible) | One ACL login per account, limited to its key prefix |
+| **Cypht** | Webmail at `mail.<domain>` | PHP, runs in its own FrankenPHP as user `webmail` |
+| **phpMyAdmin** | Database admin for customers | Its own FrankenPHP on loopback, reached through the panel's single sign-on |
+| **fail2ban** | SSH brute-force protection | `sshd` + `recidive` jails, firewalld actions |
 
 All of them run as systemd services on one AlmaLinux box. JinnPanel itself
 is a plain-PHP application (no framework, no Composer) deployed to
@@ -139,6 +144,27 @@ Deleting an account removes its pools and Linux user and moves its site
 folders to `/var/lib/jinnpanel/removed/` (root-only) - left in place they'd
 belong to a bare UID the next account could be given.
 
+## Network exposure
+
+Only the service ports customers need are open in firewalld (web 80/443,
+the customer panel 2083, DNS 53, mail 25/465/587/993/995/4190, SFTP 2022,
+SSH 22). Every admin or internal interface listens on loopback or a Unix
+socket only: MariaDB, Stalwart's HTTP/JMAP admin API (127.0.0.1:8080 and
+:8443), SFTPGo's web admin/REST API (127.0.0.1:8090 - SFTPGo can write as
+any account, so its API is close to root on files), Valkey, the webmail and
+phpMyAdmin FrankenPHPs, and Caddy's admin API
+(`/run/frankenphp/admin.sock`). The installer binds and firewalls them
+that way on every run.
+
+## The customer panel on every domain
+
+Customers reach the panel at `https://<their domain>:2083` (and
+`<domain>/jpanel` redirects there), served by the same FrankenPHP with each
+domain's own certificate. Because cookies aren't scoped by port, site
+blocks strip the panel's session cookie from requests to the site itself,
+so a customer's PHP never sees a panel session. WHM and `/setup` are only
+served on `panel.<hostname>`.
+
 ## Multiple PHP versions
 
 Each additional PHP version (8.2/8.3/8.4 alongside the default 8.5) is its
@@ -171,16 +197,90 @@ panel can shortcut: the domain has to actually resolve to this server
 publicly, with ports 80/443 reachable, for Let's Encrypt's HTTP-01
 challenge to succeed.
 
+## DNS
+
+The panel database is the source of truth (`dns_zones`, `dns_records`,
+`panel_settings`); zone files are rendered from it. Every change goes
+through `DnsService::publish()`: bump the serial, queue a `dns_write` job
+with the full zone text. The root worker writes
+`/var/lib/knot/<zone>.zone`, registers the zone in Knot if needed, runs
+`knotc -b zone-reload`, and restores the previous file if Knot rejects the
+new one. After any registration it writes the live zone list to
+`/etc/knot/zones.conf` (included from `knot.conf`), so zones survive a
+restart.
+
+SOA, apex NS and glue for ns1/ns2 come from the nameserver settings and are
+never stored as records. Records the panel maintains itself carry a
+`managed` tag (`mail`: MX/SPF/DKIM/DMARC/autoconfig/SRV; `ipv6`: AAAA next to
+each A pointing here; `site`: subdomain sites as records in their parent
+zone) and are re-synced as a set; a customer record with the same name
+wins. The **server zone** (the hostname's parent) holds ns1/ns2, the
+hostname and `panel.<hostname>`, and can't be deleted.
+
+## Mail
+
+Stalwart holds the mailboxes; the panel drives it over JMAP on loopback
+(`MailService`, `StalwartAdminService`). Notes that shape the code:
+
+- Stalwart 0.16 takes no credentials in an account create: the panel
+  creates the account, then patches `credentials/0` (one password per
+  account). Hashes imported from cPanel (`$6$`, `$1$`, bcrypt) are accepted
+  as they are.
+- The panel acts on a mailbox through Stalwart's master login
+  (`<address>%<admin>`). Forwarders are mailing lists (for addresses with
+  no mailbox) or the mailbox's single panel-managed Sieve script, which also
+  holds the autoresponder (Stalwart runs one active script per mailbox).
+- Each mail domain gets DKIM keys (RSA + Ed25519) and its DNS records
+  (`managed = 'mail'`). The daily `jinnpanel-mail-dns.timer` re-syncs them,
+  serves autoconfig/autodiscover/MTA-STS through Caddy
+  (`zz-mail-services.caddyfile`, proxied to Stalwart on loopback), copies
+  Caddy's certificate to Stalwart, and keeps the 587 listener.
+- Suspension removes the `authenticate` permission from the account's
+  mailboxes.
+
+## Backups
+
+`BackupService`, run by the worker as transient units
+(`jinnpanel-backup-all` daily at the configured hour, `jinnpanel-backup-<id>`
+on demand): per account, site files (tar), each database (dump) and mail
+(read over IMAP) as separate parts; for the server, the panel database and
+the services' configuration. Kept in `/var/backups/jinnpanel` for N days,
+optionally copied to S3-compatible storage (signed requests, credentials
+encrypted with `APP_KEY`). Restores are per part; restored files are given
+back to the account's Linux user.
+
+## Usage, quotas and suspension
+
+`UsageService` runs hourly (and at boot via `jinnpanel-usage-boot`):
+it measures files, databases and mail per account and the month's
+bandwidth from the access logs, stores them in `account_usage`, and:
+
+- over the disk quota: the panel refuses uploads and new databases,
+  mailboxes and domains;
+- with XFS user quotas on (`rootflags=uquota`, installer option
+  `JINNPANEL_XFS_QUOTA=1`): sets the package's disk quota as a hard limit
+  on the account's Linux user (files only; databases and mail are counted
+  but limited softly);
+- over bandwidth: re-renders the account's vhosts to answer 509.
+
+`SuspensionService` turns an account off everywhere at once: sites answer
+503 and its PHP pools stop, mail logins are refused, SFTP logins disabled,
+MySQL users locked, the Valkey login disabled, cron jobs skipped and its
+panel sessions ended. Unsuspending reverses each step.
+
 ## Server Config / Stalwart settings
 
-Stalwart has no fixed REST API for its ~150 system settings objects (thread
+Stalwart has no fixed REST API for its system settings objects (thread
 pool size, cache sizing, spam thresholds, TLS reporting, ...) - the same
 structured system its own setup wizard uses is exposed at `/api/schema`
 (a JMAP session + a generic `{ObjectName}/get` and `{ObjectName}/set`
 per object). `StalwartAdminService` talks that protocol directly and
 `ServerConfigController`'s mail settings pages render a form **generated
-from the live schema** - one code path covers all ~150 objects rather than
-hand-building forms for each. Simple field types (string/number/
+from the live schema** - one code path covers every object rather than
+hand-building forms for each. WHM shows the 27 objects listed in
+`StalwartAdminService::SETTINGS_GROUPS` (server, web & API, mail
+protocols, security & spam, storage, reporting); adding another is one
+line, no form code. Simple field types (string/number/
 boolean/enum) get real inputs; structural types (object/list/set/map) fall
 back to a raw-JSON textarea, still fully editable.
 
@@ -274,3 +374,8 @@ list rather than `GRANT ALL`).
 - Every panel action and sign-in is in the audit trail (WHM > Activity
   Log): who, what, which account, from which address.
 - SSH brute force: fail2ban (`sshd` + `recidive` jails).
+- Admin APIs are never on a public port (see *Network exposure*).
+- Customer routing rules (translated `.htaccess`) are validated before
+  they're written: no `import`, no `root` outside the docroot, no
+  `reverse_proxy` and the like; the worker runs `frankenphp validate` and
+  restores the previous rules on failure.

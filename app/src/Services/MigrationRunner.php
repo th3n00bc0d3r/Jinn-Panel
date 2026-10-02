@@ -722,8 +722,8 @@ final class MigrationRunner
             $dnsOk = false;
         }
         // The row first: the vhost names the owning account's PHP pool.
-        $this->pdo->prepare("INSERT INTO domains (user_id, domain_name, docroot, dns_provisioned, php_version, php_port, ssl_mode) VALUES (?, ?, ?, ?, 'default', NULL, ?)")
-            ->execute([$userId, $name, $docroot, $dnsOk ? 1 : 0, $ssl]);
+        $this->pdo->prepare("INSERT INTO domains (user_id, domain_name, docroot, dns_provisioned, php_version, php_port, ssl_mode, ssl_pinned) VALUES (?, ?, ?, ?, 'default', NULL, ?, ?)")
+            ->execute([$userId, $name, $docroot, $dnsOk ? 1 : 0, $ssl, SslService::pinned((string) $this->opt['ssl_mode']) ? 1 : 0]);
         try {
             VhostService::create($name, 'default', $ssl);
         } catch (Throwable $e) {

@@ -244,15 +244,15 @@ final class MigrationController
             exit;
         }
 
+        // Required: an account without a package has no limits and can't
+        // create anything, and WHM can't assign one afterwards.
         $packageId = (int) ($_POST['package_id'] ?? 0);
-        if ($packageId > 0) {
-            if (!in_array($packageId, array_map('intval', array_column(self::availablePackages($me), 'id')), true)) {
-                Flash::error('Invalid package selected.');
-                header("Location: $back");
-                exit;
-            }
-            $opt['package_id'] = $packageId;
+        if (!in_array($packageId, array_map('intval', array_column(self::availablePackages($me), 'id')), true)) {
+            Flash::error($packageId > 0 ? 'Invalid package selected.' : 'Choose the package for accounts whose cPanel plan has no match here.');
+            header("Location: $back");
+            exit;
         }
+        $opt['package_id'] = $packageId;
 
         if ($me['role'] === 'admin') {
             $owner = (string) ($_POST['owner'] ?? 'none');

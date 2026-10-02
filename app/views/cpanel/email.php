@@ -47,7 +47,7 @@ foreach ($forwarders as $f) {
                             <summary class="cursor-pointer text-slate-500 hover:text-slate-700">Change password</summary>
                             <form method="post" action="/cpanel/email/<?= (int) $a['id'] ?>/password" class="mt-2 flex gap-2">
                                 <?= Csrf::field() ?>
-                                <input type="password" name="password" required minlength="8" placeholder="New password" class="<?= $input ?>">
+                                <input type="password" name="password" required minlength="<?= Passwords::MIN_LENGTH ?>" placeholder="New password" class="<?= $input ?>">
                                 <button class="<?= $btn ?>">Save</button>
                             </form>
                         </details>
@@ -201,7 +201,7 @@ foreach ($forwarders as $f) {
                 </div>
                 <div>
                     <label class="<?= $label ?>">Password</label>
-                    <input type="password" name="password" required minlength="8" class="<?= $input ?>">
+                    <input type="password" name="password" required minlength="<?= Passwords::MIN_LENGTH ?>" class="<?= $input ?>">
                 </div>
                 <button type="submit" class="w-full <?= $btn ?> py-2.5">Create mailbox</button>
             </form>

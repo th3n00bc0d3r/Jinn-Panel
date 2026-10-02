@@ -28,7 +28,6 @@
                     <td class="px-5 py-3">
                         <form method="post" action="/cpanel/domains/<?= (int) $d['id'] ?>/settings">
                             <?= Csrf::field() ?>
-                            <input type="hidden" name="ssl_mode" value="<?= e($d['ssl_mode']) ?>">
                             <select name="php_version" onchange="this.form.submit()" class="rounded-lg border border-slate-300 px-2 py-1.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-sky-500">
                                 <option value="default" <?= $d['php_version'] === 'default' ? 'selected' : '' ?>>Default (8.5)</option>
                                 <?php foreach ($phpVersions as $v): ?>
@@ -42,8 +41,10 @@
                             <?= Csrf::field() ?>
                             <input type="hidden" name="php_version" value="<?= e($d['php_version']) ?>">
                             <select name="ssl_mode" onchange="this.form.submit()" class="rounded-lg border border-slate-300 px-2 py-1.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-sky-500">
-                                <option value="self_signed" <?= $d['ssl_mode'] === 'self_signed' ? 'selected' : '' ?>>Self-signed</option>
-                                <option value="letsencrypt" <?= $d['ssl_mode'] === 'letsencrypt' ? 'selected' : '' ?>>AutoSSL (Let's Encrypt)</option>
+                                <?php $sslChoice = $d['ssl_mode'] === 'letsencrypt' ? 'letsencrypt' : ((int) $d['ssl_pinned'] === 1 ? 'self_signed' : 'auto'); ?>
+                                <option value="auto" <?= $sslChoice === 'auto' ? 'selected' : '' ?>>Automatic</option>
+                                <option value="letsencrypt" <?= $sslChoice === 'letsencrypt' ? 'selected' : '' ?>>AutoSSL (Let's Encrypt)</option>
+                                <option value="self_signed" <?= $sslChoice === 'self_signed' ? 'selected' : '' ?>>Self-signed only</option>
                             </select>
                         </form>
                         <?php $st = $d['ssl']['state']; ?>

@@ -27,8 +27,18 @@ The practical way to work on it:
    `/var/www/hostpanel` on the VM (`rsync`, `scp`, or mount the VM's
    filesystem - whatever workflow you're comfortable with) and test against
    the real thing.
-4. `php -l` every changed file before committing - there's no CI yet, so
-   this is on you.
+4. Run the tests before pushing (CI runs them too, plus `php -l` on every
+   PHP file - `.github/workflows/ci.yml`):
+   ```bash
+   php tests/UnitTest.php                 # no dependencies
+   php tests/HtaccessTranslatorTest.php   # needs the frankenphp binary
+   ```
+5. Changes to `app/worker/` or `installer/` only take effect after
+   re-running the installer on the VM (it re-deploys the worker to
+   `/usr/local/bin`).
+
+`CONTEXT.md` at the repo root is the short orientation (layout, request
+flow, privilege model, conventions) - read it before your first change.
 
 If you're changing anything that touches Tailwind classes, rebuild the CSS
 before testing:
@@ -64,7 +74,14 @@ mailboxes, files, and DNS. Extra care for anything touching:
 - SQL identifier handling (`ProvisioningService::isValidIdentifier`) - the
   handful of places that can't use parameterized queries because MySQL
   doesn't allow binding identifiers.
-- Anything in `hostpanel-worker.php` - it runs as root.
+- Anything in `hostpanel-worker.php` - it runs as root. New job types
+  carry ids only, read the rest from the database, and validate every
+  value.
+- Anything that writes into a customer's folders: do it through the pool
+  agent (`PoolClient` -> `runtime/pool-agent.php`, as the account), never
+  from panel code.
+- Generated config (vhosts, routing rules, zone files, PHP-FPM pools) -
+  a value that reaches one unescaped can affect every site on the server.
 
 See `SECURITY.md` for how to report a vulnerability privately instead of
 via a public issue.

@@ -45,8 +45,8 @@ final class FtpController
             header('Location: /cpanel/ftp');
             exit;
         }
-        if (strlen($password) < Passwords::MIN_LENGTH) {
-            Flash::error('FTP password must be at least ' . Passwords::MIN_LENGTH . ' characters.');
+        if (($problem = Passwords::problem($password, $label)) !== null) {
+            Flash::error('FTP: ' . $problem);
             header('Location: /cpanel/ftp');
             exit;
         }

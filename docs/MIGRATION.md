@@ -2,7 +2,8 @@
 
 WHM > **cPanel Migration** moves accounts from an existing cPanel & WHM
 server to JinnPanel: site files, databases, email accounts and stored mail,
-in one click per batch of accounts. The old server is only read from; it
+forwarders and autoresponders, DNS records, cron jobs, FTP accounts and
+PHP settings, in one click per batch of accounts. The old server is only read from; it
 is never changed, apart from the backup file cPanel writes into each
 account's home directory in pull mode.
 
@@ -45,8 +46,9 @@ finishes. "Forget credentials" on a migration deletes it immediately.
 2. **Choose** - tick accounts. Accounts whose username or main domain
    already exists on this server are shown but can't be selected. Choose
    what to migrate (files, databases, email accounts, stored mail), which
-   package migrated accounts get (by default the package with the same name
-   as their cPanel plan), who owns them, and whether email passwords are
+   package migrated accounts get (the package with the same name as their
+   cPanel plan when there is one, otherwise the required fallback package),
+   who owns them, and whether email passwords are
    kept or regenerated.
 3. **Start** - one click. Accounts are processed one after another by a
    background runner; the page shows live progress and the runner's log,
@@ -104,9 +106,9 @@ delete them once you've checked the result.
 
 - **Account** - same username, same cPanel password (the original SHA-512
   crypt hash is kept and upgraded to bcrypt on first login). Contact email
-  from the backup. If the username isn't valid in JinnPanel (3-32
-  characters, `a-z 0-9 _`, starting with a letter) the account can't be
-  migrated.
+  from the backup. If the username isn't valid in JinnPanel (3-16
+  characters, `a-z 0-9`, starting with a letter, and not a reserved name
+  such as `admin` or `mysql*`) the account can't be migrated.
 - **Resellers** (WHM root, "Keep the cPanel reseller structure") - a cPanel
   reseller is both a WHM login and a hosting account. JinnPanel keeps those
   separate: the hosting account keeps the original username, and a
@@ -116,8 +118,16 @@ delete them once you've checked the result.
 - **Domains** - main, addon and subdomains each become a JinnPanel domain
   with its own vhost, DNS zone and document root
   (`/var/www/<domain>/public`), with that domain's files copied from its
-  cPanel document root. Parked (alias) domains are not migrated yet and are
-  listed in the report.
+  cPanel document root. Parked domains become **aliases** of the main
+  domain (they serve the same site). Each domain's PHP settings from
+  cPanel's MultiPHP INI Editor (`php.ini` / `.user.ini`, which FrankenPHP
+  doesn't read) are imported into its per-site PHP settings, and its
+  `.htaccess` rules are translated into **Routes** (cPanel > Domains >
+  *domain* > Routes); rules that couldn't be translated or didn't pass the
+  checks are listed in the report for review.
+- **DNS records** - the records of each domain's cPanel zone file are
+  imported into its zone here (the panel's own records - SOA, NS, mail -
+  are generated, not copied).
 - **Databases** - same database names (they're prefixed with the cPanel
   username, which is kept, so site config files keep working). Dumps are
   imported with the few things a MariaDB server can't run from a MySQL 8
@@ -141,14 +151,31 @@ delete them once you've checked the result.
   onto the mailbox's own special folders. Messages marked deleted but not
   yet expunged are skipped.
 
+- **Forwarders and autoresponders** - forwarders merge their destinations
+  into the panel's forwarders; autoresponders are recreated on their
+  mailbox (an autoresponder for an address that isn't a mailbox here is
+  reported, not recreated).
+- **Default address (catch-all)** - optional ("keep" in the options): the
+  cPanel `*: <user>` default is recreated as the domain's default address;
+  otherwise unknown addresses are rejected.
+- **The account's default mailbox** (`~/mail`: system mail and catch-all
+  deliveries) - migrated to `<user>@<main domain>` with the cPanel
+  password, when it holds mail.
+- **FTP accounts** - recreated as SFTP logins with the same password,
+  rooted at the matching folder.
+- **Cron jobs** - recreated in cPanel > Cron Jobs (PHP scripts and URL
+  fetches).
+
 ## Not migrated
 
-Email forwarders and autoresponders, cron jobs, custom DNS records, SSL
-certificates (AutoSSL issues new ones once DNS points here), FTP accounts,
-and parked domains. The report also flags `.htaccess` files (FrankenPHP
-doesn't read them - pretty-URL routing to `index.php` works automatically,
-but custom redirects, deny rules and password protection need re-creating)
-and config files that still contain the old `/home/<user>/` path.
+SSL certificates (Let's Encrypt issues new ones once DNS points here);
+password-protected directories (the folder answers 403 until protection is
+set up again by hand - the Routes translator says so); Node.js/Python apps
+(JinnPanel runs PHP only); cPanel-specific add-ons such as Softaculous. Views, triggers and stored
+procedures are reported rather than imported (see Databases). The report
+also flags config files that still contain the old `/home/<user>/` path.
+Afterwards, check cPanel > Domains > *domain* > **Exposed files** for
+archives, dumps, backups and logs that were public on cPanel too.
 
 Nothing is live until DNS for each domain points at this server.
 

@@ -5,7 +5,109 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project doesn't yet follow semantic versioning releases (no tags/releases
 have been cut) - entries are grouped by development milestone instead.
 
-## Unreleased
+## Unreleased - public launch candidate
+
+Everything below landed on `migration-file-import` (2026-10-01), on top of
+the DNS work further down. Upgrade by re-running the installer.
+
+### Fixed (2026-10-02)
+- Deleting a package that accounts still use is refused (it used to leave
+  them with no limits at all); the list shows each package's account count.
+  A hosting account can no longer be created or migrated without a package
+  (the migration's fallback package is required).
+- Create-account form: password (10+) and username rules now match what the
+  server enforces.
+- Mailbox and FTP passwords follow the same rule as panel logins (10+
+  characters, not common, not containing the name).
+- cPanel > Cron Jobs > **Run now** works for PHP jobs (it ran as the web
+  user, which can't switch to the account's user); it goes through the root
+  worker now.
+- **Self-signed only** sticks: the daily SSL job no longer moves those
+  domains to Let's Encrypt (new `domains.ssl_pinned`); *Automatic* is a
+  choice in the domain list too.
+- The migration page's "what gets migrated" text was out of date.
+- HTTP/3: the firewall opens 443/udp (it was only open on 2083).
+
+### Security and isolation
+- **Per-account isolation**: every hosting account is a Linux user
+  (`jp_<name>`); its PHP runs in its own PHP-FPM pool per PHP version
+  (`open_basedir`, exec functions off unless WHM allows them), its static
+  files come from its own nginx (`jinnpanel-static@<name>`) running as that
+  user with a per-domain compressed cache. The panel only reads customer
+  files and works on them through the account's pool (`PoolClient`).
+- **Root worker hardened**: HMAC-signed jobs, regular files of
+  frankenphp/root only, every job type validates its input; root writes
+  only to root-owned `/var/lib/jinnpanel/worker/`.
+- **Admin APIs on loopback only**: Stalwart (8080/8443), SFTPGo (8090),
+  Caddy's admin API on a Unix socket; firewall no longer opens 8080/8090 or
+  Cockpit (9090).
+- **Sign-in**: TOTP two-factor for every role (admins can reset it), login
+  throttling, 10+ character non-common passwords, sessions ended on
+  password/2FA change, roles re-read on every request, POST logout.
+- **HTTPS everywhere** for the panel with HSTS, CSP and the other security
+  headers; one-time setup token for `/setup`.
+- **Audit log** (WHM > Activity Log) of every sign-in and panel action.
+- **Suspension** that actually stops everything: sites 503 and pools
+  stopped, mail/SFTP/MySQL/Valkey logins off, cron skipped, sessions ended.
+- **Quotas enforced**: hourly usage (files, databases, mail, bandwidth);
+  over disk -> new uploads/resources refused, optional hard XFS user quotas
+  (`JINNPANEL_XFS_QUOTA=1`); over bandwidth -> 509; resellers limited by
+  their package's account count.
+- Reserved usernames (`Usernames`) and a domain policy (`DomainPolicy`:
+  no server names, other accounts' domains, public suffixes or the most
+  impersonated domains).
+- fail2ban (`sshd` + `recidive`).
+
+### Hosting
+- `<domain>/jpanel` opens the customer panel at `<domain>:2083`.
+- Let's Encrypt by default when a domain resolves here, certificate status
+  and **Run AutoSSL** per domain; `www` served; HTTPS redirect; dotfiles
+  hidden.
+- A page per domain: SSL, document root, PHP version and **php.ini
+  settings** (cPanel MultiPHP INI files imported), aliases, cache, exposed
+  files.
+- **Routes**: `.htaccess` translated to Caddy rules, editable, validated
+  and applied by the worker with rollback.
+- **Exposed files** check: archives, dumps, backups and logs in web folders.
+- **File Manager**: multi-select, copy/move, zip/tar.gz extract and
+  compress, permissions, the whole site folder.
+- **Caching**: page cache, static file cache, browser caching, Valkey
+  object cache per account, OPcache settings.
+- **Cron jobs** (PHP scripts and URL fetches) as the account.
+- **MySQL like cPanel**: users, privileges, Remote MySQL, phpMyAdmin with
+  sign-on.
+- **PHP extensions** page in WHM.
+- **Backups**: daily per account (files, databases, mail) and of the
+  server, retention, S3-compatible copy, per-part restore, customer
+  downloads.
+
+### Mail
+- Mailboxes created the way Stalwart 0.16 accepts; PHP `mail()` works.
+- Forwarders, autoresponders, default (catch-all) address, mail client
+  settings card.
+- Mail DNS published automatically: MX, SPF, DKIM (RSA + Ed25519), DMARC,
+  autoconfig/autodiscover, SRV, MTA-STS; Stalwart uses Caddy's certificate.
+- **Webmail** (Cypht) at `https://mail.<domain>/`.
+
+### DNS
+- Customer zone editor (cPanel > DNS).
+- AAAA records next to every A record pointing here.
+- Subdomain sites live in their parent zone.
+- Knot zones persist across restarts (`/etc/knot/zones.conf`).
+
+### cPanel migration
+- From backup files on the server, or fetched from S3 (WHM > cPanel
+  Migration > From backup files).
+- DNS records, cron jobs, domain aliases (parked domains), FTP accounts,
+  forwarders, autoresponders, default addresses and the account's default
+  mailbox are migrated; routes translated from `.htaccess`.
+- Restore mail from a backup for already-migrated accounts.
+
+### Docs
+- New `docs/OPERATIONS.md`; install, features, architecture, comparison and
+  security docs rewritten for the current state.
+
+## DNS management (merged from `dns-management`)
 
 - **WHM > DNS Zones** (admin): nameserver settings, every zone on the server
   (the server's own, hosted domains', standalone), and record management for
@@ -24,7 +126,7 @@ have been cut) - entries are grouped by development milestone instead.
 - Installer fix: move Stalwart's HTTPS listener off :443 to :8443, so it
   can't take the port from FrankenPHP.
 
-## [Unreleased]
+## Earlier development
 
 ### cPanel Migration (WHM)
 - One-click migration from cPanel & WHM: a single cPanel account, all

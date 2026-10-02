@@ -344,10 +344,17 @@ setsebool -P httpd_can_network_connect on
 setsebool -P httpd_can_network_connect_db on
 
 firewall-cmd --permanent --add-service=http --add-service=https >/dev/null
+# HTTP/3 (QUIC): the https service only opens 443/tcp.
+firewall-cmd --permanent --add-port=443/udp >/dev/null
 # <domain>:2083 - each customer's own panel URL (<domain>/jpanel redirects
 # there). The policy labels 2083 radsec_port_t; FrankenPHP runs as httpd_t.
 # (udp too: Caddy also serves HTTP/3 there.)
 firewall-cmd --permanent --add-port=2083/tcp --add-port=2083/udp >/dev/null
+# The admin APIs (Stalwart 8080/8443, SFTPGo 8090) listen on 127.0.0.1 only
+# and the panel reaches them there; close what older installs opened, and
+# Cockpit (9090), which the OS opens by default.
+firewall-cmd --permanent --remove-service=cockpit >/dev/null 2>&1 || true
+firewall-cmd --permanent --remove-port=8080/tcp --remove-port=8090/tcp >/dev/null 2>&1 || true
 firewall-cmd --reload >/dev/null
 for proto in tcp udp; do
     semanage port -a -t http_port_t -p $proto 2083 2>/dev/null || semanage port -m -t http_port_t -p $proto 2083
@@ -463,16 +470,19 @@ fi
 # FrankenPHP (the panel and every hosted site). Whichever starts first wins,
 # so a fresh install - or any reboot - could leave the panel crash-looping on
 # "address already in use". Move any Stalwart listener bound to :443 to
-# :8443 (left closed in the firewall; the panel talks to Stalwart over
-# 127.0.0.1:8080). The listener object is found in Stalwart's schema rather
-# than hardcoded, and this is a no-op once nothing is bound to :443.
+# :8443. Its HTTP listeners (8080 - JMAP and the admin API - and 8443) are
+# bound to 127.0.0.1: the panel talks to Stalwart over 127.0.0.1:8080 and
+# Caddy proxies autoconfig/MTA-STS to it, so nothing needs them from outside.
+# The listener object is found in Stalwart's schema rather than hardcoded,
+# and this is a no-op once the binds are right.
 STALWART_443_RESULT=$(MAIL_ADMIN_USER="$MAIL_ADMIN_USER" MAIL_ADMIN_PASS="$MAIL_ADMIN_PASS" python3 - 2>&1 <<'PY'
 import base64, gzip, json, os, re, urllib.request
 
 BASE = "http://127.0.0.1:8080"
 AUTH = "Basic " + base64.b64encode((os.environ["MAIL_ADMIN_USER"] + ":" + os.environ["MAIL_ADMIN_PASS"]).encode()).decode()
 USING = ["urn:ietf:params:jmap:core", "urn:stalwart:jmap"]
-BIND = re.compile(r"^(.*:)443$")
+BIND = re.compile(r"^(.*):(\d+)$")
+LOCAL_ONLY = {"8080", "8443"}
 
 
 def call(method, path, body=None):
@@ -489,10 +499,17 @@ def call(method, path, body=None):
 
 
 def fix(v):
-    """Rewrite ...:443 -> ...:8443 in a bind value (string, list or set-as-map)."""
+    """Rewrite ...:443 -> 127.0.0.1:8443 and ...:8080/8443 -> 127.0.0.1 in a
+    bind value (string, list or set-as-map)."""
     if isinstance(v, str):
         m = BIND.match(v)
-        return (m.group(1) + "8443", True) if m else (v, False)
+        if not m:
+            return v, False
+        port = "8443" if m.group(2) == "443" else m.group(2)
+        if port not in LOCAL_ONLY:
+            return v, False
+        nv = "127.0.0.1:" + port
+        return nv, nv != v
     if isinstance(v, list):
         out, changed = [], False
         for x in v:
@@ -550,10 +567,10 @@ case "$STALWART_443_LAST" in
         wait_for_stalwart
         systemctl reset-failed frankenphp 2>/dev/null || true
         systemctl restart frankenphp
-        ok "Moved Stalwart's HTTPS listener off :443 to :8443 (${STALWART_443_LAST#MOVED })"
+        ok "Stalwart's HTTP listeners now on 127.0.0.1 only, none on :443 (${STALWART_443_LAST#MOVED })"
         ;;
     OK*)
-        ok "Port 443 is free for the panel (no Stalwart listener on it)"
+        ok "Port 443 is free for the panel; Stalwart's HTTP listeners are on 127.0.0.1"
         ;;
     *)
         warn "Couldn't check Stalwart's listeners for :443 ($STALWART_443_LAST). If the panel doesn't load, move Stalwart's https listener to another port in its admin UI (Listeners)."
@@ -561,7 +578,7 @@ case "$STALWART_443_LAST" in
 esac
 
 firewall-cmd --permanent --add-service=smtp >/dev/null
-firewall-cmd --permanent --add-port=465/tcp --add-port=587/tcp --add-port=993/tcp --add-port=995/tcp --add-port=4190/tcp --add-port=8080/tcp >/dev/null
+firewall-cmd --permanent --add-port=465/tcp --add-port=587/tcp --add-port=993/tcp --add-port=995/tcp --add-port=4190/tcp >/dev/null
 firewall-cmd --reload >/dev/null
 ok "Stalwart Mail running"
 
@@ -608,14 +625,22 @@ systemctl daemon-reload
 mkdir -p /var/lib/jinnpanel/sftp
 chmod 0755 /var/lib/jinnpanel/sftp
 
-# Move the web admin off 8080 (Stalwart already owns that).
-python3 - <<'PYEOF'
+# Move the web admin/REST API off 8080 (Stalwart already owns that) and onto
+# 127.0.0.1: SFTPGo can write as any account, so its API is close to root on
+# files, and only the panel needs it.
+SFTPGO_BIND=$(python3 - <<'PYEOF'
 import json
 p = '/etc/sftpgo/sftpgo.json'
 d = json.load(open(p))
-d['httpd']['bindings'][0]['port'] = 8090
-json.dump(d, open(p, 'w'), indent=2)
+b = d['httpd']['bindings'][0]
+if b.get('port') != 8090 or b.get('address') != '127.0.0.1':
+    b['port'] = 8090
+    b['address'] = '127.0.0.1'
+    json.dump(d, open(p, 'w'), indent=2)
+    print('changed')
 PYEOF
+)
+[ "$SFTPGO_BIND" = changed ] && SFTPGO_RESTART=1
 
 if [ -f "$STATE_DIR/sftpgo_admin_pass" ]; then
     SFTPGO_ADMIN_PASS=$(cat "$STATE_DIR/sftpgo_admin_pass")
@@ -646,7 +671,7 @@ if ! curl -sf -u "panelapi:$SFTPGO_ADMIN_PASS" http://127.0.0.1:8090/api/v2/toke
 fi
 echo "$SFTPGO_ADMIN_PASS" > "$STATE_DIR/sftpgo_admin_pass"
 
-firewall-cmd --permanent --add-port=2022/tcp --add-port=8090/tcp >/dev/null
+firewall-cmd --permanent --add-port=2022/tcp >/dev/null
 firewall-cmd --reload >/dev/null
 ok "SFTPGo running"
 
