@@ -197,6 +197,11 @@ the `db_user` index change) and also ship an upgrade file in
   written only by the worker's `routes_apply` (re-validates with
   `HtaccessTranslator::validate`, `frankenphp validate`, restores on failure).
   Tests: `php tests/HtaccessTranslatorTest.php` (needs frankenphp).
+  `domains.routes_sync`: the worker's `routesSyncDue()` (every 60 s) reads
+  the .htaccess files through the account's pool, and `RoutesService::syncPlan`
+  decides (skip / apply / review / first look: enable or disable); applies
+  go through `routesApply()`. NULL = not decided: on only if the rules in
+  use equal the translation. Hand edits in Routes turn it off.
 - **Mail**: Stalwart 0.16 takes no credentials in an Account create (create,
   then patch `credentials/0`; one password per account). Panel acts as a
   mailbox via the master login `<address>%<admin>`. Forwarders = mailing

@@ -276,6 +276,14 @@ final class DomainController
         $me = Auth::user();
         $d = self::owned($me, (int) ($params['id'] ?? 0));
         $action = (string) ($_POST['action'] ?? 'save');
+        if ($action === 'sync_on' || $action === 'sync_off') {
+            RoutesService::setSync($d, $action === 'sync_on');
+            Flash::ok($action === 'sync_on'
+                ? 'The rules now follow .htaccess - its translation is applied in a few seconds, and again whenever it changes.'
+                : 'The rules no longer follow .htaccess; the ones in use stay as they are.');
+            header('Location: /cpanel/domains/' . (int) $d['id'] . '/routes');
+            exit;
+        }
         $review = false;
         if ($action === 'generated') {
             $g = RoutesService::overview($d)['generated'];
@@ -289,7 +297,18 @@ final class DomainController
         if ($errors) {
             Flash::error('Not saved: ' . implode(' ', array_slice($errors, 0, 5)));
         } else {
-            Flash::ok($action === 'reset' ? 'Resetting to the default routing...' : 'Applying the rules - Caddy checks them first; the result shows below in a few seconds.');
+            $msg = $action === 'reset' ? 'Resetting to the default routing...' : 'Applying the rules - Caddy checks them first; the result shows below in a few seconds.';
+            // Rules edited by hand would be overwritten by the next .htaccess change.
+            if ($action !== 'generated' && ($d['routes_sync'] === null || (int) $d['routes_sync'] === 1)) {
+                $g = RoutesService::overview($d)['generated'];
+                if (RoutesService::norm($route) !== RoutesService::norm((string) $g['route']) || RoutesService::norm($site) !== RoutesService::norm((string) $g['site'])) {
+                    RoutesService::setSync($d, false);
+                    if ((int) ($d['routes_sync'] ?? 0) === 1) {
+                        $msg .= ' Following .htaccess is now off, so your edits stay.';
+                    }
+                }
+            }
+            Flash::ok($msg);
         }
         header('Location: /cpanel/domains/' . (int) $d['id'] . '/routes');
         exit;

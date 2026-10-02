@@ -395,6 +395,16 @@ validates every save with Caddy and keeps the previous rules if it fails.
 Only routing directives are allowed - no paths outside the site, no
 proxying, no imports.
 
+**Follow .htaccess** (on the Routes page) keeps the rules in step with the
+site's `.htaccess` files: the worker checks them every minute and, when they
+changed (File Manager, SFTP, WordPress rewriting its permalinks), applies
+the new translation the same validated way. A change that can't be
+translated exactly is never applied automatically: the rules in use stay
+and the domain is marked "needs review". Editing the rules by hand or
+resetting them turns it off. On domains that existed before this, it starts
+on only where the rules in use already are the translation of `.htaccess`,
+so no running site changes behaviour.
+
 **Exposed files** (from the domain page) - scans the docroot for things
 anyone could download: archives, database dumps, backup copies, logs, data
 exports (`orders*.json`, `customers*.csv`, ...) and backup folders.

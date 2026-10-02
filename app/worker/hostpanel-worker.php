@@ -138,6 +138,7 @@ if (PHP_SAPI === 'cli' && isset($argv[1]) && in_array($argv[1], ['sync-accounts'
 
 snapshotLogs();
 periodicTasks();
+routesSyncDue();
 
 if (is_dir(QUEUE_DIR)) {
     foreach (glob(QUEUE_DIR . '/*.json') ?: [] as $jobFile) {
@@ -252,6 +253,9 @@ function runJob(array $job, callable $log): void
             break;
         case 'mysql_firewall':
             mysqlFirewall((array) ($job['sources'] ?? []), $log);
+            break;
+        case 'routes_sync':
+            routesSyncDomain(strtolower((string) ($job['domain'] ?? '')), $log);
             break;
         case 'routes_remove':
             routesRemove((string) ($job['domain'] ?? ''), $log);
@@ -847,6 +851,118 @@ function routesApply(array $job, callable $log): void
     }
     caddyReload();
     $log("routes for $domain applied");
+}
+
+/**
+ * Every minute: domains whose routes follow their .htaccess (routes_sync on,
+ * or not decided yet) - see RoutesService::syncPlan. One domain failing
+ * (its pool down, rules Caddy rejects) never stops the others.
+ */
+function routesSyncDue(): void
+{
+    $stamp = OUT_DIR . '/.periodic-routes-sync';
+    if (is_file($stamp) && filemtime($stamp) > time() - 60) {
+        return;
+    }
+    touch($stamp);
+    try {
+        $names = appDb()->query('SELECT domain_name FROM domains WHERE routes_sync IS NULL OR routes_sync = 1 ORDER BY id')->fetchAll(PDO::FETCH_COLUMN);
+    } catch (Throwable $e) {
+        writeOut('worker-periodic.log', '[' . date('c') . '] routes sync: ' . $e->getMessage() . "\n", true);
+        return;
+    }
+    foreach ($names as $name) {
+        try {
+            routesSyncDomain((string) $name, fn(string $m) => null);
+        } catch (Throwable $e) {
+            // Recorded on the domain (routes_sync_note) by routesSyncDomain.
+        }
+    }
+}
+
+/**
+ * Re-translates one domain's .htaccess files (read as the account, through
+ * its pool) and applies the result through routesApply() when they changed.
+ * Applied changes and failures are also logged where the Routes page shows
+ * "Last change".
+ */
+function routesSyncDomain(string $domain, callable $log): void
+{
+    if (!preg_match(DNS_DOMAIN_RE, $domain)) {
+        throw new RuntimeException('Invalid domain');
+    }
+    panelClasses();
+    $db = appDb();
+    $st = $db->prepare('SELECT d.id, d.routes_sync, d.routes_sync_hash, d.php_version, u.username FROM domains d JOIN users u ON u.id = d.user_id WHERE d.domain_name = ?');
+    $st->execute([$domain]);
+    $row = $st->fetch(PDO::FETCH_ASSOC);
+    if (!$row || (int) ($row['routes_sync'] ?? 1) === 0) {
+        $log("routes sync is off for $domain");
+        return;
+    }
+    // The outcome shown on the Routes page; $hash/$review also stored when given.
+    $note = function (string $text, ?string $hash = null, ?int $review = null) use ($db, $row): void {
+        $db->prepare('UPDATE domains SET routes_sync_note = ?, routes_synced_at = NOW(),'
+            . ' routes_sync_hash = COALESCE(?, routes_sync_hash), routes_review = COALESCE(?, routes_review) WHERE id = ?')
+            ->execute([mb_substr($text, 0, 500), $hash, $review, $row['id']]);
+    };
+    // A pool that isn't running (suspended account, not set up yet): next time.
+    // PoolClient would start it and wait, which a minute's pass mustn't do.
+    $docroot = VhostService::effectiveDocroot($domain);
+    if (!is_dir($docroot) || !file_exists(AccountRuntime::socket((string) $row['username'], (string) $row['php_version']))) {
+        return;
+    }
+    try {
+        $files = (array) PoolClient::call($domain, 'htaccess', ['docroot' => $docroot])['files'];
+    } catch (Throwable $e) {
+        $note('Could not read the .htaccess files: ' . $e->getMessage());
+        throw $e;
+    }
+    $hash = RoutesService::filesHash($files, $docroot);
+    try {
+        $generated = $files ? HtaccessTranslator::translate($files, $docroot) : ['route' => '', 'site' => '', 'needs_review' => false];
+    } catch (Throwable $e) {
+        $note('Could not translate the .htaccess files: ' . $e->getMessage(), $hash);
+        throw $e;
+    }
+    $generated = ['route' => RoutesService::norm((string) $generated['route']), 'site' => RoutesService::norm((string) $generated['site']), 'needs_review' => (bool) $generated['needs_review']];
+    $read = fn(string $f) => is_file($f) ? (string) file_get_contents($f) : null;
+    $current = ['route' => $read(VhostService::rulesFile($domain)), 'site' => $read(VhostService::siteRulesFile($domain))];
+    $sync = $row['routes_sync'] === null ? null : (bool) $row['routes_sync'];
+    $plan = RoutesService::syncPlan($sync, $row['routes_sync_hash'], $hash, $current, $generated);
+    $label = 'worker-' . preg_replace('/[^a-zA-Z0-9_.-]/', '_', RoutesService::label($domain)) . '-sync.log';
+    switch ($plan) {
+        case 'skip':
+            return;
+        case 'enable':
+        case 'disable':
+            $db->prepare('UPDATE domains SET routes_sync = ?, routes_sync_hash = ? WHERE id = ?')->execute([$plan === 'enable' ? 1 : 0, $hash, $row['id']]);
+            $log("routes sync for $domain: " . ($plan === 'enable' ? 'on' : 'off (the rules in use are not the .htaccess translation)'));
+            return;
+        case 'same':
+            $note('In sync with .htaccess.', $hash);
+            $log("routes for $domain already match .htaccess");
+            return;
+        case 'review':
+            $note('.htaccess changed, but some of it can\'t be translated exactly - the rules in use were kept. Review the translation below and use it if it is right.', $hash, 1);
+            $log(".htaccess of $domain changed but needs review - not applied");
+            return;
+    }
+    try {
+        routesApply([
+            'domain' => $domain,
+            'docroot' => $docroot,
+            'route' => $generated['route'] === '' ? null : $generated['route'] . "\n",
+            'site' => $generated['site'] === '' ? null : $generated['site'] . "\n",
+        ], $log);
+    } catch (Throwable $e) {
+        // The hash is stored: the same files aren't retried every minute.
+        $note('.htaccess changed, but the translation was not applied: ' . $e->getMessage(), $hash);
+        writeOut($label, '[' . date('c') . '] FAILED: .htaccess sync - ' . $e->getMessage() . "\n", true);
+        throw $e;
+    }
+    $note('Applied the .htaccess change.', $hash, 0);
+    writeOut($label, '[' . date('c') . "] OK\n", true);
 }
 
 /** Installed and available php-zts-* extension packages, cached for WHM > PHP Extensions. */

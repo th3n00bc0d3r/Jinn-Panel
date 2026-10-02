@@ -11,6 +11,7 @@ $g = $o['generated'];
 $notes = array_values(array_filter($g['notes'] ?? [], fn($n) => ($n['status'] ?? '') !== 'translated'));
 $active = $o['current']['route'] !== null || $o['current']['site'] !== null;
 $failed = $last !== null && str_starts_with($last, 'FAILED');
+$sync = $d['routes_sync'] === null ? null : (int) $d['routes_sync'] === 1;
 ?>
 <div class="space-y-4">
     <div>
@@ -35,6 +36,36 @@ $failed = $last !== null && str_starts_with($last, 'FAILED');
             <h3 class="text-sm font-semibold text-slate-700">In use</h3>
             <span class="text-xs font-medium rounded-full px-2 py-0.5 <?= $active ? 'bg-sky-50 text-sky-700' : 'bg-slate-100 text-slate-600' ?>"><?= $active ? 'Custom rules' : 'Default routing' ?></span>
             <?php if (!empty($d['routes_review'])): ?><span class="text-xs font-medium rounded-full px-2 py-0.5 bg-amber-50 text-amber-700">Needs review</span><?php endif; ?>
+        </div>
+        <div class="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 flex flex-wrap items-start gap-3">
+            <div class="flex-1 min-w-[16rem] text-sm">
+                <p class="font-medium text-slate-700">
+                    Follow .htaccess:
+                    <span class="text-xs font-medium rounded-full px-2 py-0.5 <?= $sync ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-200 text-slate-600' ?>"><?= $sync === null ? 'checking...' : ($sync ? 'on' : 'off') ?></span>
+                </p>
+                <p class="text-xs text-slate-500 mt-1">
+                    <?php if ($sync): ?>
+                    When a .htaccess file changes (File Manager, SFTP, or an app such as WordPress writing it), its translation goes live within a minute.
+                    If part of it can't be translated exactly, the rules in use stay and this page says what to review. Editing the rules below turns this off.
+                    <?php elseif ($sync === false): ?>
+                    Changes to .htaccess files are not applied here until you choose "Use these rules" or turn this on.
+                    <?php else: ?>
+                    Checked within a minute: on when the rules in use are already the translation of the site's .htaccess.
+                    <?php endif; ?>
+                </p>
+                <?php if (!empty($d['routes_sync_note'])): ?>
+                <p class="text-xs text-slate-600 mt-1"><?= e((string) $d['routes_sync_note']) ?>
+                    <?php if (!empty($d['routes_synced_at'])): ?><span class="text-slate-400">(<?= e((string) $d['routes_synced_at']) ?>)</span><?php endif; ?></p>
+                <?php endif; ?>
+            </div>
+            <form method="post" action="/cpanel/domains/<?= $id ?>/routes">
+                <?= Csrf::field() ?>
+                <?php if ($sync): ?>
+                <button name="action" value="sync_off" class="<?= $btn ?> bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200">Stop following</button>
+                <?php else: ?>
+                <button name="action" value="sync_on" class="<?= $btn ?> bg-slate-800 hover:bg-slate-700 text-white" data-confirm="Replace the rules in use with the translation of .htaccess, now and whenever it changes? (Anything that can't be translated exactly is never applied automatically.)">Follow .htaccess</button>
+                <?php endif; ?>
+            </form>
         </div>
         <form method="post" action="/cpanel/domains/<?= $id ?>/routes" class="mt-3 space-y-3">
             <?= Csrf::field() ?>
