@@ -9,6 +9,11 @@ declare(strict_types=1);
  * (routes_apply) re-validates them, writes them, re-renders the site and
  * runs `frankenphp validate` - reloading only on success, restoring the
  * previous files otherwise. The result is the worker's last log line.
+ *
+ * With routes_sync on, the worker also follows the .htaccess files: when they
+ * change it translates them again and applies the result - unless something
+ * can't be translated exactly, then the rules in use stay and the domain is
+ * marked for review. Editing the rules by hand turns the sync off.
  */
 final class RoutesService
 {
@@ -73,8 +78,8 @@ final class RoutesService
     {
         $name = (string) $domain['domain_name'];
         $docroot = VhostService::effectiveDocroot($name);
-        $route = str_replace("\r\n", "\n", trim($route));
-        $site = str_replace("\r\n", "\n", trim($site));
+        $route = self::norm($route);
+        $site = self::norm($site);
         $errors = [];
         if ($route !== '') {
             foreach (HtaccessTranslator::validate($route, $docroot, 'route') as $e) {
@@ -101,6 +106,59 @@ final class RoutesService
             'site' => $site === '' ? null : $site . "\n",
         ]);
         return [];
+    }
+
+    /**
+     * What the .htaccess sync does with a domain (worker: routesSync). Pure.
+     *
+     * @param bool|null $sync routes_sync (null = not decided yet)
+     * @param array{route:?string,site:?string} $current the rules in use
+     * @param array{route:string,site:string,needs_review:bool} $generated the translated .htaccess
+     * @return string 'skip' (.htaccess unchanged since the last look), 'enable' / 'disable'
+     *                (first look: on only if the rules in use already are the translation),
+     *                'review' (changed, but not translatable exactly: keep the rules in use),
+     *                'same' (changed, translates to the rules in use), 'apply'
+     */
+    public static function syncPlan(?bool $sync, ?string $lastHash, string $hash, array $current, array $generated): string
+    {
+        $same = self::norm((string) ($current['route'] ?? '')) === self::norm($generated['route'])
+            && self::norm((string) ($current['site'] ?? '')) === self::norm($generated['site']);
+        if ($sync === null) {
+            return $same ? 'enable' : 'disable';
+        }
+        if ($hash === $lastHash) {
+            return 'skip';
+        }
+        if ($same) {
+            return 'same';
+        }
+        return $generated['needs_review'] ? 'review' : 'apply';
+    }
+
+    /** Identity of a set of .htaccess files (and the folder they're translated for). */
+    public static function filesHash(array $files, string $docroot): string
+    {
+        ksort($files);
+        return hash('sha256', $docroot . "\0" . json_encode($files));
+    }
+
+    /** Rules as stored: trimmed, Unix line ends ('' = none). */
+    public static function norm(string $rules): string
+    {
+        return str_replace("\r\n", "\n", trim($rules));
+    }
+
+    /**
+     * Turns the .htaccess sync on (the worker applies the translation right
+     * away, whatever is in use) or off (the rules in use stay as they are).
+     */
+    public static function setSync(array $domain, bool $on): void
+    {
+        Database::app()->prepare('UPDATE domains SET routes_sync = ?, routes_sync_hash = NULL, routes_sync_note = NULL WHERE id = ?')
+            ->execute([$on ? 1 : 0, $domain['id']]);
+        if ($on) {
+            SystemWorkerService::enqueue(self::label((string) $domain['domain_name']), ['type' => 'routes_sync', 'domain' => (string) $domain['domain_name']]);
+        }
     }
 
     public static function label(string $domain): string

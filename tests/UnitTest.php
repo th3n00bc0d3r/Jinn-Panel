@@ -259,6 +259,34 @@ function test_htaccess_rules_validate_php_server(): void
     T::ok(HtaccessTranslator::validate("import /etc/passwd\nphp_server", '/var/www/example.test/public', 'route') !== [], 'import refused');
 }
 
+function test_routes_sync_plan(): void
+{
+    $rules = "# Generated\nrewrite /a /b\nphp_server";
+    $gen = ['route' => $rules, 'site' => '', 'needs_review' => false];
+    $in = ['route' => $rules . "\n", 'site' => null];
+    $other = ['route' => "redir /x /y 301\nphp_server\n", 'site' => null];
+    $none = ['route' => null, 'site' => null];
+    $empty = ['route' => '', 'site' => '', 'needs_review' => false];
+
+    // First look: on only when nothing would change.
+    T::same('enable', RoutesService::syncPlan(null, null, 'h1', $in, $gen), 'rules in use are the translation');
+    T::same('enable', RoutesService::syncPlan(null, null, 'h1', $none, $empty), 'no .htaccess, no rules');
+    T::same('disable', RoutesService::syncPlan(null, null, 'h1', $other, $gen), 'rules edited by hand');
+    T::same('disable', RoutesService::syncPlan(null, null, 'h1', $none, $gen), '.htaccess never applied');
+    T::same('disable', RoutesService::syncPlan(null, null, 'h1', $other, $empty), 'rules without .htaccess');
+
+    // Sync on.
+    T::same('skip', RoutesService::syncPlan(true, 'h1', 'h1', $other, $gen), 'unchanged .htaccess');
+    T::same('apply', RoutesService::syncPlan(true, 'h1', 'h2', $other, $gen), 'changed .htaccess');
+    T::same('apply', RoutesService::syncPlan(true, null, 'h1', $other, $gen), 'just turned on');
+    T::same('same', RoutesService::syncPlan(true, 'h1', 'h2', $in, $gen), 'changed, same translation');
+    T::same('review', RoutesService::syncPlan(true, 'h1', 'h2', $other, ['needs_review' => true] + $gen), 'inexact translation never applied');
+    T::same('apply', RoutesService::syncPlan(true, 'h1', 'h2', $other, $empty), '.htaccess removed: default routing');
+
+    T::ok(RoutesService::filesHash(['' => 'a', 'x' => 'b'], '/d') === RoutesService::filesHash(['x' => 'b', '' => 'a'], '/d'), 'hash ignores order');
+    T::ok(RoutesService::filesHash(['' => 'a'], '/d') !== RoutesService::filesHash(['' => 'a'], '/e'), 'hash includes the docroot');
+}
+
 function test_s3_signature_shape(): void
 {
     $a = S3Client::authorization('PUT', 'bucket.s3.amazonaws.com', '/k', '', '20261001T000000Z', 'eu-central-1', 'AKID', 'SECRET');

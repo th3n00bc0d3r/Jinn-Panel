@@ -35,7 +35,7 @@ $st = $ssl['state'];
                 <div class="flex gap-3"><dt class="w-36 shrink-0 text-slate-400">PHP</dt><dd class="text-slate-700"><?= e($d['php_version'] === 'default' ? 'Default (8.5)' : 'PHP ' . $d['php_version']) ?></dd></div>
                 <div class="flex gap-3"><dt class="w-36 shrink-0 text-slate-400">DNS points to</dt><dd class="font-mono text-slate-700"><?= e($addresses ? implode(', ', $addresses) : 'nothing') ?></dd></div>
                 <div class="flex gap-3"><dt class="w-36 shrink-0 text-slate-400">Routes</dt><dd class="text-slate-700">
-                    <?= $routes ? 'Custom rules' : 'Default routing' ?><?= !empty($d['routes_review']) ? ' <span class="text-amber-700">(needs review)</span>' : '' ?>
+                    <?= $routes ? 'Custom rules' : 'Default routing' ?><?= isset($d['routes_sync']) && (int) $d['routes_sync'] === 1 ? ', follows .htaccess' : '' ?><?= !empty($d['routes_review']) ? ' <span class="text-amber-700">(needs review)</span>' : '' ?>
                     &middot; <a href="/cpanel/domains/<?= $id ?>/routes" class="text-sky-700 hover:underline">Routes &amp; .htaccess</a></dd></div>
                 <div class="flex gap-3"><dt class="w-36 shrink-0 text-slate-400">Security</dt><dd><a href="/cpanel/domains/<?= $id ?>/exposed" class="text-sky-700 hover:underline">Check for exposed files</a> <span class="text-xs text-slate-400">(archives, database dumps, backups, logs anyone can download)</span></dd></div>
             </dl>
