@@ -217,6 +217,11 @@ dnf -y install php-zts-fpm acl
 # apps need mysqli; gd/imagick/intl/zip are near-universal plugin requirements).
 dnf -y install php-zts-mysqli php-zts-gd php-zts-imagick php-zts-intl php-zts-zip php-zts-bcmath \
     php-zts-gmp php-zts-soap php-zts-sqlite3 php-zts-pdo_sqlite php-zts-xsl php-zts-bz2 php-zts-gettext php-zts-ftp
+# Everything here runs /usr/bin/php-zts: php-zts-cli's /usr/bin/php symlink
+# is deleted on every package upgrade (the old package's postuninstall runs
+# after the new one's postinstall), which silently stopped the worker, cron
+# and mail sync. The symlink is kept only for people typing `php`.
+[ -e /usr/bin/php ] || ln -s php-zts /usr/bin/php
 
 groupadd -f webusers
 usermod -aG webusers frankenphp
@@ -257,7 +262,11 @@ install -d -o frankenphp -g frankenphp -m 0750 /run/frankenphp
 mkdir -p /var/log/jinnpanel-web /var/log/jinnpanel
 chown frankenphp:frankenphp /var/log/jinnpanel-web; chmod 0750 /var/log/jinnpanel-web
 chown root:root /var/log/jinnpanel; chmod 0750 /var/log/jinnpanel
-semanage fcontext -a -t httpd_log_t '/var/log/jinnpanel-web(/.*)?' 2>/dev/null || true
+# Not httpd_log_t: that only lets the web server append, and Caddy rolls the
+# log by renaming it (roll_size). With the rename denied it stopped logging
+# at 100 MiB - and bandwidth accounting silently counted nothing.
+semanage fcontext -a -t httpd_sys_rw_content_t '/var/log/jinnpanel-web(/.*)?' 2>/dev/null \
+    || semanage fcontext -m -t httpd_sys_rw_content_t '/var/log/jinnpanel-web(/.*)?' 2>/dev/null || true
 restorecon -R /var/log/jinnpanel-web
 
 # Sites' PHP: one PHP-FPM master per PHP version (jinnpanel-php-fpm@default
@@ -904,7 +913,7 @@ CADDY
 
 frankenphp reload --config /etc/frankenphp/Caddyfile --force || systemctl restart frankenphp
 # Per-site PHP settings files (and cPanel .user.ini imports) for every site.
-runuser -u frankenphp -- php "$APP_ROOT/worker/php-settings-import.php" >/dev/null || warn "Writing per-site PHP settings failed."
+runuser -u frankenphp -- /usr/bin/php-zts "$APP_ROOT/worker/php-settings-import.php" >/dev/null || warn "Writing per-site PHP settings failed."
 ok "JinnPanel deployed to $APP_ROOT"
 
 # ---------------------------------------------------------------------------
@@ -941,7 +950,7 @@ php_cli_missing() {
     # a false failure when grep exits early and php gets SIGPIPE.
     local mods missing=""
     mods=$(mktemp)
-    /usr/bin/php -m > "$mods" 2>/dev/null || true
+    /usr/bin/php-zts -m > "$mods" 2>/dev/null || true
     for ext in curl openssl pdo_mysql mbstring; do
         grep -qix "$ext" "$mods" || missing="$missing $ext"
     done
@@ -965,7 +974,7 @@ Description=JinnPanel - apply queued config changes (DNS zones, PHP/MariaDB/SFTP
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/php -d auto_prepend_file= /usr/local/bin/hostpanel-worker.php
+ExecStart=/usr/bin/php-zts -d auto_prepend_file= /usr/local/bin/hostpanel-worker.php
 UNIT
 
 cat > /etc/systemd/system/hostpanel-worker.timer <<'UNIT'
@@ -988,9 +997,9 @@ systemctl daemon-reload
 # (rendered after the pools exist, so sites never point at a missing one).
 log "Setting up the hosting accounts (Linux users, site folders, PHP-FPM pools)"
 # (Each account's sites switch to its pool as soon as that pool is up.)
-php -d auto_prepend_file= /usr/local/bin/hostpanel-worker.php sync-accounts | sed 's/^/    /' \
+/usr/bin/php-zts -d auto_prepend_file= /usr/local/bin/hostpanel-worker.php sync-accounts | sed 's/^/    /' \
     || warn "SETTING UP SOME ACCOUNTS FAILED (above) - their sites may not work; fix and re-run the installer."
-runuser -u frankenphp -- php "$APP_ROOT/worker/vhost-rebuild.php" > /tmp/jinnpanel-vhost-rebuild.log 2>&1 \
+runuser -u frankenphp -- /usr/bin/php-zts "$APP_ROOT/worker/vhost-rebuild.php" > /tmp/jinnpanel-vhost-rebuild.log 2>&1 \
     || { grep FAILED /tmp/jinnpanel-vhost-rebuild.log | sed 's/^/    /'; warn "Rewriting some site configs failed (above)."; }
 # VhostService reloads in the background; here, check and reload for real.
 sleep 2
@@ -1001,7 +1010,7 @@ else
     tail -n 5 /tmp/jinnpanel-validate.log | sed 's/^/    /'
     warn "THE WEB SERVER CONFIG IS INVALID (above) - the running config was kept; fix it and re-run the installer."
 fi
-runuser -u frankenphp -- php "$APP_ROOT/worker/sftp-sync.php" | sed 's/^/    /' || warn "Updating some SFTP logins failed (above)."
+runuser -u frankenphp -- /usr/bin/php-zts "$APP_ROOT/worker/sftp-sync.php" | sed 's/^/    /' || warn "Updating some SFTP logins failed (above)."
 
 # At boot: measure usage and apply the hard disk quotas right away
 # (otherwise the hourly run does it).
@@ -1012,7 +1021,7 @@ After=mariadb.service stalwart.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/php -d auto_prepend_file= /usr/local/bin/hostpanel-worker.php usage
+ExecStart=/usr/bin/php-zts -d auto_prepend_file= /usr/local/bin/hostpanel-worker.php usage
 
 [Install]
 WantedBy=multi-user.target
@@ -1039,7 +1048,7 @@ DNS_LINE=$(cd "$APP_ROOT" && runuser -u frankenphp -- env \
     JINNPANEL_NS1_HOST="${JINNPANEL_NS1_HOST:-}" JINNPANEL_NS1_IP="${JINNPANEL_NS1_IP:-}" \
     JINNPANEL_NS2_HOST="${JINNPANEL_NS2_HOST:-}" JINNPANEL_NS2_IP="${JINNPANEL_NS2_IP:-}" \
     JINNPANEL_NS2_IP_DETECTED="$NS2_IP_DETECTED" JINNPANEL_DNS_ZONE="${JINNPANEL_DNS_ZONE:-}" \
-    /usr/bin/php worker/dns-bootstrap.php | tail -n1) || DNS_LINE=""
+    /usr/bin/php-zts worker/dns-bootstrap.php | tail -n1) || DNS_LINE=""
 # "-" as the zone means the hostname has no public parent zone; a missing or
 # malformed line means the bootstrap itself failed - keep the two apart.
 DNS_BOOTSTRAP_FAILED=0
@@ -1191,7 +1200,7 @@ Description=JinnPanel - start the customer cron jobs due this minute
 [Service]
 Type=oneshot
 # root: each PHP job runs as its own account's Linux user (CronService).
-ExecStart=/usr/bin/php -d auto_prepend_file= $APP_ROOT/worker/cron-run.php
+ExecStart=/usr/bin/php-zts -d auto_prepend_file= $APP_ROOT/worker/cron-run.php
 # The jobs are detached children that may run past this oneshot: leave them be.
 KillMode=process
 UNIT
@@ -1375,8 +1384,8 @@ After=stalwart.service frankenphp.service
 Type=oneshot
 User=frankenphp
 Group=frankenphp
-ExecStart=/usr/bin/php $APP_ROOT/worker/mail-dns-sync.php
-ExecStart=/usr/bin/php $APP_ROOT/worker/ssl-sync.php
+ExecStart=/usr/bin/php-zts $APP_ROOT/worker/mail-dns-sync.php
+ExecStart=/usr/bin/php-zts $APP_ROOT/worker/ssl-sync.php
 UNIT
 cat > /etc/systemd/system/jinnpanel-mail-dns.timer <<'UNIT'
 [Unit]
@@ -1393,11 +1402,65 @@ UNIT
 systemctl daemon-reload
 systemctl enable jinnpanel-mail-dns.timer >/dev/null 2>&1
 systemctl start jinnpanel-mail-dns.timer
-MAIL_SYNC_OUT=$(runuser -u frankenphp -- /usr/bin/php "$APP_ROOT/worker/mail-dns-sync.php" 2>&1) || warn "Mail DNS sync reported problems (below); the daily timer retries."
+MAIL_SYNC_OUT=$(runuser -u frankenphp -- /usr/bin/php-zts "$APP_ROOT/worker/mail-dns-sync.php" 2>&1) || warn "Mail DNS sync reported problems (below); the daily timer retries."
 echo "$MAIL_SYNC_OUT" | grep -v '^Deprecated' | sed 's/^/    /'
 # Stalwart binds new listeners (587) only at startup.
 if grep -q 'submission on 587: added' <<< "$MAIL_SYNC_OUT"; then
     systemctl restart stalwart
+fi
+
+# Upgrade guard: after any dnf transaction that touches the web stack, put
+# the new binaries into service safely and check every site; plus an hourly
+# health check. Problems: journal, /var/lib/jinnpanel/health.txt, SSH login
+# banner. See docs/OPERATIONS.md "After a dnf upgrade".
+log "Installing the upgrade guard and health check"
+install -m 0755 "$SCRIPT_DIR/jinnpanel-after-upgrade.sh" /usr/local/sbin/jinnpanel-after-upgrade
+cat > /etc/systemd/system/jinnpanel-after-upgrade.service <<'UNIT'
+[Unit]
+Description=JinnPanel - after a dnf upgrade of the web stack: restart onto the new binaries safely, then check every site
+After=frankenphp.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/jinnpanel-after-upgrade repair
+UNIT
+cat > /etc/systemd/system/jinnpanel-healthcheck.service <<'UNIT'
+[Unit]
+Description=JinnPanel - health check: every site's home page, failed units, PHP CLI, access log
+After=frankenphp.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/jinnpanel-after-upgrade check
+UNIT
+cat > /etc/systemd/system/jinnpanel-healthcheck.timer <<'UNIT'
+[Unit]
+Description=Hourly JinnPanel health check
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=1h
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now jinnpanel-healthcheck.timer >/dev/null 2>&1
+# --no-block: dnf finishes first; the guard runs in the background, in the journal.
+dnf -y -q install python3-dnf-plugin-post-transaction-actions >/dev/null 2>&1 || warn "Could not install the dnf post-transaction-actions plugin - after a dnf upgrade, run jinnpanel-after-upgrade repair by hand."
+mkdir -p /etc/dnf/plugins/post-transaction-actions.d
+cat > /etc/dnf/plugins/post-transaction-actions.d/jinnpanel.action <<'ACTION'
+# JinnPanel: after these packages change, restart onto them safely and check every site.
+frankenphp:in:/usr/bin/systemctl start --no-block jinnpanel-after-upgrade.service
+php-zts*:in:/usr/bin/systemctl start --no-block jinnpanel-after-upgrade.service
+nginx*:in:/usr/bin/systemctl start --no-block jinnpanel-after-upgrade.service
+ACTION
+if /usr/local/sbin/jinnpanel-after-upgrade check > /tmp/jinnpanel-health.log 2>&1; then
+    ok "Health check: every site answers"
+else
+    grep '^PROBLEM' /tmp/jinnpanel-health.log | sed 's/^/    /'
+    warn "Health check found problems (above; also shown at SSH login)."
 fi
 
 if [ "$PUBLIC_A" = "$SERVER_IP" ]; then

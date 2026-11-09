@@ -56,7 +56,7 @@ has to name `/usr/bin`), which makes them run as `httpd_t`, the same domain
 as FrankenPHP: Caddy may then connect to their sockets. A site answering
 **502** means its pool isn't up: `systemctl status jinnpanel-php-fpm@default`,
 `ls /run/jinnpanel-php/default/` (one `<username>.sock` per account) and
-`php /usr/local/bin/hostpanel-worker.php sync-accounts` (as root) rebuilds
+`php-zts /usr/local/bin/hostpanel-worker.php sync-accounts` (as root) rebuilds
 every account's pools. A site's PHP errors go to `/var/www/<domain>/logs/`.
 
 Caddy's admin API is a Unix socket: reload with

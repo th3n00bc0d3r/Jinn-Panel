@@ -220,6 +220,12 @@ function check(array $e, string $defaultHost): void
     }
     if (array_key_exists('location', $opt)) {
         $loc = $r['headers']['location'][0] ?? null;
+        // Caddy >= 2.11 redirects relatively (php_fastcgi: "./wp-admin/");
+        // compare what the browser resolves it to.
+        if ($loc !== null && str_starts_with($loc, './')) {
+            $req = (string) parse_url($path, PHP_URL_PATH);
+            $loc = substr($req, 0, strrpos($req, '/') + 1) . substr($loc, 2);
+        }
         T::ok($loc === $opt['location'], "{$label}: Location {$opt['location']}", 'got ' . var_export($loc, true));
     }
     foreach ($opt['headers'] ?? [] as $name => $value) {

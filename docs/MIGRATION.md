@@ -94,8 +94,8 @@ for example copied back from offsite storage), restore them directly:
 
    ```
    cd /var/www/hostpanel
-   runuser -u frankenphp -- php worker/migration-import.php --list
-   runuser -u frankenphp -- php worker/migration-import.php <admin-username> <user> [<user> ...]
+   runuser -u frankenphp -- php-zts worker/migration-import.php --list
+   runuser -u frankenphp -- php-zts worker/migration-import.php <admin-username> <user> [<user> ...]
    ```
 
 The restore is the same as for the other modes, and progress, the report and

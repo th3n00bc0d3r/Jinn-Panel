@@ -53,6 +53,15 @@ df -h / /var
 each port answers), disk and memory, and the last 200 log lines of any
 service.
 
+**Automatic:** `jinnpanel-healthcheck.timer` runs
+`jinnpanel-after-upgrade check` hourly. It loads every site's home page
+through the local web server, looks for failed JinnPanel units and missing
+PHP/FrankenPHP/nginx binaries, and checks that the access log is still being
+written. Problems go to the journal (`journalctl -t jinnpanel-health`), to
+`/var/lib/jinnpanel/health.txt`, and to a banner shown at SSH login
+(`/etc/motd.d/jinnpanel-health`, removed once a check passes). Run it by hand
+any time: `jinnpanel-after-upgrade check`.
+
 ## Logs
 
 | Where | What |
@@ -86,10 +95,10 @@ journalctl -u hostpanel-worker -n 50
 Commands you can run by hand (as root):
 
 ```bash
-php /usr/local/bin/hostpanel-worker.php sync-accounts      # rebuild every account: user, folders, pools, static servers
-php /usr/local/bin/hostpanel-worker.php sync-account <id>  # one account (users.id)
-php /usr/local/bin/hostpanel-worker.php usage              # measure usage now, apply hard quotas
-php /usr/local/bin/hostpanel-worker.php backup-all         # the daily backup run, now
+php-zts /usr/local/bin/hostpanel-worker.php sync-accounts      # rebuild every account: user, folders, pools, static servers
+php-zts /usr/local/bin/hostpanel-worker.php sync-account <id>  # one account (users.id)
+php-zts /usr/local/bin/hostpanel-worker.php usage              # measure usage now, apply hard quotas
+php-zts /usr/local/bin/hostpanel-worker.php backup-all         # the daily backup run, now
 ```
 
 ## Backups and restores
@@ -167,6 +176,83 @@ automatically. What the panel can't do for you:
 Test by sending to a Gmail address and opening "Show original": SPF, DKIM
 and DMARC should all say PASS.
 
+## After a dnf upgrade
+
+FrankenPHP (which bundles Caddy), the `php-zts-*` packages and nginx come
+from repositories JinnPanel doesn't control, and a minor version can change
+behaviour the panel relies on. The installer guards against this:
+
+- **dnf hook.** `python3-dnf-plugin-post-transaction-actions` with
+  `/etc/dnf/plugins/post-transaction-actions.d/jinnpanel.action`: whenever
+  a transaction installs or upgrades `frankenphp`, `php-zts*` or `nginx*`,
+  `jinnpanel-after-upgrade.service` runs in the background (`repair`). It
+  restores `/usr/bin/php` and validates the Caddyfile with the **new**
+  frankenphp. If the config is valid it restarts FrankenPHP; if not it does
+  not restart, so the old process keeps serving, and the check reports it.
+  It then restarts the PHP-FPM masters and static servers onto the new
+  binaries and runs the full check above.
+- **Nothing depends on `/usr/bin/php`.** Every unit and installer step runs
+  `/usr/bin/php-zts`. The `php` symlink from `php-zts-cli` is deleted on
+  every upgrade of that package: the old package's postuninstall script runs
+  after the new one's postinstall.
+- **Site configs don't rely on Caddy's try_files fallback.** Every
+  `php_fastcgi` that `VhostService` writes has a `try_files` list ending in
+  `{path}` (see the incident below).
+
+After an upgrade, check the result:
+
+```bash
+journalctl -u jinnpanel-after-upgrade -b --no-pager | tail -20
+cat /var/lib/jinnpanel/health.txt          # OK ... / FAIL ... with the list
+jinnpanel-after-upgrade check              # again, by hand
+```
+
+Upgrading by hand on a box without the hook (or after `--noplugins`):
+`dnf upgrade`, then `jinnpanel-after-upgrade repair`. To preview a FrankenPHP
+upgrade without touching the running server, start the new binary on a spare
+port with a copy of one site block (`frankenphp run --config <copy>`), as was
+done in the incident below.
+
+### Incident 2026-11: sites "File not found." after `dnf upgrade`
+
+**Symptoms.** After a routine `dnf -y upgrade`, every site whose home page is
+an `index.html` (no `index.php`) answered **404 "File not found."** on `/`;
+other files on those sites, and every PHP site, still worked. Separately,
+`hostpanel-worker`, `jinnpanel-cron` and `jinnpanel-mail-dns` all failed
+with `status=203/EXEC` ("Unable to locate executable '/usr/bin/php'"), so
+panel changes, customer cron jobs and the mail DNS/certificate sync stopped.
+Neither failure raised an alert.
+
+**Cause 1: Caddy 2.11 `php_fastcgi`.** FrankenPHP's new Caddy compiles
+php_fastcgi's `try_files` with `try_policy: first_exist_fallback`: when no
+listed file exists, the **last** entry is used anyway. The default list is
+`{path} {path}/index.php index.php`, so `/` on an index.html-only site was
+rewritten to `/index.php` and sent to PHP-FPM, which has no such file.
+Earlier Caddy versions used `first_exist`: nothing found meant the path was
+left alone and the static server answered. This applies to user-supplied
+`try_files` too.
+**Fix:** `VhostService::keepPathFallback()` appends `{path}` to every
+php_fastcgi `try_files` list (or emits `try_files {path} {path}/index.php
+{path}` when there is none). The fallback is then "leave the path alone",
+which is the old behaviour. Lists that end in `{path}` or `=<status>` are
+left as they are. Re-running the installer rewrites every site
+(`worker/vhost-rebuild.php`).
+
+**Cause 2: the `/usr/bin/php` symlink.** `php-zts-cli` creates
+`/usr/bin/php -> php-zts` in its postinstall script only if the link is
+missing. Its postuninstall removes the link, and on an upgrade the **old**
+package's postuninstall runs **after** the new package's postinstall. Every
+upgrade of the package therefore deletes the link.
+**Fix:** the installer and all systemd units call `/usr/bin/php-zts`.
+
+**Found at the same time:** `/var/log/jinnpanel-web` was labelled
+`httpd_log_t`, which lets FrankenPHP append to the log but not rename it.
+At 100 MiB Caddy's `roll_size` rotation was denied by SELinux (`avc: denied
+{ remove_name }`), and Caddy then dropped every new access-log line, so
+**bandwidth accounting counted nothing** for weeks. **Fix:** the directory is
+now `httpd_sys_rw_content_t`, like the panel's other writable directories.
+The health check flags an access log that hasn't been written for 24 h.
+
 ## After a reboot
 
 ```bash
@@ -180,11 +266,14 @@ curl -sI https://panel.<hostname>/login | head -1    # HTTP/2 200
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| A site answers **502** | The account's PHP-FPM pool isn't up | `systemctl status jinnpanel-php-fpm@default`, `ls /run/jinnpanel-php/default/`, then `php /usr/local/bin/hostpanel-worker.php sync-account <id>` |
+| A site answers **502** | The account's PHP-FPM pool isn't up | `systemctl status jinnpanel-php-fpm@default`, `ls /run/jinnpanel-php/default/`, then `php-zts /usr/local/bin/hostpanel-worker.php sync-account <id>` |
 | A site answers **503** | The account is suspended | WHM > Accounts > Unsuspend |
 | A site answers **509** | Monthly bandwidth used up | Bigger package, or wait for the month to roll over |
 | Static files 404/502 but PHP works | The account's static server is down | `systemctl status jinnpanel-static@<account>` |
 | Panel changes don't apply | Worker timer stopped or failing | See [The root worker](#the-root-worker) |
+| Sites show **"File not found."** (PHP-FPM's 404) on `/`, other files fine | FrankenPHP/Caddy upgraded under configs written by an older JinnPanel | Update JinnPanel and re-run the installer; see [After a dnf upgrade](#after-a-dnf-upgrade) |
+| Worker / cron / mail sync fail with `203/EXEC`, `/usr/bin/php` missing | Units written by an older installer; `php-zts-cli` upgrade removed the symlink | Re-run the installer (units use `/usr/bin/php-zts`); `ln -s php-zts /usr/bin/php` meanwhile |
+| Bandwidth usage stays at 0 / access log not growing | Caddy can't roll `/var/log/jinnpanel-web/access.log` (SELinux label) | Re-run the installer (relabels the directory); `journalctl -u frankenphp \| grep 'log file'` |
 | Domains stop resolving after a restart | Knot started without the zone list | `cat /etc/knot/zones.conf`; re-run the installer, or make any DNS change in the panel (the worker rewrites the list) |
 | Certificate warning on a domain | Domain doesn't resolve here yet, or ACME rate limits | Fix DNS, then Run AutoSSL; read `journalctl -u frankenphp` |
 | Mail rejected by Gmail/Outlook | No PTR, port 25 blocked, or IP on a blocklist | See [Mail deliverability](#mail-deliverability) |

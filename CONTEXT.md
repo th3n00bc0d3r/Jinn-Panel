@@ -161,6 +161,15 @@ the `db_user` index change) and also ship an upgrade file in
 - First run: `/setup` creates the first admin account with the one-time
   token install.sh prints (also `/root/.jinnpanel/setup_token`); it disables
   itself once an admin exists.
+- Upgrade guard (2026-11): a dnf post-transaction action runs
+  `jinnpanel-after-upgrade repair` whenever frankenphp / php-zts* / nginx*
+  change, and `jinnpanel-healthcheck.timer` runs `... check` hourly (every
+  site's `/`, failed units, binaries, access log; problems shown at SSH login).
+  Always call the CLI as `/usr/bin/php-zts`, never `/usr/bin/php` (dnf
+  upgrades delete that symlink). Don't rely on Caddy's php_fastcgi try_files
+  fallback: since 2.11 it is "use the last entry", and VhostService ends
+  every list with `{path}`. docs/OPERATIONS.md "After a dnf upgrade" has the
+  incident write-up.
 - Tests: `php tests/UnitTest.php`, `php tests/HtaccessTranslatorTest.php`;
   CI (`.github/workflows/ci.yml`) lints every PHP file and runs both.
 - Logs: `app/storage/logs/` on the server (`/var/www/hostpanel/storage/logs`),
