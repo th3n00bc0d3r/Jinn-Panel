@@ -117,13 +117,14 @@ function test_passwords(): void
 function test_vhost_php_server_rewrite(): void
 {
     $sock = 'unix//run/jinnpanel-php/default/u.sock';
-    T::same("php_fastcgi $sock\nfile_server", VhostService::fpmRules('php_server', $sock), 'bare php_server');
+    T::same("php_fastcgi $sock {\n\ttry_files {path} {path}/index.php {path}\n}\nfile_server", VhostService::fpmRules('php_server', $sock), 'bare php_server (try_files ends in {path}: Caddy 2.11 first_exist_fallback)');
     $in = "handle @x {\n\trewrite * /a.php\n\tphp_server {\n\t\ttry_files {path} {path}/index.php\n\t}\n}";
     $out = VhostService::fpmRules($in, $sock);
     T::ok(!str_contains($out, 'php_server'), 'no php_server left', $out);
-    T::ok(str_contains($out, "\tphp_fastcgi $sock {\n\t\ttry_files {path} {path}/index.php\n\t}\n\tfile_server"), 'subdirectives kept, file_server after', $out);
-    T::same(substr_count($in, '{'), substr_count($out, '{'), 'braces balanced');
-    T::same("php_fastcgi @m $sock\nfile_server @m", VhostService::fpmRules('php_server @m', $sock), 'matcher kept on both');
+    T::ok(str_contains($out, "\tphp_fastcgi $sock {\n\t\ttry_files {path} {path}/index.php {path}\n\t}\n\tfile_server"), 'subdirectives kept ({path} fallback appended), file_server after', $out);
+    T::same(substr_count($out, '{'), substr_count($out, '}'), 'braces balanced');
+    T::same("php_fastcgi @m $sock {\n\ttry_files {path} {path}/index.php {path}\n}\nfile_server @m", VhostService::fpmRules('php_server @m', $sock), 'matcher kept on both');
+    T::ok(str_contains(VhostService::fpmRules("php_server {\n\ttry_files {path} =404\n}", $sock), "try_files {path} =404\n"), '=status fallback left alone');
     T::same('respond "php_server" 200', VhostService::fpmRules('respond "php_server" 200', $sock), 'only directive position');
 }
 
@@ -134,7 +135,7 @@ function test_vhost_static_server(): void
     $out = VhostService::fpmRules("php_server", $sock, $static);
     // In a route block: inside handle blocks Caddy would sort reverse_proxy before php_fastcgi
     // and the static server would get .php requests (it refuses them, but PHP must run).
-    T::ok(str_starts_with($out, "route {\n\tphp_fastcgi $sock\n\treverse_proxy unix//run/jinnpanel-static/u/static.sock {"), 'php_server -> route { pool, then static server }', $out);
+    T::ok(str_starts_with($out, "route {\n\tphp_fastcgi $sock {\n\t\ttry_files {path} {path}/index.php {path}\n\t}\n\treverse_proxy unix//run/jinnpanel-static/u/static.sock {"), 'php_server -> route { pool, then static server }', $out);
     T::ok(str_contains($out, 'header_up X-JP-Root {http.vars.root}') && str_contains($out, 'header_up X-JP-TTL "300"'), 'root and cache lifetime passed', $out);
     T::ok(str_contains($out, "handle_response @jp_missing {\n\t\t\terror 404\n\t\t}"), '404 from the static server becomes a Caddy error', $out);
     T::ok(!str_contains(VhostService::fpmRules("file_server", $sock, $static), 'file_server'), 'file_server replaced');

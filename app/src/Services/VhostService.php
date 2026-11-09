@@ -176,6 +176,37 @@ final class VhostService
     }
 
     /**
+     * Since Caddy 2.11, php_fastcgi's try_files uses try_policy
+     * first_exist_fallback: when no listed file exists, the LAST one is used
+     * anyway. With the default list that sends "/" on a site served from
+     * index.html to PHP as /index.php ("File not found." from FPM) instead
+     * of to the static server. Ending the list with {path} restores the
+     * old first_exist behaviour: nothing found = the path is left alone,
+     * so it isn't PHP and the static handler serves it.
+     *
+     * @param list<string> $sub
+     * @return list<string>
+     */
+    private static function keepPathFallback(array $sub): array
+    {
+        $found = false;
+        foreach ($sub as $k => $line) {
+            if (preg_match('/^(\s*try_files\s+)(.*?)\s*$/', $line, $t)) {
+                $found = true;
+                $items = preg_split('/\s+/', $t[2]);
+                $last = (string) end($items);
+                if ($last !== '{path}' && !str_starts_with($last, '=')) {
+                    $sub[$k] = $t[1] . $t[2] . ' {path}';
+                }
+            }
+        }
+        if (!$found) {
+            array_unshift($sub, 'try_files {path} {path}/index.php {path}');
+        }
+        return $sub;
+    }
+
+    /**
      * php_server ("run PHP here", like FrankenPHP's own directive) as the
      * account's pool: php_fastcgi (same try_files/index/split semantics)
      * followed by the static file handler for everything that isn't PHP.
@@ -187,6 +218,7 @@ final class VhostService
     {
         $m = $matcher !== '' ? " $matcher" : '';
         $out = "php_fastcgi{$m} {$sock}";
+        $sub = self::keepPathFallback($sub);
         if ($sub) {
             $out .= " {\n" . implode('', array_map(fn($l) => "$indent\t" . trim($l) . "\n", $sub)) . "$indent}";
         }
