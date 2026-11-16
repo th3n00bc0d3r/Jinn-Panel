@@ -1,115 +1,141 @@
-<?php include __DIR__ . '/_helpers.php'; ?>
-<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-    <p class="text-sm text-slate-500 max-w-2xl">
-        Move accounts from a cPanel &amp; WHM server - site files, databases, email accounts and stored mail - in one click.
-        A single cPanel account, all accounts of a WHM reseller<?= Auth::isAdmin() ? ', or a whole server through WHM root' : '' ?>.
-    </p>
-    <a href="/whm/migrations/create" class="inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-4 py-2 transition-colors shrink-0">
-        <?= icon('transfer', 'h-4 w-4') ?> New migration
-    </a>
-</div>
+<?php
+/** @var list<array<string,mixed>> $migrations with creator, item_count, done_count */
+/** @var array<string,string> $backupFiles username => archive path (admin only) */
+/** @var string $importDir */
+/** @var list<array<string,mixed>> $s3Fetches newest first (admin only) */
+/** @var array<string,mixed> $me */
+include __DIR__ . '/_helpers.php';
+$isAdmin = $me['role'] === 'admin';
+View::slot('desc', e('Move accounts from a cPanel & WHM server - site files, databases, email accounts and stored mail. A single cPanel account, all accounts of a WHM reseller'
+    . (Auth::isAdmin() ? ', a whole server through WHM root, or cPanel backup files' : '') . '.'));
+View::slot('actions', '<a href="/whm/migrations/create" class="btn btn-primary">' . icon('transfer') . 'New migration</a>');
 
-<?php if (Auth::isAdmin()): ?>
-<div class="bg-white rounded-xl border border-slate-200 shadow-sm p-5 mb-4">
-    <div class="flex flex-col md:flex-row md:items-start gap-4">
-        <div class="flex-1">
-            <h2 class="text-sm font-semibold text-slate-800">From backup files</h2>
-            <p class="text-sm text-slate-500 mt-1">
-                Restore cPanel full backups already on this server - copied from offsite storage, cPanel's scheduled backups or cpmove files.
-                Put them in <span class="font-mono text-slate-700"><?= e($importDir) ?></span> (readable by frankenphp), named
-                <span class="font-mono">cpmove-&lt;user&gt;.tar.gz</span>, <span class="font-mono">backup-&lt;date&gt;_&lt;user&gt;.tar.gz</span> or <span class="font-mono">&lt;user&gt;.tar.gz</span>.
-            </p>
+$fetching = $s3Fetches && in_array($s3Fetches[0]['status'], ['queued', 'running'], true);
+$running = array_filter($migrations, fn($mg) => in_array($mg['status'], MigrationService::ACTIVE, true) && !MigrationService::isStalled($mg));
+$when = fn(string $t) => '<time datetime="' . e(date('c', (int) strtotime($t))) . '" title="' . e($t) . '">' . e(fmt_ago($t)) . '</time>';
+?>
+<div class="stack">
+    <?php if ($fetching || $running): ?>
+    <?= Ui::busy(trim(
+        ($fetching ? 'Fetching backups from S3 into the import folder. ' : '')
+        . ($running ? Ui::plural(count($running), 'migration is', 'migrations are') . ' running in the background.' : '')
+    )) ?>
+    <?php endif; ?>
+
+    <?php if (Auth::isAdmin() && ($backupFiles || $s3Fetches)): ?>
+    <section class="card" id="from-files" aria-labelledby="files-title">
+        <div class="card-header">
+            <div class="min-w-0">
+                <h2 id="files-title" class="card-title">Backup files on this server</h2>
+                <p class="card-desc">cPanel full backups waiting in <?= Ui::copyable($importDir) ?></p>
+            </div>
             <?php if ($backupFiles): ?>
-            <p class="text-xs text-slate-400 mt-2"><?= count($backupFiles) ?> found: <?= e(implode(', ', array_keys($backupFiles))) ?></p>
+            <form method="post" action="/whm/migrations/from-files">
+                <?= Csrf::field() ?>
+                <button type="submit" class="btn btn-primary"><?= icon('users') ?>Choose accounts</button>
+            </form>
             <?php endif; ?>
         </div>
-        <form method="post" action="/whm/migrations/from-files" class="shrink-0">
-            <?= Csrf::field() ?>
-            <button class="inline-flex items-center gap-2 rounded-lg <?= $backupFiles ? 'bg-indigo-600 hover:bg-indigo-500 text-white' : 'bg-slate-100 text-slate-400 cursor-not-allowed' ?> text-sm font-medium px-4 py-2 transition-colors" <?= $backupFiles ? '' : 'disabled' ?>>
-                <?= icon('upload', 'h-4 w-4') ?> Choose accounts
-            </button>
-        </form>
-    </div>
-    <details class="mt-4 border-t border-slate-100 pt-4" <?= $s3Fetches && in_array($s3Fetches[0]['status'], ['queued', 'running'], true) ? 'open' : '' ?>>
-        <summary class="cursor-pointer text-sm font-medium text-indigo-700 hover:text-indigo-600">Fetch backups from S3 (AWS, R2, Wasabi, Backblaze, MinIO)</summary>
-        <form method="post" action="/whm/migrations/s3-fetch" class="mt-3 grid gap-3 md:grid-cols-3" autocomplete="off">
-            <?= Csrf::field() ?>
-            <div><label class="block text-xs font-medium text-slate-600 mb-1">Bucket</label><input name="bucket" required class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"></div>
-            <div><label class="block text-xs font-medium text-slate-600 mb-1">Prefix (folder)</label><input name="prefix" placeholder="cpanel/2026-09-30/" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono"></div>
-            <div><label class="block text-xs font-medium text-slate-600 mb-1">Region</label><input name="region" placeholder="us-east-1 (auto for R2)" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"></div>
-            <div><label class="block text-xs font-medium text-slate-600 mb-1">Endpoint (blank for AWS)</label><input name="endpoint" placeholder="https://s3.eu-central-003.backblazeb2.com" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono"></div>
-            <div><label class="block text-xs font-medium text-slate-600 mb-1">Access key</label><input name="access_key" required class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono"></div>
-            <div><label class="block text-xs font-medium text-slate-600 mb-1">Secret key</label><input type="password" name="secret_key" required class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono"></div>
-            <div class="md:col-span-3 flex flex-wrap items-center gap-3">
-                <button class="rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-sm font-medium px-4 py-2">Fetch into the import folder</button>
-                <span class="text-xs text-slate-400">Downloads every cpmove-/backup-*.tar.gz under the prefix. The secret key is stored encrypted only until the fetch ends; a read-only key is enough.</span>
+        <div class="card-body grid grid-cols-1 gap-6 <?= $s3Fetches ? 'lg:grid-cols-2' : '' ?>">
+            <div class="min-w-0">
+                <?php if ($backupFiles): ?>
+                <p class="text-sm font-medium text-fg"><?= e(Ui::plural(count($backupFiles), 'account')) ?> found</p>
+                <ul class="mt-2 flex flex-wrap gap-1.5" aria-label="Accounts with a backup file">
+                    <?php foreach (array_slice(array_keys($backupFiles), 0, 16) as $u): ?>
+                    <li class="chip" title="<?= e(basename((string) $backupFiles[$u])) ?>"><?= e($u) ?></li>
+                    <?php endforeach; ?>
+                    <?php if (count($backupFiles) > 16): ?><li class="chip text-muted">+<?= count($backupFiles) - 16 ?> more</li><?php endif; ?>
+                </ul>
+                <?php else: ?>
+                <p class="text-sm text-muted">No backup files there yet<?= $fetching ? ' - they appear here once the S3 fetch has downloaded them.' : '.' ?></p>
+                <?php endif; ?>
             </div>
-        </form>
-        <?php if ($s3Fetches): ?>
-        <ul class="mt-4 space-y-1 text-xs">
-            <?php foreach ($s3Fetches as $f): ?>
-            <li class="flex flex-wrap gap-2">
-                <span class="font-medium <?= $f['status'] === 'done' ? 'text-emerald-700' : ($f['status'] === 'failed' ? 'text-red-700' : 'text-amber-700') ?>"><?= e($f['status']) ?></span>
-                <span class="font-mono text-slate-600">s3://<?= e($f['bucket'] . '/' . $f['prefix']) ?></span>
-                <span class="text-slate-500"><?= e((string) $f['progress']) ?></span>
-                <span class="text-slate-400 ml-auto"><?= e((string) $f['created_at']) ?></span>
-            </li>
-            <?php endforeach; ?>
-        </ul>
-        <?php if (in_array($s3Fetches[0]['status'], ['queued', 'running'], true)): ?>
-        <script>setTimeout(function () { location.reload(); }, 8000);</script>
-        <?php endif; ?>
-        <?php endif; ?>
-    </details>
-</div>
-<?php endif; ?>
 
-<div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-    <div class="overflow-x-auto">
-    <table class="w-full text-sm">
-        <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
-            <tr>
-                <th class="text-left font-medium px-5 py-3">#</th>
-                <th class="text-left font-medium px-5 py-3">Source</th>
-                <th class="text-left font-medium px-5 py-3">Accounts</th>
-                <th class="text-left font-medium px-5 py-3">Status</th>
-                <?php if ($me['role'] === 'admin'): ?><th class="text-left font-medium px-5 py-3">Started by</th><?php endif; ?>
-                <th class="text-left font-medium px-5 py-3">Created</th>
-                <th class="text-right font-medium px-5 py-3"></th>
-            </tr>
-        </thead>
-        <tbody class="divide-y divide-slate-100">
-            <?php foreach ($migrations as $mg): ?>
-            <?php $stalled = MigrationService::isStalled($mg); ?>
-            <tr class="hover:bg-slate-50/70">
-                <td class="px-5 py-3 text-slate-400"><?= (int) $mg['id'] ?></td>
-                <td class="px-5 py-3">
-                    <p class="font-medium text-slate-800"><?= e($mg['source_user']) ?>@<?= e($mg['source_host']) ?></p>
-                    <p class="text-xs text-slate-400"><?= e(migration_source_label($mg['source_type'])) ?> &middot; <?= e($mg['transfer_mode']) ?> transfer</p>
-                </td>
-                <td class="px-5 py-3 text-slate-600">
-                    <?php if ($mg['status'] === 'draft'): ?>
-                        <span class="text-slate-400">not chosen yet</span>
-                    <?php else: ?>
-                        <?= (int) $mg['done_count'] ?> / <?= (int) $mg['item_count'] ?> done
-                    <?php endif; ?>
-                </td>
-                <td class="px-5 py-3"><?= migration_status_badge($stalled ? 'stalled' : $mg['status']) ?></td>
-                <?php if ($me['role'] === 'admin'): ?><td class="px-5 py-3 text-slate-500"><?= e($mg['creator']) ?></td><?php endif; ?>
-                <td class="px-5 py-3 text-slate-500 whitespace-nowrap"><?= e(substr((string) $mg['created_at'], 0, 16)) ?></td>
-                <td class="px-5 py-3 text-right">
-                    <a href="/whm/migrations/<?= (int) $mg['id'] ?><?= $mg['status'] === 'draft' ? '/select' : '' ?>" class="text-indigo-600 hover:text-indigo-500 font-medium">
-                        <?= $mg['status'] === 'draft' ? 'Continue' : 'Open' ?>
-                    </a>
-                </td>
-            </tr>
-            <?php endforeach; ?>
-            <?php if (!$migrations): ?>
-            <tr><td colspan="7" class="px-5 py-12 text-center text-slate-400">
-                No migrations yet. <a href="/whm/migrations/create" class="text-indigo-600 hover:text-indigo-500 font-medium">Connect to a cPanel server</a> to get started.
-            </td></tr>
+            <?php if ($s3Fetches): ?>
+            <div class="min-w-0 lg:border-l lg:border-line lg:pl-6">
+                <div class="flex items-center justify-between gap-3">
+                    <h3 class="section-title">Fetches from S3</h3>
+                    <a href="/whm/migrations/create#s3" class="link text-xs">Fetch more</a>
+                </div>
+                <ul class="mt-3 space-y-3">
+                    <?php foreach ($s3Fetches as $f): $fst = (string) $f['status']; ?>
+                    <li class="text-sm">
+                        <div class="flex items-center justify-between gap-3">
+                            <span class="min-w-0 truncate font-mono text-xs text-fg" title="s3://<?= e($f['bucket'] . '/' . $f['prefix']) ?>">s3://<?= e($f['bucket'] . '/' . $f['prefix']) ?></span>
+                            <?= match ($fst) {
+                                'done' => Ui::status('done', 'Done'),
+                                'failed' => Ui::status('failed'),
+                                'running' => Ui::status('working', 'Fetching'),
+                                default => Ui::status('pending', 'Queued'),
+                            } ?>
+                        </div>
+                        <p class="mt-0.5 text-xs <?= $fst === 'failed' ? 'text-danger-text' : 'text-muted' ?>">
+                            <?= e((string) $f['progress']) ?><?= $f['progress'] ? ' · ' : '' ?><?= $when((string) $f['created_at']) ?>
+                        </p>
+                    </li>
+                    <?php endforeach; ?>
+                </ul>
+            </div>
             <?php endif; ?>
-        </tbody>
-    </table>
-    </div>
+        </div>
+    </section>
+    <?php endif; ?>
+
+    <section class="card" aria-labelledby="migrations-title">
+        <div class="card-header">
+            <h2 id="migrations-title" class="card-title"><?= e(Ui::plural(count($migrations), 'migration')) ?></h2>
+        </div>
+        <div class="table-wrap">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th scope="col">Source</th>
+                        <th scope="col" class="hidden sm:table-cell">Accounts</th>
+                        <th scope="col" class="hidden sm:table-cell">Status</th>
+                        <th scope="col" class="hidden md:table-cell">Created</th>
+                        <th scope="col" class="hidden text-right sm:table-cell"><span class="sr-only">Actions</span></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($migrations as $mg):
+                        $id = (int) $mg['id'];
+                        $draft = $mg['status'] === 'draft';
+                        $stalled = MigrationService::isStalled($mg);
+                        $href = '/whm/migrations/' . $id . ($draft ? '/select' : '');
+                        $total = (int) $mg['item_count'];
+                        $done = (int) $mg['done_count'];
+                        $badge = migration_status_badge($stalled ? 'stalled' : (string) $mg['status']);
+                        $count = $draft ? 'Accounts not chosen yet' : $done . ' of ' . $total . ' done';
+                    ?>
+                    <tr>
+                        <td class="max-w-[18rem] sm:max-w-[24rem]">
+                            <a href="<?= e($href) ?>" class="block truncate font-medium text-fg hover:text-accent-text"><?= e(migration_source_name($mg)) ?></a>
+                            <p class="mt-0.5 truncate text-xs text-muted"><span class="tabular-nums">#<?= $id ?></span> · <?= e(migration_source_meta($mg)) ?></p>
+                            <div class="mt-2 flex flex-wrap items-center gap-2 sm:hidden"><?= $badge ?><span class="text-xs text-muted"><?= e($count) ?></span></div>
+                        </td>
+                        <td class="hidden min-w-[7.5rem] sm:table-cell">
+                            <?php if ($draft): ?>
+                            <span class="whitespace-nowrap text-sm text-subtle">Not chosen yet</span>
+                            <?php else: ?>
+                            <p class="mb-1.5 whitespace-nowrap text-sm tabular-nums text-fg"><?= $done ?> <span class="text-muted">of <?= $total ?> done</span></p>
+                            <?= Ui::progress($total > 0 ? $done / $total * 100 : 0, 'Accounts done in migration #' . $id, $mg['status'] === 'failed' || $stalled ? 'danger' : ($done === $total && $total > 0 ? 'success' : 'accent')) ?>
+                            <?php endif; ?>
+                        </td>
+                        <td class="hidden sm:table-cell"><?= $badge ?></td>
+                        <td class="hidden whitespace-nowrap text-muted md:table-cell">
+                            <?= $when((string) $mg['created_at']) ?>
+                            <?php if ($isAdmin): ?><p class="text-xs text-subtle">by <?= e((string) $mg['creator']) ?></p><?php endif; ?>
+                        </td>
+                        <td class="hidden text-right sm:table-cell">
+                            <a href="<?= e($href) ?>" class="btn <?= $draft ? 'btn-primary' : 'btn-secondary' ?> btn-sm"><?= $draft ? 'Continue' : 'Open' ?></a>
+                        </td>
+                    </tr>
+                    <?php endforeach; ?>
+                    <?php if (!$migrations): ?>
+                    <?= Ui::emptyRow(5, 'No migrations yet', 'Connect to a cPanel server' . (Auth::isAdmin() ? ' or import cPanel backup files' : '') . ' to bring its accounts over. Nothing is copied until you choose the accounts.', 'transfer', '<a href="/whm/migrations/create" class="btn btn-primary">' . icon('transfer') . 'New migration</a>') ?>
+                    <?php endif; ?>
+                </tbody>
+            </table>
+        </div>
+    </section>
 </div>

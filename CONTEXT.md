@@ -4,9 +4,9 @@ Read this first. It's the orientation for anyone (human or AI assistant)
 working on the codebase: what JinnPanel is, how it's put together, the
 conventions to follow, and where it stands. Deeper detail lives in `docs/`
 (ARCHITECTURE, FEATURES, INSTALL, OPERATIONS, MIGRATION, TROUBLESHOOTING,
-COMPARISON, ICONS).
+COMPARISON, ICONS, UI).
 
-Last reviewed: 2026-10-01.
+Last reviewed: 2026-11-14.
 
 ## What it is
 
@@ -31,15 +31,17 @@ SFTPGo (REST API), Knot DNS and Valkey. It is installed by
 ```
 app/
   public/index.php          front controller + every route (Router)
-  public/assets/            app.js (confirm dialogs, flash), Tailwind input/output css
+  public/assets/            js/app.js (dialogs, toasts, Ctrl-K, data-* behaviour), js/theme.js,
+                            js/pages/<name>.js (per page), css/input.css (design tokens + components)
   src/bootstrap.php         web bootstrap: autoloader, error logging, session start
   src/cli_bootstrap.php     CLI bootstrap (migration runner): no session, no limits
   src/Config.php.template   secrets + paths; install.sh renders it to Config.php
   src/{Router,Auth,Database,View}.php
   src/Controllers/          one static class per area; public static methods = routes
   src/Services/             integrations (Vhost, Dns, Mail, Sftp, Provisioning, ...)
-  src/Support/              Csrf, Flash, Http (cURL JSON), Quota, Crypto
-  views/                    plain PHP templates; layouts/ (whm, cpanel, auth, blank)
+  src/Support/              Csrf, Flash, Http (cURL JSON), Quota, Crypto, Ui (view components),
+                            Mailer, Settings, RecoveryCodes
+  views/                    plain PHP templates; layouts/ (whm, cpanel, auth, blank), partials/shell.php
   migrations/               schema.sql (idempotent, re-applied by install.sh) + upgrade scripts
   worker/hostpanel-worker.php  root worker, run every 5s by a systemd timer
                                (also: `sync-accounts`, `backup <id>`, `restore`, `backup-all`)
@@ -50,6 +52,7 @@ app/
   storage/logs/             app.log, reload.log, migration-<id>.log
 /var/lib/jinnpanel/worker/  what the root worker writes back: worker-*.log, live-*.log
 tests/                      UnitTest.php (no deps), HtaccessTranslatorTest.php (needs frankenphp)
+dev/preview/                every view with sample data on a laptop (serve.sh, render-all.php, fixtures/)
 installer/install.sh        full server install; safe to re-run (re-deploys the app)
 docs/                       user/operator documentation
 ```
@@ -68,7 +71,11 @@ No namespaces, no Composer, no framework.
    `View::render('dir/view', $data, 'layout')` or `Flash::ok/error()` +
    `header('Location: ...'); exit;`.
 3. Views escape everything with `e()`; numbers with `(int)`. `icon($name)`
-   renders the inline SVG set defined in `View.php`.
+   renders the inline SVG set defined in `View.php`; `Ui::` (src/Support/Ui.php)
+   builds labelled fields, badges, empty states, icon buttons and confirm
+   forms. A view hands the layout its header actions, description,
+   breadcrumbs and page script with `View::slot()`, `View::breadcrumbs()`,
+   `View::script()`. docs/UI.md has the whole design system.
 
 Scoping rules used everywhere: a `user` only ever touches rows with
 `user_id = <own id>` (every query filters on it); a `reseller` only sees
@@ -141,9 +148,15 @@ the `db_user` index change) and also ship an upgrade file in
 - Validate identifiers with allow-list regexes before they touch a shell,
   a path or SQL identifier (domains, usernames, db names); shell arguments
   always via `escapeshellarg`; SQL values always via prepared statements.
-- **Tailwind**: `tailwind.config.js` only scans `views/**/*.php`, so class
-  names must appear literally in a view file (build them with a ternary of
-  full class names, never `"bg-{$color}-500"`).
+- **UI** (docs/UI.md): design tokens and component classes only (`card`,
+  `btn btn-primary`, `bg-surface`, `text-muted`), never raw palette
+  colours. Tailwind scans `views/`, `public/` and `src/Support/Ui.php`, so
+  class names must appear literally. No inline scripts or `on*=` handlers
+  (CSP has no 'unsafe-inline' for scripts): behaviour is `data-` attributes
+  in `app.js`, page code in `public/assets/js/pages/`. Every view has a
+  preview fixture in `dev/preview/fixtures/` (CI renders them all).
+- Failed POSTs: `Flash::error()` also remembers the submitted fields
+  (never passwords/tokens/keys), and `Ui::field()` puts them back.
 - New icons: add to `View::icon()` and to `assets/icons/` + `docs/ICONS.md`.
 - Controllers show friendly errors via `Flash::error()` and log the
   details with `error_log()`; never echo exceptions to visitors.
@@ -286,6 +299,49 @@ cPanel zone files during migration; subdomain sites are records in their
 parent zone. Records the panel keeps in sync itself carry
 `dns_records.managed` ('mail', 'ipv6', 'site') - `DnsService::syncManaged()`
 replaces a tag's set, and a customer record with the same name wins.
+
+## Account management and notifications (Plan 1, 2026-11)
+
+- `AccountService` holds the rules (admins manage everyone but themselves
+  and never the last active admin; resellers only their own accounts);
+  `AccountController` is thin. WHM > Accounts > *account* shows usage,
+  domains, activity and the actions; accounts and packages can be edited.
+- "Log in as": `AccountService::impersonate()` keeps the admin/reseller in
+  `$_SESSION['impersonator']`; the banner's button posts `/impersonate/stop`,
+  which signs them back in only if their own login is still valid.
+- Mail from the panel: `Mailer` uses PHP `mail()` -> msmtp -> Stalwart on
+  127.0.0.1:25, which relays only for senders on this server's mail domains
+  (WHM > Notifications sets the From address). `NotificationService`:
+  welcome (with a set-your-password link, never the password), password
+  reset, alerts, test.
+- Forgot password / welcome links: `PasswordResetService` (`password_resets`,
+  token hash only, single use, 1 h / 3 days, throttled like sign-ins).
+  Two-factor recovery codes: `RecoveryCodes` (`recovery_codes`, hashes).
+- Alerts: `AlertService::collect()` (health check, services, disk, quotas,
+  failed backups/migrations, expiring certificates, routes to review) for
+  WHM > Alerts and the dashboard; the worker's hourly `alertsDue()` copies
+  `/var/lib/jinnpanel/health.txt` to OUT_DIR and emails new problems.
+- Package features (`Features`, migration 024): `packages.features` and
+  `users.feature_overrides` (JSON, NULL = everything on). Controllers call
+  `Features::require('cron')` etc.; views use `Features::has()` /
+  `Features::current()`; `CronService::execute` skips accounts without
+  cron. New gated tool: add it to `Features::LIST`, gate its controller,
+  hide it in the views.
+- Unlimited: any package limit may be `Quota::UNLIMITED` (-1); read limits
+  through `Quota::unlimited()` / `bytes()` / `fmtMb()` / `fmtCount()`.
+- Reseller limits: `ResellerService::allocation()` / `problems()` - a
+  reseller's own package caps the sum of its accounts' packages (disk,
+  bandwidth, domains) and the account count; enforced in AccountService
+  (create, update, changePackage) and PackageController::update for
+  resellers only.
+- Customer emails: `NotificationService::suspension()` (from
+  AccountService::setStatus) and `quota()`, sent by `UsageNoticeService`
+  after the worker's hourly usage run (account_usage.disk_notice /
+  bw_notice, migration 025).
+- File editor: pool agent ops `edit_read` / `edit_write` (UTF-8 text up to
+  1 MB, atomic rename, keeps permissions, refuses if the file changed since
+  it was opened). SFTP logins take SSH public keys (`ftp_accounts.public_keys`
+  mirrored to SFTPGo `public_keys`).
 
 ## Production readiness
 

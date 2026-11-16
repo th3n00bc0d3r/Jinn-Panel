@@ -295,6 +295,174 @@ function test_s3_signature_shape(): void
     T::same($a, S3Client::authorization('PUT', 'bucket.s3.amazonaws.com', '/k', '', '20261001T000000Z', 'eu-central-1', 'AKID', 'SECRET'), 'deterministic');
 }
 
+function test_ssh_public_keys(): void
+{
+    $blob = fn(string $type) => base64_encode(pack('N', strlen($type)) . $type . pack('N', 32) . str_repeat("\x01", 32));
+    T::ok(FtpController::validKey('ssh-ed25519 ' . $blob('ssh-ed25519') . ' me@laptop'), 'ed25519 with comment');
+    T::ok(FtpController::validKey('ssh-ed25519 ' . $blob('ssh-ed25519')), 'ed25519 without comment');
+    T::ok(!FtpController::validKey('ssh-rsa ' . $blob('ssh-ed25519')), 'type in the blob must match');
+    T::ok(!FtpController::validKey('ssh-ed25519 AAAA'), 'too short');
+    T::ok(!FtpController::validKey('-----BEGIN OPENSSH PRIVATE KEY-----'), 'private key refused');
+    T::ok(!FtpController::validKey("ssh-ed25519 " . $blob('ssh-ed25519') . " x\nssh-rsa y"), 'no second line smuggled in');
+}
+
+function test_recovery_code_shape(): void
+{
+    T::ok(RecoveryCodes::looksLikeOne('k7mq-2xpd-9fhw'), 'dashed');
+    T::ok(RecoveryCodes::looksLikeOne(' K7MQ 2XPD 9FHW '), 'spaces and case');
+    T::ok(!RecoveryCodes::looksLikeOne('123456'), 'a TOTP code is not one');
+}
+
+function test_ui_components_escape(): void
+{
+    require_once APP . '/src/View.php';
+    $_SESSION = ['csrf' => str_repeat('a', 64)];
+    $html = Ui::field('name', 'Name <b>', ['value' => '"><script>x</script>', 'hint' => 'h&i', 'required' => true]);
+    T::ok(!str_contains($html, '<script>') && !str_contains($html, '<b>'), 'label, value escaped', $html);
+    T::ok((bool) preg_match('/<label for="(f-\d+)"[^>]*>.*<input[^>]* id="\1"/s', $html), 'label tied to the input', $html);
+    T::ok(str_contains($html, 'aria-describedby="') && str_contains($html, 'required'), 'hint described, required');
+    T::same(' a="1" b', Ui::attrs(['a' => 1, 'b' => true, 'c' => false, 'd' => null]), 'attrs: true bare, false/null dropped');
+    $_SESSION['old'] = ['email' => 'kept@example.com', 'password' => 'secret'];
+    T::ok(str_contains(Ui::field('email', 'Email'), 'value="kept@example.com"'), 'old value refilled');
+    T::ok(!str_contains(Ui::field('password', 'Password', ['type' => 'password']), 'secret'), 'never a password');
+    $form = Ui::deleteForm('/x/1/delete', 'Really "delete"?');
+    T::ok(str_contains($form, 'data-confirm="Really &quot;delete&quot;?"') && str_contains($form, 'aria-label="Delete"') && str_contains($form, 'name="csrf_token"'), 'delete form: confirm, name, CSRF', $form);
+    T::same('badge badge-danger', preg_replace('/^<span class="([^"]+)".*$/s', '$1', Ui::status('failed')), 'status tone');
+}
+
+function test_package_features(): void
+{
+    $all = Features::forPackage(null);
+    T::ok(count($all) === count(Features::LIST) && !in_array(false, $all, true), 'no setting: everything on');
+    T::ok(!in_array(false, Features::forPackage(['features' => null]), true), 'NULL column: everything on');
+    $pkg = ['features' => Features::fromForm(['features' => ['cron' => '1', 'file_manager' => '1']])];
+    $f = Features::forPackage($pkg);
+    T::ok($f['cron'] && $f['file_manager'] && !$f['backups'] && !$f['ssh_keys'], 'unchecked boxes are off', json_encode($f));
+    T::same(['dns_editor' => false, 'ssh_keys' => true], Features::overrides(['feature_overrides' => Features::overridesFromForm(['override' => ['dns_editor' => '0', 'ssh_keys' => '1', 'cron' => '', 'bogus' => '1']])]), 'overrides: only set, known keys');
+    T::same(null, Features::overridesFromForm(['override' => ['cron' => '']]), 'no overrides: NULL');
+    T::same(true, Features::forPackage(['features' => '{"cron":false}'])['backups'], 'a key missing from a package is on');
+}
+
+function test_unlimited_limits(): void
+{
+    T::ok(Quota::unlimited(-1) && Quota::unlimited('-1') && !Quota::unlimited(0) && !Quota::unlimited(5), 'unlimited is -1');
+    T::same(0, Quota::bytes(-1), 'unlimited MB -> 0 bytes (no limit)');
+    T::same(5 * 1048576, Quota::bytes(5), 'MB -> bytes');
+    T::same('Unlimited', Quota::fmtMb(-1), 'fmtMb unlimited');
+    T::same('5 GB', Quota::fmtMb(5120), 'fmtMb GB');
+    T::same('1.5 GB', Quota::fmtMb(1536), 'fmtMb decimals');
+    T::same('512 MB', Quota::fmtMb(512), 'fmtMb MB');
+    T::same('Unlimited', Quota::fmtCount(-1), 'fmtCount unlimited');
+    T::same('0', Quota::fmtCount(0), 'fmtCount none');
+}
+
+function test_quota_notice_levels(): void
+{
+    T::same(0, UsageNoticeService::level(500, 0), 'no limit: never');
+    T::same(0, UsageNoticeService::level(89, 100), 'under 90%');
+    T::same(90, UsageNoticeService::level(90, 100), 'at 90%');
+    T::same(100, UsageNoticeService::level(101, 100), 'over');
+    T::same(100, UsageNoticeService::level(50, 100, true), 'flagged over by the usage run');
+}
+
+function test_chart_scale_and_formats(): void
+{
+    require_once APP . '/src/View.php';
+    T::same([4.0, [0.0, 1.0, 2.0, 3.0, 4.0]], Chart::scale(0), 'nothing yet: 0..4');
+    T::same([20000.0, [0.0, 5000.0, 10000.0, 15000.0, 20000.0]], Chart::scale(17436), 'rounds up to 1/2/2.5/5 steps');
+    T::same([0.8, [0.0, 0.2, 0.4, 0.6, 0.8]], Chart::scale(0.62), 'fractions (load)');
+    T::same(100.0, Chart::scale(100)[0], 'an exact step stays');
+    T::same(2000.0, Chart::scale(1600)[0], '1600 -> 2000 (step 500)');
+    T::same('1,284', Chart::compact(1284), 'compact under 10K keeps digits');
+    T::same('12.9K', Chart::compact(12900), 'compact K');
+    T::same('3.4M', Chart::compact(3400000), 'compact M');
+    T::same('20K', Chart::compact(20000), 'no trailing .0');
+    T::same('0.25', Chart::compact(0.25), 'small fractions');
+    T::same('0 B', Chart::bytes(0), 'bytes zero');
+    T::same('1.5 GB', Chart::bytes(1610612736), 'bytes GB');
+    T::same('512 KB', Chart::bytes(524288), 'bytes KB');
+    T::same('43%', Chart::format(42.6, 'pct'), 'pct');
+    T::same('180 ms', Chart::format(180, 'ms'), 'ms');
+    T::same('1.2 s', Chart::format(1240, 'ms'), 'ms over a second');
+    T::same('0.62', Chart::format(0.62, 'load'), 'load');
+    T::same('1,234,567', Chart::format(1234567, 'count'), 'count');
+}
+
+function test_chart_markup(): void
+{
+    require_once APP . '/src/View.php';
+    View::reset();
+    $html = Chart::columns(
+        [['name' => 'a<b>'], ['name' => 'b'], ['name' => 'c'], ['name' => 'd'], ['name' => 'e']],
+        [[1, 2, 3, 4, 5], [5, 4, 3, 2, 1]],
+        ['Mon', 'Tue'],
+        'Requests "per" day'
+    );
+    T::ok(!str_contains($html, '<b>') && str_contains($html, 'a&lt;b&gt;'), 'series names escaped');
+    T::ok(str_contains($html, 'aria-label="Requests &quot;per&quot; day.'), 'label escaped, role img');
+    T::ok(str_contains($html, '&quot;name&quot;:&quot;e&quot;,&quot;series&quot;:&quot;so&quot;') && str_contains($html, '<span class="so"'), 'a fifth series folds into Other');
+    T::ok(str_contains($html, 'Show as table') && substr_count($html, '<tr>') === 3, 'table view: header + 2 rows');
+    T::same(['charts'], View::scripts(), 'charts.js is loaded once');
+    Chart::line([['name' => 'x', 'values' => [1, 2]]], ['a', 'b'], 'x');
+    T::same(['charts'], View::scripts(), 'and only once');
+    T::ok(str_contains(Chart::line([], [], 'none'), 'No data yet'), 'empty data: a note, not a broken chart');
+    T::ok(str_contains(Chart::sparkline([3], 'one'), 'No data yet'), 'one point is not a line');
+    T::ok(!str_contains(Chart::columns([['name' => 'a']], [[1], [2]], ['x', 'y'], 'one series'), 'Total'), 'one series: no total');
+}
+
+function test_access_log_stats(): void
+{
+    $hashes = [];
+    $agg = new AccessLogStats(['acme.test' => 1, 'www.acme.test' => 1, 'acme.example' => 1, 'bakery.test' => 2], function (string $ip, string $ua, string $day) use (&$hashes): string {
+        $hashes[] = $ip;
+        return substr(hash('sha256', "salt|$ip|$ua", true), 0, 8);
+    });
+    $line = fn(array $e) => json_encode($e + ['ts' => 1763100000.5, 'status' => 200, 'size' => 1000, 'duration' => 0.25]);
+    $req = fn(string $host, string $uri, array $h = [], string $type = 'text/html; charset=utf-8') => [
+        'request' => ['host' => $host, 'uri' => $uri, 'method' => 'GET', 'client_ip' => '203.0.113.9', 'headers' => $h + ['User-Agent' => ['Mozilla/5.0 Firefox']]],
+        'resp_headers' => $type === '' ? [] : ['Content-Type' => [$type]],
+    ];
+    T::ok($agg->add($line($req('www.acme.test', '/shop?utm=1', ['Referer' => ['https://www.google.com/search']]))), 'www. counts for the domain');
+    T::ok($agg->add($line($req('acme.example:443', '/shop'))), 'an alias with a port');
+    T::ok($agg->add($line($req('acme.test', '/app.css', [], ''))), 'a file');
+    T::ok($agg->add($line(['status' => 404] + $req('acme.test', '/wp-login.php'))), '404 page');
+    T::ok($agg->add($line(['status' => 503, 'duration' => 2.5] + $req('acme.test', '/slow'))), 'slow 5xx');
+    T::ok($agg->add($line($req('acme.test', '/', ['User-Agent' => ['Googlebot/2.1'], 'Referer' => ['https://acme.test/about']]))), 'bot from its own site');
+    T::ok(!$agg->add($line($req('other.test', '/'))), 'unknown host skipped');
+    T::ok(!$agg->add('not json'), 'garbage skipped');
+    T::same(8, $agg->lines, 'lines seen');
+    T::same(6, $agg->counted, 'lines counted');
+
+    $hour = array_values($agg->hourly()[1])[0];
+    T::same(6, $hour['requests'], 'requests');
+    T::same(5, $hour['pages'], 'pages: not the .css');
+    T::same([4, 0, 1, 1], [$hour['s2xx'], $hour['s3xx'], $hour['s4xx'], $hour['s5xx']], 'status classes');
+    T::same(1, $hour['slow'], 'one page over a second');
+    T::same(250 * 4 + 2500, $hour['time_ms'], 'page time summed');
+    T::same(6000, $agg->bytes()[1], 'bytes for bandwidth');
+    $top = $agg->top()[1][date('Y-m-d', 1763100000)];
+    T::same(['/shop' => 2, '/' => 1], $top['page'], 'top pages: query dropped, errors left out');
+    T::same(['google.com' => 1], $top['referrer'], 'referrer host without www., own site left out');
+    $visitors = $agg->visitors()[1][date('Y-m-d', 1763100000)];
+    T::same(1, count($visitors), 'the same browser is one visitor; bots are none');
+    T::ok(!in_array('203.0.113.9', array_map('strval', array_keys($visitors)), true), 'no address kept');
+
+    T::same('/a b', AccessLogStats::path('/a%20b?x=1#y'), 'path decoded, query dropped');
+    T::same(190, mb_strlen(AccessLogStats::path('/' . str_repeat('x', 300))), 'path capped');
+    T::same('', AccessLogStats::referrer('android-app://com.x'), 'not a web referrer');
+    T::same(250, AccessLogStats::durationMs(0.25), 'seconds');
+    T::same(13, AccessLogStats::durationMs('12.5ms'), 'string');
+    T::same(1500, AccessLogStats::durationMs(1500000000), 'nanoseconds');
+
+    $many = new AccessLogStats(['a.test' => 1], fn() => '12345678');
+    for ($i = 0; $i < 5; $i++) {
+        $many->add($line($req('a.test', "/p$i")));
+    }
+    $t = $many->top(3)[1][date('Y-m-d', 1763100000)]['page'];
+    T::same(4, count($t), 'kept 3 + (other)');
+    T::same(2, $t[AccessLogStats::OTHER] ?? 0, 'the rest under (other)');
+}
+
 // ---------------------------------------------------------------------------
 
 $filter = $argv[1] ?? '';

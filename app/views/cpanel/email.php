@@ -1,14 +1,31 @@
 <?php
-/** @var list<array<string,mixed>> $accounts */
+/** @var list<array<string,mixed>> $accounts with domain_name */
 /** @var list<array<string,mixed>> $domains */
-/** @var list<array<string,mixed>> $forwarders */
+/** @var list<array<string,mixed>> $forwarders with domain_name */
 /** @var array<int,array<string,mixed>> $autoresponders keyed by email_account_id */
 /** @var string $mailHost */
-/** @var array<string,int> $webmail mail.<domain> hosts with webmail */
-$input = 'w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-500';
-$label = 'block text-xs font-medium text-slate-600 mb-1';
-$btn = 'rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-sm font-medium px-4 py-2 transition-colors';
-$card = 'bg-white rounded-xl border border-slate-200 shadow-sm';
+/** @var array<string,bool> $webmail mail.<domain> hosts that serve webmail */
+View::slot('desc', e('Mailboxes, forwarders and the default address of your domains.'));
+View::slot('actions', '<a href="#mail-client-settings" class="btn btn-secondary">' . icon('settings') . 'Mail app settings</a>'
+    . ($domains ? '<a href="#add-mailbox" class="btn btn-primary">' . icon('plus') . 'Create mailbox</a>' : ''));
+View::script('email');
+
+$today = date('Y-m-d');
+$day = fn(?string $d) => $d ? date('j M', (int) strtotime($d)) : '';
+$domainOptions = array_column($domains, 'domain_name', 'id');
+
+// Which addresses also forward, and each domain's default (catch-all) address.
+$forwards = [];
+foreach ($forwarders as $f) {
+    $forwards[strtolower($f['local_part'] . '@' . $f['domain_name'])] = true;
+}
+$catchAll = [];
+foreach ($domains as $d) {
+    if (!empty($d['catch_all'])) {
+        $catchAll[strtolower((string) $d['catch_all'])] = true;
+    }
+}
+// Choices for the default address: the domain's mailboxes, then its forwarders.
 $targetsByDomain = [];
 foreach ($accounts as $a) {
     $targetsByDomain[(int) $a['domain_id']][$a['local_part']] = 'mailbox';
@@ -16,224 +33,352 @@ foreach ($accounts as $a) {
 foreach ($forwarders as $f) {
     $targetsByDomain[(int) $f['domain_id']][$f['local_part']] ??= 'forwarder';
 }
+
+// A failed form comes back with what was typed; only the forwarder form sends "destinations".
+$fromForwarder = Ui::old('destinations') !== null;
+
+/** "name @ domain" as one control: the label belongs to the name, the domain select is named on its own. */
+$addressField = function (string $label, string $placeholder, ?string $value) use ($domainOptions): string {
+    $id = Ui::id('addr');
+    $selected = Ui::old('domain_id');
+    $opts = '';
+    foreach ($domainOptions as $did => $name) {
+        $opts .= '<option value="' . (int) $did . '"' . ((string) $did === $selected ? ' selected' : '') . '>' . e((string) $name) . '</option>';
+    }
+    return '<div class="field"><label for="' . e($id) . '" class="label">' . e($label) . '</label>'
+        . '<div class="flex items-stretch">'
+        . '<input type="text" name="local_part" id="' . e($id) . '" required placeholder="' . e($placeholder) . '" value="' . e($value) . '"'
+        . ' class="input min-w-0 flex-1 rounded-r-none" autocomplete="off" autocapitalize="off" spellcheck="false">'
+        . '<span class="input-addon rounded-none border-x-0 px-2.5" aria-hidden="true">@</span>'
+        . '<select name="domain_id" class="select min-w-0 flex-1 rounded-l-none" aria-label="Domain">' . $opts . '</select>'
+        . '</div></div>';
+};
+
+/** Badges for what a mailbox does besides receiving mail. */
+$extras = function (string $addr, ?array $ar) use ($today, $day, $forwards, $catchAll): string {
+    $out = '';
+    if ($ar) {
+        if (!empty($ar['starts_on']) && $ar['starts_on'] > $today) {
+            $out .= Ui::badge('Auto-reply from ' . $day($ar['starts_on']), 'neutral', true);
+        } elseif (!empty($ar['ends_on']) && $ar['ends_on'] < $today) {
+            $out .= Ui::badge('Auto-reply ended', 'neutral', true);
+        } else {
+            $out .= Ui::badge('Auto-reply on' . (!empty($ar['ends_on']) ? ' until ' . $day($ar['ends_on']) : ''), 'info', true);
+        }
+    }
+    if (isset($forwards[strtolower($addr)])) {
+        $out .= Ui::badge('Forwarding', 'accent');
+    }
+    if (isset($catchAll[strtolower($addr)])) {
+        $out .= Ui::badge('Default address', 'neutral');
+    }
+    return $out;
+};
+
+$compact = true;
+$mailFull = $pkg && !Quota::unlimited($pkg['max_email_accounts']) && (int) $usage['email_accounts'] >= (int) $pkg['max_email_accounts'];
 ?>
-<?php include __DIR__ . '/../partials/quota_bars.php'; ?>
+<div class="stack">
+    <?php include __DIR__ . '/../partials/quota_bars.php'; ?>
 
-<div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-4">
-    <div class="lg:col-span-2 space-y-4">
-        <div class="<?= $card ?> overflow-hidden">
-            <div class="px-5 py-3 border-b border-slate-100 flex items-center justify-between">
-                <h2 class="text-sm font-semibold text-slate-700">Mailboxes</h2>
-            </div>
-            <ul class="divide-y divide-slate-100 text-sm">
-                <?php foreach ($accounts as $a): ?>
-                <?php $addr = $a['local_part'] . '@' . $a['domain_name']; $ar = $autoresponders[(int) $a['id']] ?? null; ?>
-                <li class="px-5 py-3">
-                    <div class="flex flex-wrap items-center gap-2">
-                        <span class="font-medium text-slate-700"><?= e($addr) ?></span>
-                        <?php if ($ar): ?><span class="inline-flex text-xs font-medium rounded-full px-2 py-0.5 bg-amber-50 text-amber-700">Autoresponder on</span><?php endif; ?>
-                        <span class="ml-auto flex items-center gap-1">
-                            <?php if (isset($webmail['mail.' . $a['domain_name']])): ?>
-                            <a href="https://mail.<?= e($a['domain_name']) ?>/" target="_blank" rel="noopener" class="text-xs font-medium text-sky-700 hover:text-sky-600 px-2 py-1">Webmail</a>
-                            <?php endif; ?>
-                            <form method="post" action="/cpanel/email/<?= (int) $a['id'] ?>/delete" data-confirm="Delete mailbox <?= e($addr) ?> and all its mail?">
-                                <?= Csrf::field() ?>
-                                <button class="p-2 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50" title="Delete"><?= icon('trash', 'h-4 w-4') ?></button>
-                            </form>
-                        </span>
+    <div class="grid grid-cols-1 items-start gap-6 xl:grid-cols-3">
+        <div class="stack xl:col-span-2">
+            <section class="card" aria-labelledby="mailboxes-title">
+                <div class="card-header">
+                    <div class="min-w-0">
+                        <h2 id="mailboxes-title" class="card-title"><?= e(Ui::plural(count($accounts), 'mailbox', 'mailboxes')) ?></h2>
+                        <p class="card-desc">Sign in to webmail or a mail app with the full address and its password.</p>
                     </div>
-                    <div class="mt-1 flex flex-wrap gap-4 text-xs">
-                        <details class="group">
-                            <summary class="cursor-pointer text-slate-500 hover:text-slate-700">Change password</summary>
-                            <form method="post" action="/cpanel/email/<?= (int) $a['id'] ?>/password" class="mt-2 flex gap-2">
-                                <?= Csrf::field() ?>
-                                <input type="password" name="password" required minlength="<?= Passwords::MIN_LENGTH ?>" placeholder="New password" class="<?= $input ?>">
-                                <button class="<?= $btn ?>">Save</button>
-                            </form>
-                        </details>
-                        <details class="group w-full sm:w-auto">
-                            <summary class="cursor-pointer text-slate-500 hover:text-slate-700">Autoresponder</summary>
-                            <form method="post" action="/cpanel/email/<?= (int) $a['id'] ?>/autoresponder" class="mt-2 grid gap-2 sm:grid-cols-2 max-w-xl">
-                                <?= Csrf::field() ?>
-                                <div class="sm:col-span-2">
-                                    <label class="<?= $label ?>">Subject</label>
-                                    <input name="subject" required maxlength="200" value="<?= e($ar['subject'] ?? 'Out of office') ?>" class="<?= $input ?>">
-                                </div>
-                                <div class="sm:col-span-2">
-                                    <label class="<?= $label ?>">Message</label>
-                                    <textarea name="body" required rows="4" maxlength="10000" class="<?= $input ?>"><?= e($ar['body'] ?? '') ?></textarea>
-                                </div>
-                                <div>
-                                    <label class="<?= $label ?>">From (optional)</label>
-                                    <input type="date" name="starts_on" value="<?= e($ar['starts_on'] ?? '') ?>" class="<?= $input ?>">
-                                </div>
-                                <div>
-                                    <label class="<?= $label ?>">Until (optional)</label>
-                                    <input type="date" name="ends_on" value="<?= e($ar['ends_on'] ?? '') ?>" class="<?= $input ?>">
-                                </div>
-                                <div>
-                                    <label class="<?= $label ?>">Reply to the same sender every</label>
-                                    <select name="interval_days" class="<?= $input ?> bg-white">
-                                        <?php foreach ([1, 3, 7, 14, 30] as $n): ?>
-                                        <option value="<?= $n ?>" <?= (int) ($ar['interval_days'] ?? 1) === $n ? 'selected' : '' ?>><?= $n ?> day<?= $n === 1 ? '' : 's' ?></option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                </div>
-                                <div class="flex items-end gap-2">
-                                    <button class="<?= $btn ?>"><?= $ar ? 'Update' : 'Turn on' ?></button>
-                                </div>
-                            </form>
+                    <?php if (count($accounts) > 5): ?>
+                    <input type="search" class="input input-sm w-full sm:w-56" placeholder="Filter mailboxes…" aria-label="Filter mailboxes" data-filter="#mailboxes-table">
+                    <?php endif; ?>
+                </div>
+                <div class="table-wrap">
+                    <table class="table" id="mailboxes-table">
+                        <thead>
+                            <tr>
+                                <th scope="col">Address</th>
+                                <th scope="col" class="hidden md:table-cell">Created</th>
+                                <th scope="col" class="text-right"><span class="sr-only">Actions</span></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($accounts as $a):
+                                $id = (int) $a['id'];
+                                $addr = $a['local_part'] . '@' . $a['domain_name'];
+                                $ar = $autoresponders[$id] ?? null;
+                                $badges = $extras($addr, $ar); ?>
+                            <tr>
+                                <td class="max-w-[10rem] sm:max-w-[24rem]">
+                                    <div class="flex items-center gap-1">
+                                        <span class="truncate font-medium text-fg"><?= e($addr) ?></span>
+                                        <?= Ui::copy($addr, 'Copy ' . $addr) ?>
+                                    </div>
+                                    <?php if ($badges !== ''): ?><div class="mt-1 flex flex-wrap gap-1.5"><?= $badges ?></div><?php endif; ?>
+                                </td>
+                                <td class="hidden whitespace-nowrap text-muted md:table-cell"><?= e(fmt_ago($a['created_at'] ?? null)) ?></td>
+                                <td>
+                                    <div class="flex items-center justify-end gap-1">
+                                        <?php if (isset($webmail['mail.' . $a['domain_name']])): ?>
+                                        <span class="hidden sm:inline-flex"><?= Ui::iconLink('https://mail.' . $a['domain_name'] . '/', 'external', 'Open webmail for ' . $addr, true) ?></span>
+                                        <?php endif; ?>
+                                        <button type="button" class="btn btn-secondary btn-sm" data-dialog-open="mailbox-<?= $id ?>" aria-haspopup="dialog" aria-label="Manage <?= e($addr) ?>">Manage</button>
+                                        <?= Ui::deleteForm("/cpanel/email/$id/delete", 'Delete the mailbox ' . $addr . ' and all its mail? This can\'t be undone.', 'Delete mailbox') ?>
+                                    </div>
+                                </td>
+                            </tr>
+                            <?php endforeach; ?>
+                            <?php if (!$accounts): ?>
+                            <?= Ui::emptyRow(3, 'No mailboxes yet', $domains ? 'Create one to send and receive mail at your own domain, e.g. info@' . $domains[0]['domain_name'] . '.' : 'Add a domain first, then create mailboxes on it.', 'mail') ?>
+                            <?php else: ?>
+                            <tr data-filter-none data-filter-skip hidden><td colspan="3" class="py-8 text-center text-sm text-muted">No mailbox matches that filter.</td></tr>
+                            <?php endif; ?>
+                        </tbody>
+                    </table>
+                </div>
+
+                <?php foreach ($accounts as $a):
+                    $id = (int) $a['id'];
+                    $addr = $a['local_part'] . '@' . $a['domain_name'];
+                    $ar = $autoresponders[$id] ?? null;
+                    $hasWebmail = isset($webmail['mail.' . $a['domain_name']]); ?>
+                <dialog id="mailbox-<?= $id ?>" class="dialog max-w-lg" aria-labelledby="mailbox-<?= $id ?>-title">
+                    <div class="flex items-start justify-between gap-3 border-b border-line px-6 py-4">
+                        <div class="min-w-0">
+                            <h2 id="mailbox-<?= $id ?>-title" class="dialog-title truncate"><?= e($addr) ?></h2>
+                            <p class="mt-0.5 text-sm text-muted">
+                                Password and automatic replies<?php if ($hasWebmail): ?> · <a href="https://mail.<?= e($a['domain_name']) ?>/" target="_blank" rel="noopener" class="link">Open webmail</a><?php endif; ?>
+                            </p>
+                        </div>
+                        <?= Ui::iconButton('close', 'Close', ['type' => 'button', 'attrs' => ['data-dialog-close' => true]]) ?>
+                    </div>
+
+                    <form method="post" action="/cpanel/email/<?= $id ?>/password" class="space-y-3 border-b border-line px-6 py-5">
+                        <?= Csrf::field() ?>
+                        <h3 class="text-sm font-semibold text-fg">Change password</h3>
+                        <?= Ui::field('password', 'New password', [
+                            'type' => 'password', 'generate' => true, 'required' => true,
+                            'hint' => 'Mail apps signed in with the old password ask for the new one.',
+                            'attrs' => ['minlength' => Passwords::MIN_LENGTH, 'autocomplete' => 'new-password', 'data-dialog-focus' => true],
+                        ]) ?>
+                        <button type="submit" class="btn btn-secondary">Change password</button>
+                    </form>
+
+                    <form method="post" action="/cpanel/email/<?= $id ?>/autoresponder" class="space-y-4 px-6 py-5">
+                        <?= Csrf::field() ?>
+                        <div>
+                            <div class="flex flex-wrap items-center gap-2">
+                                <h3 class="text-sm font-semibold text-fg">Automatic reply</h3>
+                                <?= $ar ? Ui::badge('On', 'info', true) : Ui::badge('Off', 'neutral') ?>
+                            </div>
+                            <p class="mt-1 text-xs text-muted">Answers incoming mail while you're away, e.g. an out-of-office note. Leave the dates empty to reply until you turn it off.</p>
+                        </div>
+                        <?= Ui::field('subject', 'Subject', ['value' => (string) ($ar['subject'] ?? 'Out of office'), 'required' => true, 'attrs' => ['maxlength' => 200]]) ?>
+                        <?= Ui::textarea('body', 'Message', (string) ($ar['body'] ?? ''), ['required' => true, 'rows' => 5, 'attrs' => ['maxlength' => 10000]]) ?>
+                        <div class="grid gap-4 sm:grid-cols-2">
+                            <?= Ui::field('starts_on', 'From', ['type' => 'date', 'optional' => true, 'value' => (string) ($ar['starts_on'] ?? '')]) ?>
+                            <?= Ui::field('ends_on', 'Until', ['type' => 'date', 'optional' => true, 'value' => (string) ($ar['ends_on'] ?? '')]) ?>
+                        </div>
+                        <?= Ui::select('interval_days', 'Reply to the same sender at most once every', [1 => '1 day', 3 => '3 days', 7 => '7 days', 14 => '14 days', 30 => '30 days'], (string) (int) ($ar['interval_days'] ?? 1)) ?>
+                        <div class="flex flex-wrap items-center gap-2 pt-1">
+                            <button type="submit" class="btn btn-primary"><?= $ar ? 'Save reply' : 'Turn on' ?></button>
                             <?php if ($ar): ?>
-                            <form method="post" action="/cpanel/email/<?= (int) $a['id'] ?>/autoresponder/delete" class="mt-2">
-                                <?= Csrf::field() ?>
-                                <button class="text-xs font-medium text-red-700 hover:text-red-600">Turn off the autoresponder</button>
-                            </form>
+                            <button type="submit" form="mailbox-<?= $id ?>-ar-off" class="btn btn-danger-ghost">Turn off</button>
                             <?php endif; ?>
-                        </details>
-                    </div>
-                </li>
-                <?php endforeach; ?>
-                <?php if (!$accounts): ?>
-                <li class="px-5 py-10 text-center text-slate-400">No mailboxes yet.</li>
-                <?php endif; ?>
-            </ul>
-        </div>
-
-        <div class="<?= $card ?> overflow-hidden">
-            <div class="px-5 py-3 border-b border-slate-100">
-                <h2 class="text-sm font-semibold text-slate-700">Forwarders</h2>
-                <p class="text-xs text-slate-400 mt-0.5">Pass mail for an address on to other addresses. A mailbox that forwards keeps its own copy.</p>
-            </div>
-            <ul class="divide-y divide-slate-100 text-sm">
-                <?php foreach ($forwarders as $f): ?>
-                <li class="px-5 py-3 flex flex-wrap items-start gap-2">
-                    <span class="font-medium text-slate-700"><?= e($f['local_part'] . '@' . $f['domain_name']) ?></span>
-                    <span class="text-slate-400">&rarr;</span>
-                    <span class="flex flex-wrap gap-1.5">
-                        <?php foreach (explode(',', (string) $f['destinations']) as $dest): ?>
-                        <form method="post" action="/cpanel/email-forwarders/<?= (int) $f['id'] ?>/delete" class="inline-flex items-center gap-1 rounded-full bg-slate-100 pl-2.5 pr-1 py-0.5 text-xs text-slate-700">
-                            <?= Csrf::field() ?>
-                            <input type="hidden" name="destination" value="<?= e($dest) ?>">
-                            <?= e($dest) ?>
-                            <button class="rounded-full p-0.5 text-slate-400 hover:text-red-600" title="Stop forwarding to <?= e($dest) ?>"><?= icon('close', 'h-3 w-3') ?></button>
-                        </form>
-                        <?php endforeach; ?>
-                    </span>
-                    <form method="post" action="/cpanel/email-forwarders/<?= (int) $f['id'] ?>/delete" class="ml-auto" data-confirm="Delete the forwarder for <?= e($f['local_part'] . '@' . $f['domain_name']) ?>?">
-                        <?= Csrf::field() ?>
-                        <button class="p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50" title="Delete forwarder"><?= icon('trash', 'h-4 w-4') ?></button>
+                        </div>
                     </form>
-                </li>
+                    <?php if ($ar): ?>
+                    <form method="post" action="/cpanel/email/<?= $id ?>/autoresponder/delete" id="mailbox-<?= $id ?>-ar-off"><?= Csrf::field() ?></form>
+                    <?php endif; ?>
+                </dialog>
                 <?php endforeach; ?>
-                <?php if (!$forwarders): ?>
-                <li class="px-5 py-6 text-center text-slate-400">No forwarders.</li>
+            </section>
+
+            <section class="card" aria-labelledby="forwarders-title">
+                <div class="card-header">
+                    <div class="min-w-0">
+                        <h2 id="forwarders-title" class="card-title">Forwarders</h2>
+                        <p class="card-desc">Pass mail for an address on to other addresses. A mailbox that forwards keeps its own copy.</p>
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th scope="col">Address and where it goes</th>
+                                <th scope="col" class="text-right"><span class="sr-only">Actions</span></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($forwarders as $f):
+                                $fid = (int) $f['id'];
+                                $from = $f['local_part'] . '@' . $f['domain_name'];
+                                $dests = array_values(array_filter(array_map('trim', explode(',', (string) $f['destinations'])), 'strlen')); ?>
+                            <tr>
+                                <td>
+                                    <p class="break-all font-medium text-fg"><?= e($from) ?></p>
+                                    <div class="mt-1.5 flex flex-wrap items-center gap-1.5">
+                                        <span class="text-subtle" aria-hidden="true"><?= icon('chevron-right', 'h-3.5 w-3.5') ?></span>
+                                        <span class="sr-only">Forwards to</span>
+                                        <?php foreach ($dests as $dest): ?>
+                                        <?php if (count($dests) > 1): ?>
+                                        <form method="post" action="/cpanel/email-forwarders/<?= $fid ?>/delete" class="chip gap-1 pr-0.5" data-confirm="Stop forwarding <?= e($from) ?> to <?= e($dest) ?>?" data-confirm-action="Stop forwarding">
+                                            <?= Csrf::field() ?>
+                                            <input type="hidden" name="destination" value="<?= e($dest) ?>">
+                                            <span class="break-all"><?= e($dest) ?></span>
+                                            <button type="submit" class="rounded p-0.5 text-subtle hover:bg-surface-2 hover:text-danger-text" title="Stop forwarding to <?= e($dest) ?>" aria-label="Stop forwarding to <?= e($dest) ?>"><?= icon('close', 'h-3 w-3') ?></button>
+                                        </form>
+                                        <?php else: ?>
+                                        <span class="chip break-all"><?= e($dest) ?></span>
+                                        <?php endif; ?>
+                                        <?php endforeach; ?>
+                                    </div>
+                                </td>
+                                <td class="w-px">
+                                    <div class="flex justify-end">
+                                        <?= Ui::deleteForm("/cpanel/email-forwarders/$fid/delete", 'Delete the forwarder for ' . $from . '? Mail to it is no longer passed on.', 'Delete forwarder') ?>
+                                    </div>
+                                </td>
+                            </tr>
+                            <?php endforeach; ?>
+                            <?php if (!$forwarders): ?>
+                            <?= Ui::emptyRow(2, 'No forwarders', 'Forward an address to another inbox, e.g. sales@ to your own mailbox.', 'transfer') ?>
+                            <?php endif; ?>
+                        </tbody>
+                    </table>
+                </div>
+                <?php if ($domains): ?>
+                <form method="post" action="/cpanel/email-forwarders" class="grid gap-4 rounded-b-xl border-t border-line bg-surface-2 px-5 py-4 sm:grid-cols-2">
+                    <?= Csrf::field() ?>
+                    <?= $addressField('Forward mail for', 'sales', $fromForwarder ? Ui::old('local_part') : '') ?>
+                    <?= Ui::field('destinations', 'To', ['required' => true, 'placeholder' => 'you@example.net', 'attrs' => ['autocapitalize' => 'off', 'spellcheck' => 'false']]) ?>
+                    <div class="flex flex-col gap-3 sm:col-span-2 sm:flex-row sm:items-center sm:justify-between">
+                        <p class="text-xs text-muted">Several addresses: separate them with commas. Adding to an existing forwarder adds to its list.</p>
+                        <button type="submit" class="btn btn-secondary shrink-0"><?= icon('plus') ?>Add forwarder</button>
+                    </div>
+                </form>
                 <?php endif; ?>
-            </ul>
+            </section>
+
             <?php if ($domains): ?>
-            <form method="post" action="/cpanel/email-forwarders" class="border-t border-slate-100 px-5 py-4 grid gap-2 sm:grid-cols-[1fr_1fr_auto] items-end">
-                <?= Csrf::field() ?>
-                <div>
-                    <label class="<?= $label ?>">Address</label>
-                    <div class="flex items-stretch rounded-lg border border-slate-300 overflow-hidden focus-within:ring-2 focus-within:ring-sky-500">
-                        <input type="text" name="local_part" required placeholder="sales" class="w-1/2 px-3 py-2 text-sm focus:outline-none">
-                        <span class="px-2 flex items-center text-slate-400 bg-slate-50 border-x border-slate-200">@</span>
-                        <select name="domain_id" class="w-1/2 px-2 py-2 text-sm focus:outline-none bg-white">
-                            <?php foreach ($domains as $d): ?>
-                            <option value="<?= (int) $d['id'] ?>"><?= e($d['domain_name']) ?></option>
-                            <?php endforeach; ?>
-                        </select>
+            <section class="card" aria-labelledby="catchall-title">
+                <div class="card-header">
+                    <div class="min-w-0">
+                        <h2 id="catchall-title" class="card-title">Default address</h2>
+                        <p class="card-desc">What happens to mail for an address that doesn't exist. Rejecting it is safest: a catch-all mainly collects spam.</p>
                     </div>
                 </div>
-                <div>
-                    <label class="<?= $label ?>">Forward to (comma-separated)</label>
-                    <input type="text" name="destinations" required placeholder="you@gmail.com" class="<?= $input ?>">
-                </div>
-                <button class="<?= $btn ?>">Add</button>
-            </form>
+                <ul class="divide-y divide-line">
+                    <?php foreach ($domains as $d):
+                        $targets = $targetsByDomain[(int) $d['id']] ?? [];
+                        ksort($targets);
+                        $current = $d['catch_all'] ? (string) strstr((string) $d['catch_all'], '@', true) : '';
+                        $sid = Ui::id('catchall');
+                        $options = ['' => 'Reject it (bounce to the sender)'];
+                        foreach ($targets as $local => $kind) {
+                            $options[$local] = 'Deliver to ' . $local . '@' . $d['domain_name'] . ($kind === 'forwarder' ? ' (forwarder)' : '');
+                        } ?>
+                    <li class="px-5 py-3">
+                        <form method="post" action="/cpanel/email-default-address" class="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
+                            <?= Csrf::field() ?>
+                            <input type="hidden" name="domain_id" value="<?= (int) $d['id'] ?>">
+                            <label for="<?= e($sid) ?>" class="min-w-0 truncate text-sm font-medium text-fg sm:w-48 sm:shrink-0"><span class="sr-only">Default address for </span><?= e($d['domain_name']) ?></label>
+                            <div class="flex min-w-0 flex-1 items-center gap-2">
+                                <select name="target" id="<?= e($sid) ?>" class="select min-w-0 flex-1 sm:max-w-sm">
+                                    <?php foreach ($options as $v => $label): ?>
+                                    <option value="<?= e((string) $v) ?>"<?= $current === (string) $v ? ' selected' : '' ?>><?= e($label) ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                                <button type="submit" class="btn btn-secondary shrink-0">Save</button>
+                            </div>
+                        </form>
+                    </li>
+                    <?php endforeach; ?>
+                </ul>
+            </section>
             <?php endif; ?>
         </div>
 
-        <?php if ($domains): ?>
-        <div class="<?= $card ?> overflow-hidden">
-            <div class="px-5 py-3 border-b border-slate-100">
-                <h2 class="text-sm font-semibold text-slate-700">Default address</h2>
-                <p class="text-xs text-slate-400 mt-0.5">Mail sent to an address that doesn't exist. Rejecting it is safest - a catch-all mainly collects spam.</p>
-            </div>
-            <ul class="divide-y divide-slate-100 text-sm">
-                <?php foreach ($domains as $d): ?>
-                <?php $targets = $targetsByDomain[(int) $d['id']] ?? []; ksort($targets); $current = $d['catch_all'] ? strstr((string) $d['catch_all'], '@', true) : ''; ?>
-                <li class="px-5 py-3">
-                    <form method="post" action="/cpanel/email-default-address" class="flex flex-wrap items-center gap-3">
-                        <?= Csrf::field() ?>
-                        <input type="hidden" name="domain_id" value="<?= (int) $d['id'] ?>">
-                        <span class="font-medium text-slate-700 min-w-40"><?= e($d['domain_name']) ?></span>
-                        <select name="target" onchange="this.form.submit()" class="rounded-lg border border-slate-300 px-2 py-1.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-sky-500">
-                            <option value="">Reject (bounce to the sender)</option>
-                            <?php foreach ($targets as $local => $kind): ?>
-                            <option value="<?= e($local) ?>" <?= $current === $local ? 'selected' : '' ?>>Deliver to <?= e($local . '@' . $d['domain_name']) ?><?= $kind === 'forwarder' ? ' (forwarder)' : '' ?></option>
+        <div class="stack">
+            <section class="card scroll-mt-20" id="add-mailbox" aria-labelledby="add-mailbox-title">
+                <div class="card-header">
+                    <div class="min-w-0">
+                        <h2 id="add-mailbox-title" class="card-title">Create a mailbox</h2>
+                        <p class="card-desc">It works in webmail and in any mail app.</p>
+                    </div>
+                </div>
+                <?php if (!$domains): ?>
+                <?= Ui::empty('Add a domain first', 'Mailboxes are created on one of your domains.', 'globe', '<a href="/cpanel/domains#add-domain" class="btn btn-secondary btn-sm">' . icon('plus') . 'Add a domain</a>') ?>
+                <?php else: ?>
+                <form method="post" action="/cpanel/email" class="card-body space-y-4">
+                    <?= Csrf::field() ?>
+                    <?php if ($mailFull): ?>
+                    <?= Ui::alert('All ' . (int) $pkg['max_email_accounts'] . ' mailboxes of your package are in use. Delete one, or ask your hosting provider for more.', 'warning') ?>
+                    <?php endif; ?>
+                    <?= $addressField('Email address', 'you', $fromForwarder ? '' : Ui::old('local_part')) ?>
+                    <?= Ui::field('password', 'Password', [
+                        'type' => 'password', 'generate' => true, 'required' => true,
+                        'hint' => 'At least ' . Passwords::MIN_LENGTH . ' characters.',
+                        'attrs' => ['minlength' => Passwords::MIN_LENGTH, 'autocomplete' => 'new-password'],
+                    ]) ?>
+                    <button type="submit" class="btn btn-primary btn-block"><?= icon('plus') ?>Create mailbox</button>
+                </form>
+                <?php endif; ?>
+            </section>
+
+            <section class="card scroll-mt-20" id="mail-client-settings" aria-labelledby="mail-client-title">
+                <div class="card-header">
+                    <div class="min-w-0">
+                        <h2 id="mail-client-title" class="card-title">Mail app settings</h2>
+                        <p class="card-desc">Outlook, Apple Mail, Thunderbird and phones usually set themselves up from the address and password. To enter them by hand:</p>
+                    </div>
+                </div>
+                <div class="card-body space-y-5 text-sm">
+                    <dl class="space-y-3">
+                        <div>
+                            <dt class="text-xs font-medium text-muted">Server, incoming and outgoing</dt>
+                            <dd class="mt-1 text-fg"><?= Ui::copyable($mailHost) ?></dd>
+                        </div>
+                        <div>
+                            <dt class="text-xs font-medium text-muted">Username</dt>
+                            <dd class="mt-1 text-fg">The full email address, e.g. <code>you@<?= e($domains[0]['domain_name'] ?? 'example.com') ?></code></dd>
+                        </div>
+                        <div>
+                            <dt class="text-xs font-medium text-muted">Password</dt>
+                            <dd class="mt-1 text-fg">The mailbox's password, for incoming and outgoing mail</dd>
+                        </div>
+                    </dl>
+                    <table class="w-full text-left text-sm">
+                        <caption class="sr-only">Ports</caption>
+                        <thead>
+                            <tr class="text-xs text-muted">
+                                <th scope="col" class="pb-1.5 font-medium">Protocol</th>
+                                <th scope="col" class="pb-1.5 font-medium">Port</th>
+                                <th scope="col" class="pb-1.5 font-medium">Security</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-line border-t border-line">
+                            <tr><td class="py-2 pr-3 text-fg">IMAP <span class="text-xs text-muted">incoming, recommended</span></td><td class="py-2 pr-3 font-mono">993</td><td class="py-2 text-muted">SSL/TLS</td></tr>
+                            <tr><td class="py-2 pr-3 text-fg">POP3 <span class="text-xs text-muted">incoming</span></td><td class="py-2 pr-3 font-mono">995</td><td class="py-2 text-muted">SSL/TLS</td></tr>
+                            <tr><td class="py-2 pr-3 text-fg">SMTP <span class="text-xs text-muted">outgoing</span></td><td class="py-2 pr-3 font-mono">465</td><td class="py-2 text-muted">SSL/TLS</td></tr>
+                            <tr><td class="py-2 pr-3 text-fg">SMTP <span class="text-xs text-muted">outgoing</span></td><td class="py-2 pr-3 font-mono">587</td><td class="py-2 text-muted">STARTTLS</td></tr>
+                        </tbody>
+                    </table>
+                    <div>
+                        <p class="text-xs font-medium text-muted">Webmail</p>
+                        <?php if ($webmail): ?>
+                        <ul class="mt-1 space-y-1">
+                            <?php foreach (array_keys($webmail) as $host): ?>
+                            <li><a href="https://<?= e($host) ?>/" target="_blank" rel="noopener" class="link inline-flex items-center gap-1 font-mono text-[0.8125rem]">https://<?= e($host) ?>/<?= icon('external', 'h-3.5 w-3.5') ?></a></li>
                             <?php endforeach; ?>
-                        </select>
-                        <noscript><button class="<?= $btn ?>">Save</button></noscript>
-                    </form>
-                </li>
-                <?php endforeach; ?>
-            </ul>
-        </div>
-        <?php endif; ?>
-    </div>
-
-    <div class="space-y-4">
-        <div class="<?= $card ?> p-5">
-            <h2 class="text-sm font-semibold text-slate-700 mb-3">Create a mailbox</h2>
-            <?php if (!$domains): ?>
-            <p class="text-sm text-slate-400">Add a domain first.</p>
-            <?php else: ?>
-            <form method="post" action="/cpanel/email" class="space-y-3">
-                <?= Csrf::field() ?>
-                <div class="flex items-stretch rounded-lg border border-slate-300 overflow-hidden focus-within:ring-2 focus-within:ring-sky-500">
-                    <input type="text" name="local_part" required placeholder="you" class="w-1/2 px-3 py-2.5 text-sm focus:outline-none">
-                    <span class="px-2 flex items-center text-slate-400 bg-slate-50 border-x border-slate-200">@</span>
-                    <select name="domain_id" class="w-1/2 px-2 py-2.5 text-sm focus:outline-none bg-white">
-                        <?php foreach ($domains as $d): ?>
-                        <option value="<?= (int) $d['id'] ?>"><?= e($d['domain_name']) ?></option>
-                        <?php endforeach; ?>
-                    </select>
+                        </ul>
+                        <?php else: ?>
+                        <p class="mt-1 text-fg"><code>https://mail.&lt;your domain&gt;/</code></p>
+                        <p class="hint">Opens once that name points to this server.</p>
+                        <?php endif; ?>
+                    </div>
                 </div>
-                <div>
-                    <label class="<?= $label ?>">Password</label>
-                    <input type="password" name="password" required minlength="<?= Passwords::MIN_LENGTH ?>" class="<?= $input ?>">
-                </div>
-                <button type="submit" class="w-full <?= $btn ?> py-2.5">Create mailbox</button>
-            </form>
-            <?php endif; ?>
-        </div>
-
-        <div class="<?= $card ?> p-5" id="mail-client-settings">
-            <h2 class="text-sm font-semibold text-slate-700">Mail client settings</h2>
-            <p class="text-xs text-slate-400 mt-0.5 mb-3">Most apps (Outlook, Apple Mail, Thunderbird, phones) set themselves up from just the address and password. To enter it by hand:</p>
-            <dl class="text-sm space-y-3">
-                <div>
-                    <dt class="text-xs font-semibold uppercase tracking-wide text-slate-500">Username</dt>
-                    <dd class="text-slate-700">The full email address, e.g. <span class="font-mono">you@<?= e($domains[0]['domain_name'] ?? 'example.com') ?></span></dd>
-                </div>
-                <div>
-                    <dt class="text-xs font-semibold uppercase tracking-wide text-slate-500">Incoming - IMAP (recommended)</dt>
-                    <dd class="text-slate-700"><span class="font-mono"><?= e($mailHost) ?></span> &middot; port <span class="font-mono">993</span> &middot; SSL/TLS</dd>
-                </div>
-                <div>
-                    <dt class="text-xs font-semibold uppercase tracking-wide text-slate-500">Incoming - POP3</dt>
-                    <dd class="text-slate-700"><span class="font-mono"><?= e($mailHost) ?></span> &middot; port <span class="font-mono">995</span> &middot; SSL/TLS</dd>
-                </div>
-                <div>
-                    <dt class="text-xs font-semibold uppercase tracking-wide text-slate-500">Outgoing - SMTP</dt>
-                    <dd class="text-slate-700"><span class="font-mono"><?= e($mailHost) ?></span> &middot; port <span class="font-mono">465</span> &middot; SSL/TLS</dd>
-                    <dd class="text-slate-500 text-xs">or port <span class="font-mono">587</span> with STARTTLS. Authentication: normal password, same username.</dd>
-                </div>
-                <div>
-                    <dt class="text-xs font-semibold uppercase tracking-wide text-slate-500">Webmail</dt>
-                    <dd class="text-slate-700"><span class="font-mono">https://mail.&lt;your domain&gt;/</span></dd>
-                </div>
-            </dl>
+            </section>
         </div>
     </div>
 </div>

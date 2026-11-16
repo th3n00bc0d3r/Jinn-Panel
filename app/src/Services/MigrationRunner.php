@@ -1300,7 +1300,7 @@ final class MigrationRunner
             $usage = Quota::usage($userId);
             $over = [];
             foreach (['domains' => 'max_domains', 'databases' => 'max_databases', 'email_accounts' => 'max_email_accounts'] as $k => $col) {
-                if ($p && $usage[$k] > (int) $p[$col]) {
+                if ($p && !Quota::unlimited($p[$col]) && $usage[$k] > (int) $p[$col]) {
                     $over[] = str_replace('_', ' ', $k) . " {$usage[$k]}/{$p[$col]}";
                 }
             }

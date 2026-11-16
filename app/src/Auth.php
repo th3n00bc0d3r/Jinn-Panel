@@ -166,7 +166,11 @@ final class Auth
             self::logout();
             return null;
         }
-        $_SESSION['seen_at'] = $now;
+        // A page refreshing itself in the background (X-JP-Live) isn't someone
+        // using the panel: it must not keep an idle session alive.
+        if (($_SERVER['HTTP_X_JP_LIVE'] ?? '') === '') {
+            $_SESSION['seen_at'] = $now;
+        }
         $_SESSION['role'] = $row['role'];
         return $cache = $row;
     }

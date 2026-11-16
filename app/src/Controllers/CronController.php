@@ -6,6 +6,7 @@ final class CronController
     public static function index(): void
     {
         Auth::requireRole(['user']);
+        Features::require('cron', '/cpanel/cron');
         $me = Auth::user();
         $d = Database::app()->prepare('SELECT id, domain_name FROM domains WHERE user_id = ? ORDER BY domain_name');
         $d->execute([$me['id']]);
@@ -19,6 +20,7 @@ final class CronController
     public static function store(): void
     {
         Auth::requireRole(['user']);
+        Features::require('cron', '/cpanel/cron');
         Csrf::requireValid();
         try {
             CronService::create(Auth::user(), $_POST);
@@ -58,6 +60,7 @@ final class CronController
     private static function job(array $params): array
     {
         Auth::requireRole(['user']);
+        Features::require('cron', '/cpanel/cron');
         Csrf::requireValid();
         $s = Database::app()->prepare('SELECT * FROM cron_jobs WHERE id = ? AND user_id = ?');
         $s->execute([(int) ($params['id'] ?? 0), Auth::user()['id']]);

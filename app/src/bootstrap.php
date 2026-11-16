@@ -19,12 +19,14 @@ spl_autoload_register(function (string $class): void {
 
 require __DIR__ . '/View.php'; // for the e()/old()/fmt_bytes() helpers
 
-// Browser hardening for every panel response. Inline <script>/<style> are
-// still used by a few pages, hence 'unsafe-inline'; nothing is loaded from
-// other origins. HSTS only on the panel's own hostname: on a customer
+// Browser hardening for every panel response. Scripts only from the panel
+// itself - no inline scripts or on*= handlers anywhere (page code lives in
+// public/assets/js/pages/, behaviour in data- attributes; docs/UI.md).
+// Styles keep 'unsafe-inline' for style="width: N%" on progress bars only.
+// Nothing is loaded from other origins. HSTS only on the panel's own hostname: on a customer
 // domain's :2083 it would also force HTTPS onto that domain's own site.
 if (PHP_SAPI !== 'cli' && !headers_sent()) {
-    header("Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
+    header("Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
     header('X-Frame-Options: DENY');
     header('X-Content-Type-Options: nosniff');
     header('Referrer-Policy: same-origin');

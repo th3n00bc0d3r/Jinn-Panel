@@ -5,6 +5,117 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project doesn't yet follow semantic versioning releases (no tags/releases
 have been cut) - entries are grouped by development milestone instead.
 
+## Unreleased - redesign and account basics (2026-11)
+
+Upgrade by re-running the installer: it applies
+`app/migrations/023_accounts_notifications.sql`, `024_package_features.sql`, `025_reseller_limits_notices.sql` and `026_statistics.sql`, rebuilds the CSS and
+re-deploys the worker and pool agent (the file editor and hourly alert
+emails need both).
+
+### Changed - the interface
+- A new design system (`docs/UI.md`): design tokens for a light and a dark
+  theme (light / dark / follow the OS, from the top bar), one accent colour,
+  component classes (`card`, `btn`, `badge`, `table`...) and PHP helpers
+  (`Ui::field`, `Ui::status`, `Ui::deleteForm`...) instead of long class
+  strings repeated in every view. Every page was redesigned on it.
+- New shell: grouped sidebar, breadcrumbs, account menu, **Ctrl-K** (or `/`)
+  to jump to any page or action, toasts for messages (errors stay until
+  closed), confirmations in a dialog instead of the browser's `confirm()`.
+- Accessibility: every control is labelled, icon-only buttons have names,
+  text meets WCAG AA contrast, a skip link, keyboard-friendly menu and
+  dialogs, reduced motion respected. The always-on animations are gone.
+- A form that fails keeps what was typed (never passwords).
+- Pages with a running job (backups, routes, PHP versions/extensions)
+  check in the background and refresh once it's done, instead of
+  reloading every few seconds.
+- Settings that change a live site (PHP version, SSL mode) are saved with
+  a button on the domain's page, no longer on change in the list.
+- No inline scripts left: the Content-Security-Policy no longer allows
+  `'unsafe-inline'` scripts.
+- An expired form shows a page that explains it, not a line of text.
+
+### Added - statistics (Plan 1 v3)
+- The root worker collects statistics: the server and each service every
+  minute, the web access log every 5 minutes (requests, visitors, pages,
+  status codes, page time, top pages and referrers per site), each
+  account's disk use daily. No IP address is stored: visitors are counted
+  with a hash whose salt changes daily and is then deleted.
+- **WHM dashboard**: traffic of the busiest sites over 24 hours, 7 or 30
+  days, the server's figures with trends, services' uptime over 24 hours,
+  and accounts nearing a limit with the day they reach it.
+- **WHM > Analytics**: requests, visitors or data sent per site, the
+  server's CPU, memory and network over time, and a sortable table of sites.
+- **Account page**: disk use and data sent over the last 30 days against
+  the package, and when each limit will be reached at the current rate.
+- **Customer dashboard**: visitors to their sites over 24 hours, 7 or 30
+  days, their plan with the day disk or bandwidth runs out at the current
+  rate, and each site's 14-day visitors, instead of shortcut tiles.
+- **Stats tab on every domain**: visitors, requests, data sent, page time,
+  answers by status, top pages and referring sites.
+- **Accounts list**: search, filters with counts, sorting and pages in the
+  database (fast with thousands of accounts), a 14-day requests trend per
+  account.
+- **Ctrl-K finds accounts and domains** by name (scoped to what the user may
+  open), an **alerts bell** with a count in the top bar, and dashboards that
+  refresh every 30 seconds (background refreshes don't keep an idle session
+  signed in).
+- **Moving to a smaller package** (one account, several, or a package
+  edited down) first lists what each account already has beyond the new
+  limits and what that means; new limits then apply within a minute (the
+  worker measures those accounts right away) instead of at the next hour.
+- **SFTP keys**: the `ssh-keygen` and `sftp -i` commands to copy, filled in
+  for the login, server and port.
+- Charts are drawn on the server (`Chart::`), readable without JavaScript,
+  each with a table view; a new type scale (IBM Plex, bundled) and accent.
+
+### Added
+- **WHM > Accounts > account page**: usage against the package, domains,
+  activity, and every action in one place. **Edit** accounts (email, name,
+  package, password) and **packages**.
+- **Log in as** a hosting account (admins, and resellers for their own
+  accounts), with a banner and a way back; logged.
+- **More than one administrator** (the last active one is protected).
+- **Forgot password** (single-use email link, 1 hour) and **two-factor
+  recovery codes** (ten, shown once).
+- **WHM > Notifications**: the panel sends mail through the local mail
+  server - welcome emails (with a set-your-password link, never the
+  password), password resets, alert emails, a test email.
+- **WHM > Alerts**: health check results, services, disk, accounts over
+  quota, failed backups and migrations, expiring certificates, routes to
+  review - on the dashboard too, and new ones emailed hourly.
+- **File Manager editor** for text files (UTF-8, up to 1 MB) and new files;
+  upload by drag and drop.
+- **SSH keys** for SFTP logins.
+- **Package features**: ten switches per package (File Manager, cron jobs,
+  self-service backups, DNS editor, other PHP versions, aliases, routing
+  rules, object cache, phpMyAdmin/remote MySQL, SSH keys), enforced by the
+  panel and hidden from the account's menu when off; each account can be
+  switched differently on its page, which also changes its package in one
+  step. Migration `024_package_features.sql`.
+- **Unlimited** for any package limit, and a **page per package**: its
+  accounts with usage and totals, limits, features, **Duplicate**, and
+  **Move these accounts** to another package.
+- **Bulk account actions** in WHM > Accounts: change package, suspend,
+  unsuspend, or switch a feature for the selected accounts.
+- **Reseller limits**: a reseller's own package caps what its accounts'
+  packages add up to (disk, bandwidth, domains) and how many accounts it
+  has; shown on its dashboard and its page.
+- **Customer emails**: quota warnings at 90% and when out of disk or
+  bandwidth (once per level), and suspension/unsuspension notices with an
+  optional reason. Switches in WHM > Notifications.
+- **Local run** (`dev/local/`): the real panel against MAMP's MySQL, with
+  demo logins; outgoing mail goes to `dev/local/outbox.log`.
+- **Local preview** (`dev/preview/`): every view renders with sample data
+  on a laptop; CI renders them all and checks labels and button names.
+
+### Fixed
+- Routes: a failed apply showed as applied (the log line starts with a
+  timestamp).
+- SFTP settings showed the last Server Tweaks job instead of its own.
+- The FTP page's "Restrict to domain" option text was garbled.
+- The Routes tab answered 500 when the site's PHP pool wasn't running; it
+  now says so on the domain page.
+
 ## Unreleased - public launch candidate
 
 Everything below landed on `migration-file-import` (2026-10-01), on top of

@@ -22,6 +22,7 @@ final class FileManagerController
     private static function context(bool $post = true): array
     {
         Auth::requireRole(['user']);
+        Features::require('file_manager', '/cpanel/files');
         if ($post) {
             Csrf::requireValid();
         }
@@ -38,6 +39,7 @@ final class FileManagerController
     public static function index(): void
     {
         Auth::requireRole(['user']);
+        Features::require('file_manager');
         $me = Auth::user();
         $domainsStmt = Database::app()->prepare('SELECT * FROM domains WHERE user_id = ? ORDER BY domain_name');
         $domainsStmt->execute([$me['id']]);
@@ -191,6 +193,77 @@ final class FileManagerController
             Flash::error($e->getMessage());
             self::backTo($domain, $dir);
         }
+    }
+
+    /** The text editor for one file (UTF-8 text up to 1 MB). */
+    public static function edit(): void
+    {
+        [$domain, $dir] = self::context(false);
+        $name = basename(str_replace('\\', '/', (string) ($_GET['name'] ?? '')));
+        $new = !empty($_GET['new']);
+        $file = ['content' => '', 'size' => 0, 'modified' => null, 'mode' => '644'];
+        if (!$new) {
+            try {
+                $file = PoolClient::call((string) $domain['domain_name'], 'edit_read', ['dir' => $dir, 'name' => $name]);
+            } catch (Throwable $e) {
+                Flash::error($e->getMessage());
+                self::backTo($domain, $dir);
+            }
+        }
+        $content = (string) $file['content'];
+        View::render('cpanel/file_edit', [
+            'title' => $new ? 'New file' : $name,
+            'domain' => $domain,
+            'dir' => $dir,
+            'name' => $new ? '' : $name,
+            'content' => $content,
+            'size' => (int) $file['size'],
+            'modified' => $file['modified'] !== null ? (int) $file['modified'] : null,
+            'mode' => (string) $file['mode'],
+            'eol' => str_contains($content, "\r\n") ? 'crlf' : 'lf',
+        ], 'cpanel');
+    }
+
+    public static function save(): void
+    {
+        [$domain, $dir] = self::context();
+        self::needSpace($domain, $dir);
+        $name = basename(str_replace('\\', '/', trim((string) ($_POST['name'] ?? ''))));
+        $eol = ($_POST['eol'] ?? 'lf') === 'crlf' ? 'crlf' : 'lf';
+        // Browsers send a textarea with \r\n line breaks: keep the file's own.
+        $content = str_replace("\r\n", "\n", (string) ($_POST['content'] ?? ''));
+        if ($eol === 'crlf') {
+            $content = str_replace("\n", "\r\n", $content);
+        }
+        $expect = ($_POST['expect_mtime'] ?? '') !== '' ? (int) $_POST['expect_mtime'] : null;
+        try {
+            if ($name === '' || $name === '.' || $name === '..') {
+                throw new InvalidArgumentException('Give the file a name.');
+            }
+            $res = PoolClient::call((string) $domain['domain_name'], 'edit_write', ['dir' => $dir, 'name' => $name, 'content' => $content] + ($expect !== null ? ['expect_mtime' => $expect] : []));
+        } catch (Throwable $e) {
+            // Show the editor again with the text as it was typed - nothing is lost.
+            View::render('cpanel/file_edit', [
+                'title' => $name !== '' ? $name : 'New file',
+                'domain' => $domain,
+                'dir' => $dir,
+                'name' => $name,
+                'content' => $content,
+                'size' => strlen($content),
+                'modified' => $expect,
+                'mode' => '',
+                'eol' => $eol,
+                'error' => $e->getMessage(),
+            ], 'cpanel');
+            return;
+        }
+        CacheService::purgeStatic((string) $domain['domain_name']);
+        Flash::ok("Saved $name (" . fmt_bytes((int) $res['size']) . ').');
+        if (!empty($_POST['close'])) {
+            self::backTo($domain, $dir);
+        }
+        header('Location: /cpanel/files/edit?domain_id=' . (int) $domain['id'] . '&path=' . rawurlencode($dir) . '&name=' . rawurlencode($name));
+        exit;
     }
 
     /** Old single-item delete form (kept for bookmarks/older views). */

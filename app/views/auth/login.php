@@ -1,28 +1,21 @@
-<div class="bg-slate-900/70 border border-slate-800 rounded-2xl p-8 shadow-xl">
-    <h1 class="text-xl font-semibold text-white mb-1">Sign in</h1>
-    <p class="text-sm text-slate-400 mb-6">Access your hosting control panel.</p>
+<?php
+/** @var string|null $error */
+View::script('auth');
+// After a failed attempt the username stays, so only the password is typed again.
+$username = !empty($error) && is_string($_POST['username'] ?? null) ? trim($_POST['username']) : '';
+?>
+<h1 class="auth-title">Sign in</h1>
+<p class="auth-desc">With your username or email address.</p>
 
-    <?php if (!empty($error)): ?>
-    <div class="mb-4 rounded-lg bg-red-950/60 border border-red-800 text-red-300 text-sm px-3 py-2">
-        <?= e($error) ?>
-    </div>
-    <?php endif; ?>
+<?php if (!empty($error)): ?>
+<div class="mt-6"><?= Ui::alert($error, 'danger') ?></div>
+<?php endif; ?>
 
-    <form method="post" action="/login" class="space-y-4">
-        <?= Csrf::field() ?>
-        <div>
-            <label class="block text-xs font-medium text-slate-400 mb-1.5">Username or email</label>
-            <input type="text" name="username" required autofocus
-                   class="w-full rounded-lg bg-slate-800/80 border border-slate-700 px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
-        </div>
-        <div>
-            <label class="block text-xs font-medium text-slate-400 mb-1.5">Password</label>
-            <input type="password" name="password" required
-                   class="w-full rounded-lg bg-slate-800/80 border border-slate-700 px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
-        </div>
-        <button type="submit"
-                class="w-full rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 hover:from-indigo-400 hover:to-violet-500 text-white font-medium text-sm py-2.5 transition-colors shadow-lg shadow-indigo-950/50">
-            Sign in
-        </button>
-    </form>
-</div>
+<form method="post" action="/login" class="mt-8 space-y-5">
+    <?= Csrf::field() ?>
+    <?= Ui::field('username', 'Username or email', ['required' => true, 'value' => $username !== '' ? $username : null, 'attrs' => ['autofocus' => $username === '', 'autocomplete' => 'username', 'autocapitalize' => 'off', 'spellcheck' => 'false']]) ?>
+    <?= Ui::password('password', 'Password', ['id' => 'login-password', 'required' => true, 'autocomplete' => 'current-password', 'autofocus' => $username !== '', 'link' => ['/login/forgot', 'Forgot it?']]) ?>
+    <button type="submit" class="auth-submit">Sign in</button>
+</form>
+
+<p class="mt-8 text-[13px] text-subtle">Two-factor codes are asked for on the next step, if you turned them on.</p>

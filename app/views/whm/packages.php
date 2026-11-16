@@ -1,39 +1,56 @@
-<div class="flex items-center justify-between mb-4">
-    <p class="text-sm text-slate-500"><?= count($packages) ?> package<?= count($packages) === 1 ? '' : 's' ?></p>
-    <a href="/whm/packages/create" class="inline-flex items-center gap-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-4 py-2 transition-colors">
-        <?= icon('plus', 'h-4 w-4') ?> Create package
-    </a>
-</div>
+<?php
+/** @var list<array<string,mixed>> $packages with owner_username, account_count */
+View::slot('desc', 'Limits that hosting accounts are created with. Changing a package changes the limits of every account on it.');
+View::slot('actions', '<a href="/whm/packages/create" class="btn btn-primary">' . icon('plus') . 'Create package</a>');
 
-<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-    <?php foreach ($packages as $p): ?>
-    <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-5 flex flex-col">
-        <div class="flex items-start justify-between">
-            <div>
-                <h3 class="font-semibold text-slate-800"><?= e($p['name']) ?></h3>
-                <p class="text-xs text-slate-400 mt-0.5"><?= $p['owner_id'] ? 'Custom · ' . e($p['owner_username'] ?? '') : 'Global package' ?> · <?= (int) $p['account_count'] ?> account<?= (int) $p['account_count'] === 1 ? '' : 's' ?></p>
+?>
+<?php if (!$packages): ?>
+<div class="card"><?= Ui::empty('No packages yet', 'Create a package before creating hosting accounts: every account takes its limits from one.', 'box', '<a href="/whm/packages/create" class="btn btn-primary">' . icon('plus') . 'Create package</a>') ?></div>
+<?php else: ?>
+<div class="grid-cards">
+    <?php foreach ($packages as $p): $n = (int) $p['account_count']; $id = (int) $p['id']; ?>
+    <article class="card flex flex-col">
+        <div class="flex items-start justify-between gap-3 px-5 pt-5">
+            <div class="min-w-0">
+                <h2 class="truncate text-base font-semibold"><a href="/whm/packages/<?= $id ?>" class="text-fg hover:text-accent-text"><?= e($p['name']) ?></a></h2>
+                <p class="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted">
+                    <?= $p['owner_id'] ? Ui::badge('Reseller · ' . ($p['owner_username'] ?? ''), 'neutral') : Ui::badge('Global', 'accent') ?>
+                    <span><?= e(Ui::plural($n, 'account')) ?></span>
+                </p>
             </div>
-            <?php if ((int) $p['account_count'] === 0): ?>
-            <form method="post" action="/whm/packages/<?= (int) $p['id'] ?>/delete" data-confirm="Delete package &quot;<?= e($p['name']) ?>&quot;?">
-                <?= Csrf::field() ?>
-                <button class="p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50"><?= icon('trash', 'h-4 w-4') ?></button>
-            </form>
+        </div>
+        <dl class="grid flex-1 grid-cols-2 content-start gap-x-4 gap-y-4 px-5 py-5 text-sm">
+            <div><dt class="text-xs text-muted">Disk</dt><dd class="mt-0.5 font-medium tabular-nums text-fg"><?= e(Quota::fmtMb($p['disk_quota_mb'])) ?></dd></div>
+            <div><dt class="text-xs text-muted">Bandwidth / month</dt><dd class="mt-0.5 font-medium tabular-nums text-fg"><?= e(Quota::fmtMb($p['bandwidth_mb'])) ?></dd></div>
+            <div><dt class="text-xs text-muted">Domains</dt><dd class="mt-0.5 font-medium tabular-nums text-fg"><?= e(Quota::fmtCount($p['max_domains'])) ?></dd></div>
+            <div><dt class="text-xs text-muted">Databases</dt><dd class="mt-0.5 font-medium tabular-nums text-fg"><?= e(Quota::fmtCount($p['max_databases'])) ?></dd></div>
+            <div><dt class="text-xs text-muted">Mailboxes</dt><dd class="mt-0.5 font-medium tabular-nums text-fg"><?= e(Quota::fmtCount($p['max_email_accounts'])) ?></dd></div>
+            <div><dt class="text-xs text-muted">SFTP accounts</dt><dd class="mt-0.5 font-medium tabular-nums text-fg"><?= e(Quota::fmtCount($p['max_ftp_accounts'])) ?></dd></div>
+            <?php if ((int) ($p['max_accounts'] ?? 0) !== 0): ?>
+            <div><dt class="text-xs text-muted">Accounts (reseller)</dt><dd class="mt-0.5 font-medium tabular-nums text-fg"><?= e(Quota::fmtCount($p['max_accounts'])) ?></dd></div>
+            <?php endif; ?>
+        </dl>
+        <?php $pf = Features::forPackage($p); $off = array_keys(array_filter($pf, fn($on) => !$on)); ?>
+        <div class="border-t border-line px-5 py-3 text-sm">
+            <?php if (!$off): ?>
+            <p class="flex items-center gap-2 text-muted"><?= icon('check-circle', 'h-4 w-4 text-success') ?>All <?= count($pf) ?> features</p>
             <?php else: ?>
-            <span class="p-1.5 text-slate-300 cursor-not-allowed" title="In use by <?= (int) $p['account_count'] ?> account<?= (int) $p['account_count'] === 1 ? '' : 's' ?>"><?= icon('trash', 'h-4 w-4') ?></span>
+            <p class="text-muted"><?= count($pf) - count($off) ?> of <?= count($pf) ?> features · without:</p>
+            <p class="mt-1.5 flex flex-wrap gap-1.5"><?php foreach ($off as $k): ?><?= Ui::badge(Features::LIST[$k][0], 'neutral') ?><?php endforeach; ?></p>
             <?php endif; ?>
         </div>
-        <dl class="mt-4 space-y-1.5 text-sm text-slate-600">
-            <div class="flex justify-between"><dt>Disk quota</dt><dd class="font-medium text-slate-800"><?= (int) $p['disk_quota_mb'] ?> MB</dd></div>
-            <div class="flex justify-between"><dt>Bandwidth</dt><dd class="font-medium text-slate-800"><?= (int) $p['bandwidth_mb'] ?> MB</dd></div>
-            <div class="flex justify-between"><dt>Domains</dt><dd class="font-medium text-slate-800"><?= (int) $p['max_domains'] ?></dd></div>
-            <div class="flex justify-between"><dt>Databases</dt><dd class="font-medium text-slate-800"><?= (int) $p['max_databases'] ?></dd></div>
-            <div class="flex justify-between"><dt>Email accounts</dt><dd class="font-medium text-slate-800"><?= (int) $p['max_email_accounts'] ?></dd></div>
-            <div class="flex justify-between"><dt>FTP accounts</dt><dd class="font-medium text-slate-800"><?= (int) $p['max_ftp_accounts'] ?></dd></div>
-            <?php if ((int) ($p['max_accounts'] ?? 0) > 0): ?><div class="flex justify-between"><dt>Accounts (reseller)</dt><dd class="font-medium text-slate-800"><?= (int) $p['max_accounts'] ?></dd></div><?php endif; ?>
-        </dl>
-    </div>
+        <div class="card-footer justify-between">
+            <div class="flex gap-2">
+                <a href="/whm/packages/<?= $id ?>" class="btn btn-secondary btn-sm">Open</a>
+                <?php if (Auth::isAdmin() || (int) $p['owner_id'] === (int) Auth::id()): ?><a href="/whm/packages/<?= $id ?>/edit" class="btn btn-ghost btn-sm"><?= icon('edit') ?>Edit</a><?php endif; ?>
+            </div>
+            <?php if ($n === 0): ?>
+            <?= Ui::deleteForm("/whm/packages/$id/delete", 'Delete the package "' . $p['name'] . '"? This can\'t be undone.', 'Delete package') ?>
+            <?php else: ?>
+            <span class="text-xs text-subtle" title="A package can be deleted once no account uses it">In use</span>
+            <?php endif; ?>
+        </div>
+    </article>
     <?php endforeach; ?>
-    <?php if (!$packages): ?>
-    <p class="text-slate-400 text-sm">No packages yet.</p>
-    <?php endif; ?>
 </div>
+<?php endif; ?>

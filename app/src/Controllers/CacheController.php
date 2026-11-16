@@ -36,6 +36,9 @@ final class CacheController
         Auth::requireRole(['user']);
         Csrf::requireValid();
         $me = Auth::user();
+        if (($_POST['op'] ?? '') === 'enable') {
+            Features::require('object_cache', '/cpanel/cache');
+        }
         try {
             match ($_POST['op'] ?? '') {
                 'enable', 'reset' => CacheService::enableObjectCache($me),

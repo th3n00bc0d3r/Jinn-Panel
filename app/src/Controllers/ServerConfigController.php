@@ -71,7 +71,7 @@ final class ServerConfigController
         View::render('whm/server_config/sftp', [
             'title' => 'SFTP Server Settings',
             'common' => $config['common'] ?? [],
-            'lastLog' => SystemWorkerService::lastLog('tune-sftpgo'),
+            'lastLog' => SystemWorkerService::lastLog('sftp-settings'),
         ], 'whm');
     }
 

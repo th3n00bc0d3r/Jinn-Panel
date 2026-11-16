@@ -85,6 +85,9 @@ final class DatabaseController
     public static function remote(): void
     {
         $me = self::post();
+        if (($_POST['op'] ?? '') !== 'remove') {
+            Features::require('database_access', '/cpanel/databases');
+        }
         self::run(function () use ($me) {
             if (($_POST['op'] ?? '') === 'remove') {
                 MysqlService::removeRemoteHost($me, (string) ($_POST['host'] ?? ''));
@@ -98,6 +101,7 @@ final class DatabaseController
     public static function phpmyadmin(): void
     {
         $me = self::post();
+        Features::require('database_access', '/cpanel/databases');
         try {
             header('Location: ' . MysqlService::phpMyAdminUrl($me));
             exit;

@@ -1,62 +1,90 @@
-<?php include __DIR__ . '/../partials/quota_bars.php'; ?>
+<?php
+/** @var list<array<string,mixed>> $accounts SFTP logins (with public_keys) */
+/** @var list<array<string,mixed>> $domains */
+View::slot('desc', e('Logins for SFTP clients like FileZilla, Cyberduck or WinSCP. Plain FTP is not offered: SFTP is encrypted.'));
+View::slot('actions', '<a href="#add-sftp" class="btn btn-primary">' . icon('plus') . 'Create login</a>');
+$host = Config::SERVER_HOSTNAME;
+$port = (int) Config::SFTP_PUBLIC_PORT;
+?>
+<div class="stack">
+    <?php $compact = true; include __DIR__ . '/../partials/quota_bars.php'; ?>
 
-<div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-4">
-    <div class="lg:col-span-2 bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-        <div class="overflow-x-auto">
-        <table class="w-full text-sm">
-            <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
-                <tr>
-                    <th class="text-left font-medium px-5 py-3">Username</th>
-                    <th class="text-left font-medium px-5 py-3">Home directory</th>
-                    <th class="text-right font-medium px-5 py-3">Actions</th>
-                </tr>
-            </thead>
-            <tbody class="divide-y divide-slate-100">
-                <?php foreach ($accounts as $a): ?>
-                <tr class="hover:bg-slate-50/70">
-                    <td class="px-5 py-3 font-medium text-slate-700"><?= e($a['username']) ?></td>
-                    <td class="px-5 py-3 font-mono text-xs text-slate-500"><?= e($a['home_dir']) ?></td>
-                    <td class="px-5 py-3 text-right">
-                        <form method="post" action="/cpanel/ftp/<?= (int) $a['id'] ?>/delete" data-confirm="Delete SFTP account <?= e($a['username']) ?>?">
-                            <?= Csrf::field() ?>
-                            <button class="p-2 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50"><?= icon('trash', 'h-4 w-4') ?></button>
-                        </form>
-                    </td>
-                </tr>
-                <?php endforeach; ?>
+    <div class="grid grid-cols-1 items-start gap-6 xl:grid-cols-3">
+        <div class="stack xl:col-span-2">
+            <section class="card" aria-labelledby="sftp-title">
+                <?= Ui::cardHeader(Ui::plural(count($accounts), 'SFTP login'), id: 'sftp-title') ?>
                 <?php if (!$accounts): ?>
-                <tr><td colspan="3" class="px-5 py-10 text-center text-slate-400">No FTP/SFTP accounts yet.</td></tr>
-                <?php endif; ?>
-            </tbody>
-        </table>
-        </div>
-    </div>
-
-    <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-5 h-fit">
-        <h2 class="text-sm font-semibold text-slate-700 mb-3">Create an SFTP account</h2>
-        <form method="post" action="/cpanel/ftp" class="space-y-3">
-            <?= Csrf::field() ?>
-            <div>
-                <label class="block text-xs font-medium text-slate-600 mb-1.5">Username</label>
-                <input type="text" name="username" required placeholder="uploads"
-                       class="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-500">
-            </div>
-            <div>
-                <label class="block text-xs font-medium text-slate-600 mb-1.5">Password</label>
-                <input type="password" name="password" required minlength="<?= Passwords::MIN_LENGTH ?>"
-                       class="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-500">
-            </div>
-            <div>
-                <label class="block text-xs font-medium text-slate-600 mb-1.5">Restrict to domain (optional)</label>
-                <select name="domain_id" class="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-500 bg-white">
-                    <option value="">All my sites (each as /                    <option value="">Account root</option>lt;domain                    <option value="">Account root</option>gt;)</option>
-                    <?php foreach ($domains as $d): ?>
-                    <option value="<?= (int) $d['id'] ?>"><?= e($d['domain_name']) ?></option>
+                <?= Ui::empty('No SFTP logins yet', 'Create one to upload files with an SFTP client.', 'folder-up') ?>
+                <?php else: ?>
+                <ul class="divide-y divide-line">
+                    <?php foreach ($accounts as $a):
+                        $keys = array_values(array_filter(explode("\n", (string) ($a['public_keys'] ?? ''))));
+                        $kid = 'keys-' . (int) $a['id']; ?>
+                    <li class="px-5 py-4">
+                        <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+                            <div class="min-w-0 flex-1">
+                                <p class="flex items-center gap-2"><?= Ui::copyable((string) $a['username']) ?> <?= $keys ? Ui::badge(Ui::plural(count($keys), 'SSH key'), 'success') : '' ?></p>
+                                <p class="mt-0.5 truncate font-mono text-xs text-muted"><?= e($a['home_dir']) ?></p>
+                            </div>
+                            <?= Ui::deleteForm('/cpanel/ftp/' . (int) $a['id'] . '/delete', 'Delete the SFTP login ' . $a['username'] . '? Programs using it stop connecting. Files are not touched.', 'Delete ' . $a['username']) ?>
+                        </div>
+                        <?php if ($keys || Features::has('ssh_keys')): ?>
+                        <details class="mt-2">
+                            <summary class="inline-flex cursor-pointer list-none items-center gap-1.5 rounded text-sm text-muted hover:text-fg [&::-webkit-details-marker]:hidden"><?= icon('key', 'h-4 w-4') ?><?= $keys ? 'SSH keys' : 'Add an SSH key' ?><?= icon('chevron-down', 'h-3.5 w-3.5') ?></summary>
+                            <form method="post" action="/cpanel/ftp/<?= (int) $a['id'] ?>/keys" class="mt-3 space-y-3 rounded-lg border border-line bg-surface-2 p-4">
+                                <?= Csrf::field() ?>
+                                <?= Ui::textarea('public_keys', 'Public keys for ' . $a['username'], implode("\n", $keys), [
+                                    'mono' => true,
+                                    'rows' => 4,
+                                    'placeholder' => 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA… me@laptop',
+                                    'hint' => 'One per line - the contents of a .pub file (e.g. ~/.ssh/id_ed25519.pub), never the private key. Empty removes them. The password keeps working too.',
+                                ]) ?>
+                                <button class="btn btn-primary btn-sm"><?= icon('save') ?>Save keys</button>
+                                <?php $keyFile = '~/.ssh/' . preg_replace('/[^a-z0-9_-]/i', '-', Config::SERVER_HOSTNAME) . '_' . preg_replace('/[^a-z0-9_-]/i', '-', (string) $a['username']); ?>
+                                <div class="border-t border-line pt-3 text-[13px]">
+                                    <p class="font-medium text-fg">No key yet? On your computer (macOS, Linux, or Windows PowerShell):</p>
+                                    <ol class="mt-2 space-y-2 text-muted">
+                                        <li>1. Make a key pair: <?php $cmd = 'ssh-keygen -t ed25519 -f ' . $keyFile . ' -C "' . $a['username'] . '@' . Config::SERVER_HOSTNAME . '"'; ?><span class="mt-1 flex items-start gap-1"><code class="min-w-0 break-all font-mono text-[12.5px] text-fg"><?= e($cmd) ?></code><?= Ui::copy($cmd) ?></span></li>
+                                        <li>2. Paste the contents of <code class="mono"><?= e($keyFile) ?>.pub</code> above and save. The file without .pub is your private key: keep it on your computer.</li>
+                                        <li>3. Connect with the key: <?php $cmd = 'sftp -i ' . $keyFile . ' -P ' . (int) Config::SFTP_PUBLIC_PORT . ' ' . $a['username'] . '@' . Config::SERVER_HOSTNAME; ?><span class="mt-1 flex items-start gap-1"><code class="min-w-0 break-all font-mono text-[12.5px] text-fg"><?= e($cmd) ?></code><?= Ui::copy($cmd) ?></span></li>
+                                    </ol>
+                                </div>
+                            </form>
+                        </details>
+                        <?php endif; ?>
+                    </li>
                     <?php endforeach; ?>
-                </select>
-            </div>
-            <button type="submit" class="w-full rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-sm font-medium py-2.5 transition-colors">Create SFTP account</button>
-            <p class="text-xs text-slate-400">Connect on port 2022 with any SFTP client.</p>
-        </form>
+                </ul>
+                <?php endif; ?>
+            </section>
+
+            <section class="card" aria-labelledby="connect-title">
+                <?= Ui::cardHeader('Connecting', 'Use these settings in your SFTP client.', id: 'connect-title') ?>
+                <dl class="dl card-body">
+                    <div><dt>Protocol</dt><dd>SFTP (SSH File Transfer)</dd></div>
+                    <div><dt>Server</dt><dd><?= Ui::copyable($host) ?></dd></div>
+                    <div><dt>Port</dt><dd><?= Ui::copyable((string) $port) ?></dd></div>
+                    <div><dt>Username</dt><dd>The login's full name above (it starts with your account name)</dd></div>
+                    <div><dt>Command line</dt><dd><?= Ui::copyable('sftp -P ' . $port . ' ' . ($accounts[0]['username'] ?? 'LOGIN') . '@' . $host) ?></dd></div>
+                </dl>
+            </section>
+        </div>
+
+        <section class="card h-fit scroll-mt-20" id="add-sftp" aria-labelledby="add-sftp-title">
+            <?= Ui::cardHeader('Create an SFTP login', id: 'add-sftp-title') ?>
+            <form method="post" action="/cpanel/ftp" class="card-body space-y-4">
+                <?= Csrf::field() ?>
+                <?= Ui::field('username', 'Name', ['required' => true, 'placeholder' => 'uploads', 'mono' => true, 'hint' => 'The full login name is your account name, an underscore and this.', 'attrs' => ['autocomplete' => 'off', 'autocapitalize' => 'off', 'spellcheck' => 'false']]) ?>
+                <?= Ui::field('password', 'Password', ['type' => 'password', 'required' => true, 'generate' => true, 'attrs' => ['minlength' => Passwords::MIN_LENGTH, 'autocomplete' => 'new-password']]) ?>
+                <?php
+                $opts = ['' => 'All my sites (each as /<domain>)'];
+                foreach ($domains as $d) {
+                    $opts[(string) $d['id']] = 'Only ' . $d['domain_name'];
+                }
+                echo Ui::select('domain_id', 'Access', $opts, '', ['hint' => 'A login for one site can\'t see your other sites.']);
+                ?>
+                <button type="submit" class="btn btn-primary btn-block"><?= icon('plus') ?>Create login</button>
+            </form>
+        </section>
     </div>
 </div>

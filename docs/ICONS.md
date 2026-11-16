@@ -8,7 +8,7 @@
 | `assets/brand/icon.svg` | Square mark alone, 256x256 - app icon, social preview source, anywhere a wordmark doesn't fit |
 | `assets/brand/favicon.svg` | Simplified square mark, tuned to stay legible at 16-32px - this is what actually ships in the running app (`app/public/assets/favicon.svg`) |
 
-All three share one gradient (`#6366f1` &rarr; `#7c3aed`, indigo to violet) - the same accent used throughout the WHM side of the UI (`from-indigo-500 to-indigo-700` in Tailwind terms). cPanel's side of the UI uses a second accent, sky blue, to visually separate "administering the server" from "managing your own account" - see `views/partials/shell.php`'s `$accent` parameter.
+All three share one gradient (`#6366f1` &rarr; `#7c3aed`, indigo to violet). The interface uses the same indigo as its single accent colour on both the server side (WHM) and the hosting account side, in light and dark themes - see the design tokens in `app/public/assets/css/input.css` and [UI.md](UI.md).
 
 ## UI icon set
 
@@ -16,36 +16,78 @@ The panel's interface uses a small hand-authored set of stroke icons (24x24, `st
 
 | Icon | File | Used for |
 |---|---|---|
-| grid | `grid.svg` | Dashboard nav |
-| users | `users.svg` | Accounts nav |
-| box | `box.svg` | Packages nav / PHP Versions nav |
-| globe | `globe.svg` | Domains nav |
-| database | `database.svg` | MySQL Databases nav |
-| mail | `mail.svg` | Email Accounts nav / Mail Settings |
-| folder-up | `folder-up.svg` | FTP/SFTP nav |
-| server | `server.svg` | Server hostname indicator (topbar) |
-| folder | `folder.svg` | File Manager nav |
+| grid | `grid.svg` | Dashboard |
+| users | `users.svg` | Accounts, resellers |
+| user | `user.svg` | Hosting accounts |
+| user-plus | `user-plus.svg` | Create account |
+| box | `box.svg` | Packages |
+| globe | `globe.svg` | Domains, DNS zones (WHM) |
+| database | `database.svg` | MySQL databases, database settings |
+| mail | `mail.svg` | Email accounts, mail settings, notifications |
+| folder-up | `folder-up.svg` | FTP / SFTP |
+| folder | `folder.svg` | File Manager, folders |
+| file | `file.svg` | Files, new file |
+| file-text | `file-text.svg` | Text files (open in the editor) |
+| server | `server.svg` | DNS zones (cPanel), server hostname |
+| archive | `archive.svg` | Backups, zip |
+| activity | `activity.svg` | Activity log, recent activity |
+| bell | `bell.svg` | Alerts |
+| shield | `shield.svg` | Login security, certificates, exposed files |
+| key | `key.svg` | SSH keys, password generator |
+| lock | `lock.svg` | (reserved) |
+| code | `code.svg` | PHP versions, PHP stat |
+| layers | `layers.svg` | PHP extensions |
+| settings | `settings.svg` | PHP settings |
+| sliders | `sliders.svg` | Server tweaks |
+| bolt | `bolt.svg` | Cache |
+| clock | `clock.svg` | Cron jobs, expired links |
+| route | `route.svg` | Routes & .htaccess |
+| transfer | `transfer.svg` | cPanel migration |
+| plus | `plus.svg` | Create / add |
+| edit | `edit.svg` | Edit |
+| save | `save.svg` | Save |
+| trash | `trash.svg` | Delete |
+| copy | `copy.svg` | Copy to clipboard |
+| download | `download.svg` | Download, backups |
+| upload | `upload.svg` | Upload |
+| refresh | `refresh.svg` | Re-run, regenerate, clear cache |
+| external | `external.svg` | Open in a new tab |
+| login | `login.svg` | Log in as |
 | logout | `logout.svg` | Sign out |
-| menu | `menu.svg` | Mobile sidebar toggle |
-| close | `close.svg` | (reserved for dismissible UI) |
-| plus | `plus.svg` | "Create" buttons |
-| trash | `trash.svg` | Delete actions |
-| pause | `pause.svg` | Suspend account |
-| play | `play.svg` | Unsuspend account |
-| download | `download.svg` | File Manager download |
-| check | `check.svg` | Success flash messages |
-| transfer | `transfer.svg` | cPanel Migration nav / "New migration" |
-| alert | `alert.svg` | Error flash messages |
-| sliders | `sliders.svg` | Server Tweaks nav |
-| settings | `settings.svg` | PHP Settings nav |
-| shield | `shield.svg` | (reserved for a future security/permissions screen) |
+| eye | `eye.svg` | Viewing as another account, show a password |
+| eye-off | `eye-off.svg` | Hide a shown password |
+| pause | `pause.svg` | Suspend |
+| play | `play.svg` | Unsuspend |
+| check | `check.svg` | Done, all clear |
+| check-circle | `check-circle.svg` | Success toasts |
+| x-circle | `x-circle.svg` | Error toasts, problems |
+| alert | `alert.svg` | Warnings |
+| info | `info.svg` | Notes, info alerts |
+| search | `search.svg` | Ctrl-K search |
+| sun | `sun.svg` | Light theme |
+| moon | `moon.svg` | Dark theme |
+| monitor | `monitor.svg` | System theme |
+| menu | `menu.svg` | Mobile menu |
+| close | `close.svg` | Close, remove |
+| chevron-right | `chevron-right.svg` | Breadcrumbs, "more" links |
+| chevron-left | `chevron-left.svg` | Previous page |
+| chevron-down | `chevron-down.svg` | Menus, disclosures |
+| arrow-left | `arrow-left.svg` | Back |
+| arrow-up | `arrow-up.svg` | More / less than before (rotated) |
+| home | `home.svg` | Home, website folder |
+| more | `more.svg` | (reserved: overflow menus) |
+| terminal | `terminal.svg` | (reserved) |
+| list | `list.svg` | (reserved) |
+| chart | `chart.svg` | (reserved: statistics) |
+| cpu | `cpu.svg` | (reserved: server stats) |
+| hard-drive | `hard-drive.svg` | (reserved: disks) |
 
 ## Adding a new icon
 
 1. Find a 24x24 stroke-style path (matching the existing set's visual weight - `stroke-width="2"`, rounded caps/joins) - most Lucide icons drop in directly since that's the style this set follows.
 2. Add it to the `$paths` array in `View.php`'s `icon()` function.
-3. Use it anywhere via `icon('your-name', 'h-5 w-5')` (second argument is Tailwind size classes).
-4. Optionally export it to `assets/icons/your-name.svg` for consistency with the rest of the set.
+3. Use it anywhere via `icon('your-name', 'h-5 w-5')` (second argument is Tailwind size classes). Icons are decorative (`aria-hidden`): an icon-only button or link needs its own name - use `Ui::iconButton()` / `Ui::iconLink()`.
+4. Export it to `assets/icons/your-name.svg` and add it to the table above.
 
 ## Regenerating `assets/icons/`
 

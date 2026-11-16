@@ -144,11 +144,6 @@ secrets).
   by process count and `memory_limit` only.
 - **AlmaLinux 10 only**, and it expects the server to itself.
 - **No billing integration (WHMCS etc.), external API or app installer.**
-- **Account management gaps**: WHM can't yet edit an existing account
-  (change package, email or password) or "log in as" a customer; no "forgot
-  password", no 2FA recovery codes (an admin resets 2FA), no welcome or
-  notification emails, no file editor in the File Manager, and only one
-  admin account (created by `/setup`).
 - No SSH access for customers, no visitor statistics (AWStats-style).
 - No DNSSEC, custom (uploaded) certificates or per-mailbox quotas.
 - Hard disk quotas cover files only; databases and mail are measured and

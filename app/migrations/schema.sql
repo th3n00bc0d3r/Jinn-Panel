@@ -629,3 +629,171 @@ SET @rs1_sql = IF(
 PREPARE rs1_stmt FROM @rs1_sql;
 EXECUTE rs1_stmt;
 DEALLOCATE PREPARE rs1_stmt;
+
+-- Plan 1 (account management basics). Also appended to schema.sql; idempotent.
+--
+-- password_resets: single-use links sent by email - "forgot password" (1 hour)
+-- and the welcome email's "set your password" link (3 days). Only a hash of
+-- the token is stored.
+CREATE TABLE IF NOT EXISTS password_resets (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    token_hash CHAR(64) NOT NULL,
+    purpose ENUM('reset','welcome') NOT NULL DEFAULT 'reset',
+    expires_at DATETIME NOT NULL,
+    used_at DATETIME NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_reset_token (token_hash),
+    KEY idx_reset_user (user_id),
+    CONSTRAINT fk_reset_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- Two-factor recovery codes: ten one-time codes, shown once when two-factor
+-- is turned on (or regenerated). Only hashes are stored.
+CREATE TABLE IF NOT EXISTS recovery_codes (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    code_hash CHAR(64) NOT NULL,
+    used_at DATETIME NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_recovery_user (user_id),
+    CONSTRAINT fk_recovery_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- SSH public keys of an SFTP login (one per line), mirrored to SFTPGo.
+SET @pk1_sql = IF(
+    (SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ftp_accounts' AND COLUMN_NAME = 'public_keys') = 0,
+    'ALTER TABLE ftp_accounts ADD COLUMN public_keys TEXT NULL DEFAULT NULL COMMENT ''SSH public keys, one per line (SFTPGo public_keys)''',
+    'SELECT 1'
+);
+PREPARE pk1_stmt FROM @pk1_sql;
+EXECUTE pk1_stmt;
+DEALLOCATE PREPARE pk1_stmt;
+
+-- Feature switches per package, and per account on top of its package
+-- (Features.php). NULL = everything on, as before. Also appended to
+-- schema.sql; idempotent.
+SET @pf1_sql = IF(
+    (SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'packages' AND COLUMN_NAME = 'features') = 0,
+    'ALTER TABLE packages ADD COLUMN features TEXT NULL DEFAULT NULL COMMENT ''JSON feature => bool (Features::LIST); NULL = all on''',
+    'SELECT 1'
+);
+PREPARE pf1_stmt FROM @pf1_sql;
+EXECUTE pf1_stmt;
+DEALLOCATE PREPARE pf1_stmt;
+
+SET @pf2_sql = IF(
+    (SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'feature_overrides') = 0,
+    'ALTER TABLE users ADD COLUMN feature_overrides TEXT NULL DEFAULT NULL COMMENT ''JSON feature => bool, overriding the package for this account''',
+    'SELECT 1'
+);
+PREPARE pf2_stmt FROM @pf2_sql;
+EXECUTE pf2_stmt;
+DEALLOCATE PREPARE pf2_stmt;
+
+-- Plan 1 v3. Also appended to schema.sql; idempotent.
+--
+-- Package limits may be -1 = unlimited (Quota::UNLIMITED); no column change
+-- needed. Quota emails to customers remember the last level they were told
+-- about (0, 90 or 100 %), so each warning goes out once; bandwidth levels
+-- start again every month.
+SET @un1_sql = IF(
+    (SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'account_usage' AND COLUMN_NAME = 'disk_notice') = 0,
+    'ALTER TABLE account_usage ADD COLUMN disk_notice TINYINT NOT NULL DEFAULT 0 COMMENT ''last disk warning emailed: 0, 90 or 100 (%)'', ADD COLUMN bw_notice TINYINT NOT NULL DEFAULT 0 COMMENT ''last bandwidth warning emailed this month'', ADD COLUMN bw_notice_month CHAR(7) NOT NULL DEFAULT '''' COMMENT ''YYYY-MM bw_notice is for''',
+    'SELECT 1'
+);
+PREPARE un1_stmt FROM @un1_sql;
+EXECUTE un1_stmt;
+DEALLOCATE PREPARE un1_stmt;
+
+-- Plan 1 v3: statistics for the dashboards and the per-domain Stats tab.
+-- Also appended to schema.sql; idempotent.
+--
+-- Written by the root worker (StatsCollector): the server every minute,
+-- service checks every minute, the web access log every 5 minutes, account
+-- disk use with the hourly usage run. Pruned nightly (StatsCollector::prune).
+-- No IP addresses are stored: a visitor is a hash of the address and the
+-- browser with a salt that changes every day and is then thrown away, so
+-- visitors can be counted per day but not followed from one day to the next.
+
+-- The server, one row per minute (kept 32 days).
+CREATE TABLE IF NOT EXISTS stat_server (
+    at DATETIME NOT NULL PRIMARY KEY COMMENT 'the minute',
+    load1 DECIMAL(7,2) NOT NULL DEFAULT 0,
+    cpu_pct DECIMAL(5,2) NULL COMMENT 'CPU busy since the previous sample, all cores',
+    mem_used BIGINT NOT NULL DEFAULT 0,
+    mem_total BIGINT NOT NULL DEFAULT 0,
+    disk_used BIGINT NOT NULL DEFAULT 0,
+    disk_total BIGINT NOT NULL DEFAULT 0,
+    net_rx BIGINT NULL COMMENT 'bytes received since the previous sample',
+    net_tx BIGINT NULL COMMENT 'bytes sent since the previous sample'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- Whether each service answered, one row per service per minute (kept 32 days).
+CREATE TABLE IF NOT EXISTS stat_service_checks (
+    service VARCHAR(20) NOT NULL,
+    at DATETIME NOT NULL,
+    up TINYINT(1) NOT NULL,
+    ms SMALLINT UNSIGNED NULL COMMENT 'time to connect',
+    PRIMARY KEY (service, at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- Each hosting account per day (kept 400 days): disk at the last hourly
+-- measure that day, and what its sites served that day.
+CREATE TABLE IF NOT EXISTS stat_account_daily (
+    user_id INT NOT NULL,
+    day DATE NOT NULL,
+    disk_bytes BIGINT NOT NULL DEFAULT 0 COMMENT 'files + databases + mail',
+    files_bytes BIGINT NOT NULL DEFAULT 0,
+    db_bytes BIGINT NOT NULL DEFAULT 0,
+    mail_bytes BIGINT NOT NULL DEFAULT 0,
+    bw_bytes BIGINT NOT NULL DEFAULT 0,
+    requests INT UNSIGNED NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, day),
+    CONSTRAINT fk_stat_account_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- Each domain per hour (kept 95 days). visitors = visitors first seen that
+-- day during this hour, so the hours of a day add up to the day's visitors.
+CREATE TABLE IF NOT EXISTS stat_domain_hourly (
+    domain_id INT NOT NULL,
+    hour DATETIME NOT NULL,
+    requests INT UNSIGNED NOT NULL DEFAULT 0,
+    bytes BIGINT NOT NULL DEFAULT 0,
+    visitors INT UNSIGNED NOT NULL DEFAULT 0,
+    pages INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'requests for pages, not files like images or scripts',
+    s2xx INT UNSIGNED NOT NULL DEFAULT 0,
+    s3xx INT UNSIGNED NOT NULL DEFAULT 0,
+    s4xx INT UNSIGNED NOT NULL DEFAULT 0,
+    s5xx INT UNSIGNED NOT NULL DEFAULT 0,
+    time_ms BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'summed response time of pages',
+    slow INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'pages that took over a second',
+    PRIMARY KEY (domain_id, hour),
+    KEY idx_stat_domain_hour (hour),
+    CONSTRAINT fk_stat_hourly_domain FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- Top pages and referring sites per domain per day (kept 95 days; past
+-- days keep their 50 biggest, the rest add up under "(other)").
+CREATE TABLE IF NOT EXISTS stat_domain_top (
+    domain_id INT NOT NULL,
+    day DATE NOT NULL,
+    kind ENUM('page','referrer') NOT NULL,
+    value VARCHAR(190) NOT NULL,
+    hits INT UNSIGNED NOT NULL DEFAULT 0,
+    PRIMARY KEY (domain_id, day, kind, value),
+    CONSTRAINT fk_stat_top_domain FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+-- Today's visitor hashes, only to count each visitor once a day (emptied
+-- every night along with the salt that made them).
+CREATE TABLE IF NOT EXISTS stat_visitors (
+    domain_id INT NOT NULL,
+    day DATE NOT NULL,
+    hash BINARY(8) NOT NULL,
+    PRIMARY KEY (domain_id, day, hash)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;

@@ -84,6 +84,7 @@ final class BackupController
     public static function cpanel(): void
     {
         Auth::requireRole(['user']);
+        Features::require('backups', '/cpanel/backups');
         $me = Auth::user();
         View::render('cpanel/backups', [
             'title' => 'Backups',
@@ -95,6 +96,7 @@ final class BackupController
     public static function cpanelRun(): void
     {
         Auth::requireRole(['user']);
+        Features::require('backups', '/cpanel/backups');
         Csrf::requireValid();
         $me = Auth::user();
         try {
@@ -116,6 +118,7 @@ final class BackupController
     public static function cpanelRestore(array $params): void
     {
         Auth::requireRole(['user']);
+        Features::require('backups', '/cpanel/backups');
         Csrf::requireValid();
         $me = Auth::user();
         $b = BackupService::find((int) $params['id']);
@@ -135,6 +138,7 @@ final class BackupController
     public static function cpanelDownload(array $params): void
     {
         Auth::requireRole(['user']);
+        Features::require('backups', '/cpanel/backups');
         self::download((int) $params['id'], (string) ($_GET['file'] ?? ''), (int) Auth::id());
     }
 

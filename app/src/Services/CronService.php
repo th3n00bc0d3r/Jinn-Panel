@@ -164,6 +164,9 @@ final class CronService
         if (!$job || $job['user_status'] !== 'active') {
             return;
         }
+        if (!Features::has('cron', (int) $job['user_id'])) {
+            return; // the account's package no longer includes cron jobs
+        }
         $lock = fopen(self::lockFile($id), 'c');
         if ($lock === false || !flock($lock, LOCK_EX | LOCK_NB)) {
             return; // the previous run is still going

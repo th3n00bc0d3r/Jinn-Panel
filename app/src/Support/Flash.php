@@ -26,11 +26,34 @@ final class Flash
     public static function error(string $message): void
     {
         self::set('error', $message);
+        self::rememberInput();
+    }
+
+    /**
+     * Keeps what was typed into a form that failed, so the page it
+     * redirects back to can show it again (Ui::old). Never secrets.
+     */
+    private static function rememberInput(): void
+    {
+        if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST' || PHP_SAPI === 'cli') {
+            return;
+        }
+        $keep = [];
+        foreach ($_POST as $k => $v) {
+            if (is_string($v) && strlen($v) <= 4096 && !preg_match('/pass|secret|token|csrf|code|key|private/i', (string) $k)) {
+                $keep[(string) $k] = $v;
+            }
+        }
+        $_SESSION['old'] = $keep;
     }
 
     /** @return array<int, array{type:string,message:string}> */
     public static function pull(): array
     {
+        // Background checks of a page (data-busy polling) must not eat messages.
+        if (($_SERVER['HTTP_X_JP_POLL'] ?? '') !== '') {
+            return [];
+        }
         $items = $_SESSION['flash'] ?? [];
         unset($_SESSION['flash']);
         return $items;

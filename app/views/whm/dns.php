@@ -2,114 +2,117 @@
 /** @var list<array<string,mixed>> $zones */
 /** @var array{ns1_host:string, ns1_ip:string, ns2_host:string, ns2_ip:string} $ns */
 /** @var string|null $serverZone */
-$input = 'w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500';
-$label = 'block text-xs font-medium text-slate-500 mb-1';
 $hasServerZone = false;
 foreach ($zones as $z) {
     if ((int) $z['is_server_zone'] === 1) {
         $hasServerZone = true;
     }
 }
+View::slot('desc', e('Every zone this server\'s nameservers answer for: its own, the hosted domains\' and standalone ones.'));
+View::slot('actions', '<a href="#add-zone" class="btn btn-primary">' . icon('plus') . 'Add zone</a>');
 ?>
-<div class="space-y-6">
-
-    <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
-        <div class="flex items-start justify-between gap-4">
-            <div>
-                <h2 class="font-semibold text-slate-800">Nameservers</h2>
-                <p class="text-sm text-slate-500 mt-1">
-                    Used for the SOA and NS records of every zone on this server. Set the same names and IPs as
-                    glue records ("personal nameservers") at the registrar of <?= e($serverZone ?? 'your domain') ?>,
-                    and point hosted domains at these two names.
-                </p>
-            </div>
-        </div>
-        <form method="post" action="/whm/dns/nameservers" class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-            <?= Csrf::field() ?>
-            <?php foreach (['ns1', 'ns2'] as $n): ?>
-            <div class="grid grid-cols-5 gap-2">
-                <div class="col-span-3">
-                    <label class="<?= $label ?>"><?= strtoupper($n) ?> hostname</label>
-                    <input name="<?= $n ?>_host" value="<?= e($ns[$n . '_host']) ?>" class="<?= $input ?>" required>
-                </div>
-                <div class="col-span-2">
-                    <label class="<?= $label ?>"><?= strtoupper($n) ?> IPv4</label>
-                    <input name="<?= $n ?>_ip" value="<?= e($ns[$n . '_ip']) ?>" class="<?= $input ?>" required>
-                </div>
-            </div>
-            <?php endforeach; ?>
-            <div class="md:col-span-2 flex justify-end">
-                <button class="rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-4 py-2 transition-colors">Save nameservers</button>
-            </div>
-        </form>
-    </div>
-
+<div class="stack">
     <?php if ($serverZone !== null && !$hasServerZone): ?>
-    <div class="bg-amber-50 border border-amber-200 rounded-xl p-5 flex items-start justify-between gap-4">
-        <div class="text-sm text-amber-800">
-            <p class="font-medium">No zone for <?= e($serverZone) ?> yet.</p>
-            <p class="mt-1">Without it the panel (panel.<?= e(Config::SERVER_HOSTNAME) ?>) and the nameservers themselves don't resolve publicly.</p>
+    <div class="alert alert-warning" role="status">
+        <?= icon('alert') ?>
+        <div class="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-3">
+            <div class="min-w-0">
+                <p class="font-medium">No zone for <?= e($serverZone) ?> yet.</p>
+                <p class="mt-0.5">Without it the panel (panel.<?= e(Config::SERVER_HOSTNAME) ?>) and the nameservers themselves don't resolve publicly.</p>
+            </div>
+            <form method="post" action="/whm/dns/server-zone">
+                <?= Csrf::field() ?>
+                <button type="submit" class="btn btn-primary btn-sm"><?= icon('plus') ?>Create server zone</button>
+            </form>
         </div>
-        <form method="post" action="/whm/dns/server-zone">
-            <?= Csrf::field() ?>
-            <button class="whitespace-nowrap rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-sm font-medium px-4 py-2 transition-colors">Create server zone</button>
-        </form>
     </div>
     <?php endif; ?>
 
-    <div class="bg-white rounded-xl border border-slate-200 shadow-sm">
-        <div class="flex flex-col md:flex-row md:items-center justify-between gap-3 px-5 py-4 border-b border-slate-100">
-            <h2 class="font-semibold text-slate-800">Zones <span class="text-slate-400 font-normal">(<?= count($zones) ?>)</span></h2>
-            <form method="post" action="/whm/dns/zones" class="flex flex-wrap items-center gap-2">
-                <?= Csrf::field() ?>
-                <input name="zone_name" placeholder="example.com" class="<?= $input ?> md:w-56" required>
-                <label class="inline-flex items-center gap-1.5 text-xs text-slate-600">
-                    <input type="checkbox" name="point_to_server" value="1" checked class="rounded border-slate-300"> @ and www → this server
-                </label>
-                <button class="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-3 py-2 transition-colors">
-                    <?= icon('plus', 'h-4 w-4') ?> Add zone
-                </button>
-            </form>
-        </div>
-        <div class="overflow-x-auto">
-            <table class="min-w-full text-sm">
-                <thead class="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
-                    <tr>
-                        <th class="px-5 py-2.5 font-medium">Zone</th>
-                        <th class="px-5 py-2.5 font-medium">Belongs to</th>
-                        <th class="px-5 py-2.5 font-medium">Records</th>
-                        <th class="px-5 py-2.5 font-medium">Serial</th>
-                        <th class="px-5 py-2.5"></th>
-                    </tr>
-                </thead>
-                <tbody class="divide-y divide-slate-100">
-                    <?php foreach ($zones as $z): ?>
-                    <tr class="hover:bg-slate-50">
-                        <td class="px-5 py-3 font-medium text-slate-800">
-                            <a href="/whm/dns/<?= (int) $z['id'] ?>" class="hover:text-indigo-600"><?= e($z['zone_name']) ?></a>
-                        </td>
-                        <td class="px-5 py-3 text-slate-600">
-                            <?php if ((int) $z['is_server_zone'] === 1): ?>
-                                <span class="inline-flex rounded-full bg-indigo-50 text-indigo-700 text-xs font-medium px-2 py-0.5">Server</span>
-                            <?php endif; ?>
-                            <?php if (!empty($z['domain_id'])): ?>
-                                <span class="text-slate-600">Account: <?= e($z['owner_username'] ?? '?') ?></span>
-                            <?php elseif ((int) $z['is_server_zone'] !== 1): ?>
-                                <span class="text-slate-400">Standalone</span>
-                            <?php endif; ?>
-                        </td>
-                        <td class="px-5 py-3 text-slate-600"><?= (int) $z['record_count'] ?></td>
-                        <td class="px-5 py-3 font-mono text-xs text-slate-500"><?= (int) $z['serial'] ?></td>
-                        <td class="px-5 py-3 text-right">
-                            <a href="/whm/dns/<?= (int) $z['id'] ?>" class="text-sm font-medium text-indigo-600 hover:text-indigo-500">Manage records</a>
-                        </td>
-                    </tr>
-                    <?php endforeach; ?>
-                    <?php if (!$zones): ?>
-                    <tr><td colspan="5" class="px-5 py-6 text-center text-slate-400">No zones yet.</td></tr>
-                    <?php endif; ?>
-                </tbody>
-            </table>
+    <div class="grid grid-cols-1 items-start gap-6 xl:grid-cols-3">
+        <section class="card min-w-0 xl:col-span-2" aria-labelledby="zones-title">
+            <div class="card-header">
+                <h2 id="zones-title" class="card-title"><?= e(Ui::plural(count($zones), 'zone')) ?></h2>
+                <?php if (count($zones) > 8): ?>
+                <input type="search" class="input input-sm w-full sm:w-56" placeholder="Filter zones…" aria-label="Filter zones" data-filter="#zones-table">
+                <?php endif; ?>
+            </div>
+            <div class="table-wrap">
+                <table class="table" id="zones-table">
+                    <thead>
+                        <tr>
+                            <th scope="col">Zone</th>
+                            <th scope="col" class="hidden sm:table-cell">Belongs to</th>
+                            <th scope="col" class="hidden text-right md:table-cell">Records</th>
+                            <th scope="col" class="hidden lg:table-cell">Serial</th>
+                            <th scope="col" class="text-right"><span class="sr-only">Actions</span></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($zones as $z): $zid = (int) $z['id'];
+                            $owner = (int) $z['is_server_zone'] === 1 ? Ui::badge('This server', 'accent')
+                                : (!empty($z['domain_id']) ? '<span class="inline-flex items-center gap-1.5 text-muted">' . icon('user', 'h-3.5 w-3.5 text-subtle') . e((string) ($z['owner_username'] ?? '?')) . '</span>'
+                                : Ui::badge('Standalone', 'neutral')); ?>
+                        <tr>
+                            <td class="max-w-[22rem]">
+                                <a href="/whm/dns/<?= $zid ?>" class="block truncate font-medium text-fg hover:text-accent-text"><?= e($z['zone_name']) ?></a>
+                                <div class="mt-1 text-xs sm:hidden"><?= $owner ?> <span class="text-muted">· <?= e(Ui::plural((int) $z['record_count'], 'record')) ?></span></div>
+                            </td>
+                            <td class="hidden whitespace-nowrap sm:table-cell"><?= $owner ?></td>
+                            <td class="hidden text-right tabular-nums text-muted md:table-cell"><?= (int) $z['record_count'] ?></td>
+                            <td class="hidden font-mono text-xs text-muted lg:table-cell"><?= (int) $z['serial'] ?></td>
+                            <td class="text-right"><a href="/whm/dns/<?= $zid ?>" class="btn btn-secondary btn-sm" aria-label="Manage <?= e($z['zone_name']) ?>">Manage</a></td>
+                        </tr>
+                        <?php endforeach; ?>
+                        <?php if (!$zones): ?>
+                        <?= Ui::emptyRow(5, 'No zones yet', 'A zone is created with each hosted domain. Add a standalone zone for a domain whose DNS should be served here.', 'globe') ?>
+                        <?php elseif (count($zones) > 8): ?>
+                        <tr data-filter-none data-filter-skip hidden><td colspan="5" class="py-8 text-center text-sm text-muted">No zone matches that filter.</td></tr>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <div class="stack">
+            <section class="card scroll-mt-20" id="add-zone" aria-labelledby="add-zone-title">
+                <div class="card-header">
+                    <div class="min-w-0">
+                        <h2 id="add-zone-title" class="card-title">Add a zone</h2>
+                        <p class="card-desc">For a domain that isn't hosted on an account here, but whose DNS should be.</p>
+                    </div>
+                </div>
+                <form method="post" action="/whm/dns/zones" class="card-body space-y-4">
+                    <?= Csrf::field() ?>
+                    <?= Ui::field('zone_name', 'Domain', ['required' => true, 'placeholder' => 'example.com', 'mono' => true, 'attrs' => ['autocapitalize' => 'off', 'spellcheck' => 'false', 'inputmode' => 'url']]) ?>
+                    <?= Ui::checkbox('point_to_server', '@ and www point to this server', true, ['hint' => 'Adds A records for the domain and www with ' . Config::SERVER_IP . '.']) ?>
+                    <button type="submit" class="btn btn-primary btn-block"><?= icon('plus') ?>Add zone</button>
+                </form>
+            </section>
+
+            <section class="card scroll-mt-20" id="nameservers" aria-labelledby="ns-title">
+                <div class="card-header">
+                    <div class="min-w-0">
+                        <h2 id="ns-title" class="card-title">Nameservers</h2>
+                        <p class="card-desc">The SOA and NS records of every zone use these. Register them as glue records ("personal nameservers") at the registrar of <?= e($serverZone ?? 'your domain') ?>, then point hosted domains at the two names.</p>
+                    </div>
+                </div>
+                <form method="post" action="/whm/dns/nameservers">
+                    <div class="card-body space-y-4">
+                        <?= Csrf::field() ?>
+                        <?php foreach (['ns1', 'ns2'] as $n): $N = strtoupper($n); ?>
+                        <fieldset class="grid grid-cols-1 gap-3 sm:grid-cols-5 xl:grid-cols-1">
+                            <legend class="sr-only"><?= $N ?></legend>
+                            <?= Ui::field($n . '_host', $N . ' hostname', ['value' => $ns[$n . '_host'], 'required' => true, 'mono' => true, 'wrap' => 'sm:col-span-3 xl:col-span-1', 'attrs' => ['autocapitalize' => 'off', 'spellcheck' => 'false']]) ?>
+                            <?= Ui::field($n . '_ip', $N . ' IPv4 address', ['value' => $ns[$n . '_ip'], 'required' => true, 'mono' => true, 'wrap' => 'sm:col-span-2 xl:col-span-1', 'attrs' => ['inputmode' => 'decimal', 'spellcheck' => 'false']]) ?>
+                        </fieldset>
+                        <?php endforeach; ?>
+                    </div>
+                    <div class="card-footer justify-between">
+                        <p class="text-xs text-muted">Saving re-publishes every zone.</p>
+                        <button type="submit" class="btn btn-primary"><?= icon('save') ?>Save nameservers</button>
+                    </div>
+                </form>
+            </section>
         </div>
     </div>
 </div>

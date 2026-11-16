@@ -33,12 +33,14 @@ final class DnsController
             'nsRecords' => $zone ? DnsService::managedRecords($zone, $records) : [],
             'types' => DnsService::TYPES,
             'preview' => $zone ? DnsService::renderZone((int) $zone['id']) : null,
+            'canEdit' => Features::has('dns_editor'),
         ], 'cpanel');
     }
 
     public static function addRecord(array $params): void
     {
         [$domain, $zone] = self::zone($params);
+        Features::require('dns_editor', '/cpanel/dns?domain_id=' . (int) $domain['id']);
         try {
             self::guard($zone, (string) ($_POST['name'] ?? ''));
             DnsService::addRecord((int) $zone['id'], $_POST);
@@ -52,6 +54,7 @@ final class DnsController
     public static function updateRecord(array $params): void
     {
         [$domain, $zone] = self::zone($params);
+        Features::require('dns_editor', '/cpanel/dns?domain_id=' . (int) $domain['id']);
         try {
             self::guard($zone, (string) ($_POST['name'] ?? ''));
             self::guardRecord($zone, (int) ($params['record'] ?? 0));
@@ -66,6 +69,7 @@ final class DnsController
     public static function deleteRecord(array $params): void
     {
         [$domain, $zone] = self::zone($params);
+        Features::require('dns_editor', '/cpanel/dns?domain_id=' . (int) $domain['id']);
         try {
             self::guardRecord($zone, (int) ($params['record'] ?? 0));
             DnsService::deleteRecord((int) $zone['id'], (int) ($params['record'] ?? 0));

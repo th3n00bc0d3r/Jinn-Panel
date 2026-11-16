@@ -1,47 +1,67 @@
 <?php
-/** @var array<string,mixed> $d */
+/** @var array<string,mixed> $d the domain row */
 /** @var array{items: list<array{path:string,size:int,kind:string,dir:bool}>, truncated:bool} $scan */
 /** @var string $docroot */
 /** @var string $private */
-$fmt = fn(int $b) => $b >= 1073741824 ? round($b / 1073741824, 1) . ' GB' : ($b >= 1048576 ? round($b / 1048576, 1) . ' MB' : ($b >= 1024 ? round($b / 1024) . ' KB' : $b . ' B'));
+$tab = 'exposed';
 $id = (int) $d['id'];
 $items = $scan['items'];
+View::slot('desc', e('Files in the web folder that anyone who knows (or guesses) the name can download: site archives, database dumps, backup copies, logs and data exports.'));
+View::script('exposed');
+$fmt = fn(int $b) => $b >= 1073741824 ? round($b / 1073741824, 1) . ' GB' : ($b >= 1048576 ? round($b / 1048576, 1) . ' MB' : ($b >= 1024 ? round($b / 1024) . ' KB' : $b . ' B'));
+$url = fn(string $path) => 'https://' . $d['domain_name'] . '/' . implode('/', array_map('rawurlencode', explode('/', $path)));
 ?>
-<div class="space-y-4">
-    <div>
-        <a href="/cpanel/domains/<?= $id ?>" class="text-sm text-slate-500 hover:text-sky-700">&larr; <?= e($d['domain_name']) ?></a>
-        <h2 class="text-lg font-semibold text-slate-800 mt-1">Exposed files</h2>
-        <p class="text-sm text-slate-500 max-w-3xl">
-            Files in <span class="font-mono"><?= e($docroot) ?></span> that anyone who knows (or guesses) the name can download: site archives, database dumps,
-            backup copies, logs and data exports. Some may be intentional downloads - keep those. "Move to private" moves the rest to
-            <span class="font-mono"><?= e($private) ?>/</span>, outside the web folder (still in the File Manager and over SFTP).
-        </p>
-    </div>
+<?php include __DIR__ . '/../partials/domain_tabs.php'; ?>
 
+<div class="stack">
     <?php if (!$items): ?>
-    <div class="rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-800 text-sm px-4 py-3">Nothing found<?= $scan['truncated'] ? ' in the part of the site scanned (it is very large)' : '' ?>.</div>
+    <section class="card">
+        <?= Ui::empty(
+            'Nothing exposed',
+            'No archives, database dumps, backup copies, logs or data exports were found in ' . $docroot . ($scan['truncated'] ? ' - in the part of the site that was scanned (it is very large).' : '.'),
+            'shield'
+        ) ?>
+    </section>
     <?php else: ?>
-    <form method="post" action="/cpanel/domains/<?= $id ?>/exposed" class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden" data-confirm="Move the selected files out of the web folder? Links to them stop working.">
+    <form method="post" action="/cpanel/domains/<?= $id ?>/exposed" class="card" data-confirm="Move the selected files out of the web folder? Links to them stop working." data-confirm-action="Move to private" aria-labelledby="exposed-title" data-exposed>
         <?= Csrf::field() ?>
-        <div class="px-5 py-3 border-b border-slate-100 flex items-center gap-3">
-            <span class="text-sm font-semibold text-slate-700"><?= count($items) ?> found</span>
-            <?php if ($scan['truncated']): ?><span class="text-xs text-amber-700">The site is large - only part of it was scanned.</span><?php endif; ?>
-            <button class="ml-auto rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-sm font-medium px-4 py-2">Move selected to private</button>
+        <div class="card-header">
+            <div class="min-w-0 max-w-3xl">
+                <h2 id="exposed-title" class="card-title"><?= e(Ui::plural(count($items), 'item')) ?> found</h2>
+                <p class="card-desc">Keep the ones that are meant to be downloaded. "Move to private" puts the rest in <code><?= e($private) ?>/</code>, outside the web folder - still in the File Manager and over SFTP.</p>
+            </div>
+            <button type="submit" class="btn btn-primary" data-exposed-submit><?= icon('lock') ?><span data-exposed-label>Move selected to private</span></button>
         </div>
-        <div class="overflow-x-auto max-h-[36rem] overflow-y-auto">
-            <table class="w-full text-sm">
-                <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide sticky top-0">
-                    <tr><th class="px-5 py-2.5 w-10"></th><th class="text-left font-medium px-3 py-2.5">Path</th><th class="text-left font-medium px-3 py-2.5">What</th><th class="text-right font-medium px-5 py-2.5">Size</th></tr>
+        <?php if ($scan['truncated']): ?>
+        <div class="border-b border-line px-5 py-3"><?= Ui::alert('The site is very large, so only part of it was scanned. Move these, then scan again to find more.', 'warning') ?></div>
+        <?php endif; ?>
+        <div class="table-wrap sm:max-h-[36rem] sm:overflow-y-auto">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th scope="col" class="sticky top-0 z-10 w-10 pr-0"><input type="checkbox" class="block h-4 w-4" aria-label="Select all" data-exposed-all hidden></th>
+                        <th scope="col" class="sticky top-0 z-10">Path</th>
+                        <th scope="col" class="sticky top-0 z-10 hidden sm:table-cell">What it is</th>
+                        <th scope="col" class="sticky top-0 z-10 text-right">Size</th>
+                    </tr>
                 </thead>
-                <tbody class="divide-y divide-slate-100">
+                <tbody>
                     <?php foreach ($items as $it): ?>
-                    <tr class="hover:bg-slate-50">
-                        <td class="px-5 py-2"><input type="checkbox" name="paths[]" value="<?= e($it['path']) ?>" class="rounded border-slate-300 text-sky-600 focus:ring-sky-500"></td>
-                        <td class="px-3 py-2 font-mono text-slate-700 break-all">
-                            <?php if (!$it['dir']): ?><a href="https://<?= e($d['domain_name']) ?>/<?= e(implode('/', array_map('rawurlencode', explode('/', $it['path'])))) ?>" target="_blank" rel="noopener" class="hover:underline"><?= e($it['path']) ?></a><?php else: ?><?= e($it['path']) ?>/<?php endif; ?>
+                    <tr>
+                        <td class="w-10 pr-0"><input type="checkbox" name="paths[]" value="<?= e($it['path']) ?>" class="block h-4 w-4" aria-label="Select <?= e($it['path']) ?>" data-exposed-item></td>
+                        <td class="max-w-md">
+                            <div class="flex items-start gap-2">
+                                <?= icon($it['dir'] ? 'folder' : 'file', 'mt-0.5 h-4 w-4 shrink-0 text-subtle') ?>
+                                <?php if (!$it['dir']): ?>
+                                <a href="<?= e($url($it['path'])) ?>" target="_blank" rel="noopener" class="font-mono text-[0.8125rem] text-fg [overflow-wrap:anywhere] hover:text-accent-text hover:underline" title="Open it the way a visitor could"><?= e($it['path']) ?></a>
+                                <?php else: ?>
+                                <span class="font-mono text-[0.8125rem] text-fg [overflow-wrap:anywhere]"><?= e($it['path']) ?>/</span>
+                                <?php endif; ?>
+                            </div>
+                            <p class="mt-0.5 pl-6 text-xs text-muted sm:hidden"><?= e(ucfirst($it['kind'])) ?></p>
                         </td>
-                        <td class="px-3 py-2 text-slate-500"><?= e($it['kind']) ?></td>
-                        <td class="px-5 py-2 text-right text-slate-500 whitespace-nowrap"><?= e($fmt($it['size'])) ?></td>
+                        <td class="hidden whitespace-nowrap text-muted sm:table-cell"><?= e(ucfirst($it['kind'])) ?></td>
+                        <td class="whitespace-nowrap text-right tabular-nums text-muted"><?= e($fmt((int) $it['size'])) ?></td>
                     </tr>
                     <?php endforeach; ?>
                 </tbody>

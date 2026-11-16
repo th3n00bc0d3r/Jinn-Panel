@@ -13,7 +13,8 @@ final class Csrf
 
     public static function field(): string
     {
-        return '<input type="hidden" name="csrf_token" value="' . htmlspecialchars(self::token(), ENT_QUOTES) . '">';
+        // `hidden` too, so space-y-* layouts don't count it as the first child.
+        return '<input type="hidden" name="csrf_token" value="' . htmlspecialchars(self::token(), ENT_QUOTES) . '" hidden>';
     }
 
     public static function verify(): bool
@@ -26,7 +27,15 @@ final class Csrf
     {
         if ($_SERVER['REQUEST_METHOD'] === 'POST' && !self::verify()) {
             http_response_code(419);
-            echo 'Invalid or expired form submission (CSRF check failed). Go back and try again.';
+            // Back to the page the form was on, if it was on this panel.
+            $host = fn(mixed $h): string => strtolower((string) preg_replace('/:\d+$/', '', (string) $h));
+            $ref = (string) ($_SERVER['HTTP_REFERER'] ?? '');
+            $back = null;
+            if ($ref !== '' && $host(parse_url($ref, PHP_URL_HOST)) === $host($_SERVER['HTTP_HOST'] ?? '')) {
+                $q = parse_url($ref, PHP_URL_QUERY);
+                $back = '/' . ltrim((string) parse_url($ref, PHP_URL_PATH), '/') . ($q ? "?$q" : '');
+            }
+            View::render('errors/419', ['title' => 'Form expired', 'back' => $back], 'blank');
             exit;
         }
     }

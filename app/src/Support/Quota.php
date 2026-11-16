@@ -3,6 +3,36 @@ declare(strict_types=1);
 
 final class Quota
 {
+    /** A package limit of -1 means unlimited (any limit column). */
+    public const UNLIMITED = -1;
+
+    public static function unlimited(mixed $limit): bool
+    {
+        return (int) $limit < 0;
+    }
+
+    /** A limit in MB as bytes; 0 = unlimited (what the meters and SFTPGo expect). */
+    public static function bytes(mixed $mb): int
+    {
+        return (int) $mb > 0 ? (int) $mb * 1048576 : 0;
+    }
+
+    /** "5 GB" / "512 MB" / "Unlimited" for a limit in MB. */
+    public static function fmtMb(mixed $mb): string
+    {
+        $v = (int) $mb;
+        if ($v < 0) {
+            return 'Unlimited';
+        }
+        return $v >= 1024 ? rtrim(rtrim(number_format($v / 1024, 1), '0'), '.') . ' GB' : $v . ' MB';
+    }
+
+    /** A count limit for display: "25" / "Unlimited". */
+    public static function fmtCount(mixed $n): string
+    {
+        return (int) $n < 0 ? 'Unlimited' : (string) (int) $n;
+    }
+
     public static function package(int $userId): ?array
     {
         $stmt = Database::app()->prepare(
@@ -44,9 +74,9 @@ final class Quota
         $mail = (int) ($u['mail_bytes'] ?? 0);
         return [
             'files' => $files, 'databases' => $db, 'mail' => $mail, 'used' => $files + $db + $mail,
-            'limit' => (int) ($pkg['disk_quota_mb'] ?? 0) * 1048576, 'over' => (bool) ($u['over_disk'] ?? false),
+            'limit' => self::bytes($pkg['disk_quota_mb'] ?? 0), 'over' => (bool) ($u['over_disk'] ?? false),
             'bw_used' => ($u['bw_month'] ?? '') === date('Y-m') ? (int) ($u['bw_bytes'] ?? 0) : 0,
-            'bw_limit' => (int) ($pkg['bandwidth_mb'] ?? 0) * 1048576, 'bw_over' => (bool) ($u['over_bandwidth'] ?? false),
+            'bw_limit' => self::bytes($pkg['bandwidth_mb'] ?? 0), 'bw_over' => (bool) ($u['over_bandwidth'] ?? false),
             'updated' => $u['updated_at'] ?? null,
         ];
     }
@@ -82,6 +112,9 @@ final class Quota
             'email_accounts' => (int) $pkg['max_email_accounts'],
             'ftp_accounts' => (int) $pkg['max_ftp_accounts'],
         ];
+        if (self::unlimited($limits[$resource] ?? 0)) {
+            return true;
+        }
         $usage = self::usage($userId);
         return ($usage[$resource] ?? 0) < ($limits[$resource] ?? 0);
     }

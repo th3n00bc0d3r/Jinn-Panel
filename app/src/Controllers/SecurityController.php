@@ -18,12 +18,16 @@ final class SecurityController
             $uri = Totp::uri($secret, $me['username'] . '@' . Config::SERVER_HOSTNAME, Config::APP_NAME);
             $setup = ['secret' => $secret, 'uri' => $uri, 'qr' => Totp::qrSvg($uri)];
         }
+        // New recovery codes are shown once, right after they were made.
+        $codes = $_SESSION['recovery_codes_once'] ?? null;
+        unset($_SESSION['recovery_codes_once']);
         View::render('account/security', [
             'title' => 'Login Security',
             'me' => $me,
             'setup' => $setup,
             'base' => self::base(),
-            'accent' => $me['role'] === 'user' ? 'sky' : 'indigo',
+            'codes' => is_array($codes) ? $codes : null,
+            'codesLeft' => !empty($me['totp_secret_enc']) ? RecoveryCodes::remaining((int) $me['id']) : 0,
         ], $me['role'] === 'user' ? 'cpanel' : 'whm');
     }
 
@@ -78,7 +82,28 @@ final class SecurityController
             ->execute([Crypto::encrypt($secret), $step, $me['id']]);
         unset($_SESSION['totp_setup']);
         Auth::invalidateSessions((int) $me['id']);
-        self::back('Two-factor sign-in is on. You will be asked for a code at every sign-in.');
+        $_SESSION['recovery_codes_once'] = RecoveryCodes::regenerate((int) $me['id']);
+        self::back('Two-factor sign-in is on. Save your recovery codes below - they are shown only now.');
+    }
+
+    /** New recovery codes (the old ones stop working); asks for the password. */
+    public static function recoveryCodes(): void
+    {
+        Auth::requireLogin();
+        Csrf::requireValid();
+        $me = Auth::user();
+        if (empty($me['totp_secret_enc'])) {
+            self::back('Turn on two-factor sign-in first.', true);
+        }
+        if (($wait = LoginThrottle::blockedFor($me['username'])) > 0) {
+            self::back("Too many wrong passwords - try again in $wait minute(s).", true);
+        }
+        if (!password_verify((string) ($_POST['current_password'] ?? ''), $me['password_hash'])) {
+            LoginThrottle::fail($me['username']);
+            self::back('Your password is not right.', true);
+        }
+        $_SESSION['recovery_codes_once'] = RecoveryCodes::regenerate((int) $me['id']);
+        self::back('New recovery codes made; the old ones no longer work.');
     }
 
     public static function twoFactorDisable(): void
@@ -94,6 +119,7 @@ final class SecurityController
             self::back('Your password is not right - two-factor sign-in stays on.', true);
         }
         Database::app()->prepare('UPDATE users SET totp_secret_enc = NULL, totp_last_step = NULL WHERE id = ?')->execute([$me['id']]);
+        RecoveryCodes::clear((int) $me['id']);
         self::back('Two-factor sign-in is off.');
     }
 
@@ -107,11 +133,12 @@ final class SecurityController
         $row = $s->fetch();
         if ($row) {
             Database::app()->prepare('UPDATE users SET totp_secret_enc = NULL, totp_last_step = NULL WHERE id = ?')->execute([$row['id']]);
+            RecoveryCodes::clear((int) $row['id']);
             Auth::invalidateSessions((int) $row['id']);
             Audit::target((int) $row['id']);
             Flash::ok("Two-factor sign-in turned off for \"{$row['username']}\".");
         }
-        header('Location: /whm/accounts');
+        header('Location: ' . ($row ? "/whm/accounts/{$row['id']}" : '/whm/accounts'));
         exit;
     }
 

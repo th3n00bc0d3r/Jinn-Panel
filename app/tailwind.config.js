@@ -1,19 +1,72 @@
 /** @type {import('tailwindcss').Config} */
+
+// Every colour is a design token: a CSS variable holding "R G B" channels,
+// defined for the light and the dark theme in public/assets/css/input.css.
+// Views use the semantic names below (bg-surface, text-muted, bg-accent...)
+// and never raw palette colours, so a theme change is one place.
+const token = (name) => `rgb(var(--jp-${name}) / <alpha-value>)`;
+const tone = (name) => ({
+  DEFAULT: token(name),
+  soft: token(`${name}-soft`),
+  text: token(`${name}-text`),
+});
+
 module.exports = {
-  content: ['./views/**/*.php', './public/**/*.php'],
-  // Dynamically built as `bg-${accent}-600` etc. in views/partials/shell.php
-  // (accent is either "indigo" for WHM or "sky" for cPanel) - these can't be
-  // discovered by content-scanning since the class name is assembled at
-  // render time, so they're safelisted explicitly here.
-  safelist: [
-    'from-indigo-500', 'to-indigo-700', 'text-indigo-400', 'bg-indigo-950', 'border-indigo-800', 'bg-indigo-600',
-    'from-sky-500', 'to-sky-700', 'text-sky-400', 'bg-sky-950', 'border-sky-800', 'bg-sky-600',
-    // whm/server_config/php_versions.php status badges: text-${color}-700 / bg-${color}-500
-    'text-emerald-700', 'bg-emerald-500', 'text-amber-700', 'bg-amber-500',
-    'text-red-700', 'bg-red-500', 'text-slate-700', 'bg-slate-500',
+  // Class names must appear literally in one of these files (never build
+  // them as "bg-{$x}-500"). src/Support/Ui.php holds the shared components.
+  content: [
+    './views/**/*.php',
+    './public/**/*.php',
+    './public/assets/js/**/*.js',
+    './src/Support/Ui.php',
+    './src/Support/Chart.php',
+    './src/View.php',
+    // The preview's chart gallery (absent on a server; Tailwind skips it).
+    '../dev/preview/gallery/*.php',
   ],
+  // theme.js resolves "system" and always sets data-theme on <html>.
+  darkMode: ['selector', '[data-theme="dark"]'],
   theme: {
-    extend: {},
+    extend: {
+      colors: {
+        canvas: token('canvas'),
+        surface: {
+          DEFAULT: token('surface'),
+          2: token('surface-2'),
+          3: token('surface-3'),
+        },
+        line: {
+          DEFAULT: token('line'),
+          strong: token('line-strong'),
+        },
+        fg: token('fg'),
+        muted: token('muted'),
+        subtle: token('subtle'),
+        accent: {
+          DEFAULT: token('accent'),
+          hover: token('accent-hover'),
+          fg: token('accent-fg'),
+          soft: token('accent-soft'),
+          text: token('accent-text'),
+        },
+        success: tone('success'),
+        warning: tone('warning'),
+        danger: tone('danger'),
+        info: tone('info'),
+      },
+      fontFamily: {
+        // Bundled (public/assets/fonts, SIL OFL); the system faces stand in until they load.
+        sans: ['"IBM Plex Sans"', 'ui-sans-serif', 'system-ui', '-apple-system', '"Segoe UI"', 'Roboto', 'Arial', 'sans-serif'],
+        mono: ['"IBM Plex Mono"', 'ui-monospace', 'SFMono-Regular', '"SF Mono"', 'Menlo', 'Consolas', 'monospace'],
+      },
+      boxShadow: {
+        card: 'var(--jp-shadow-card)',
+        pop: 'var(--jp-shadow-pop)',
+      },
+      maxWidth: {
+        page: '84rem',
+      },
+    },
   },
   plugins: [],
 };

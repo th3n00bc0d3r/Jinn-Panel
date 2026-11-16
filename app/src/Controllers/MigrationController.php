@@ -458,6 +458,8 @@ final class MigrationController
             ],
             'canRoot' => Auth::isAdmin(),
             'serverIp' => Config::SERVER_IP,
+            // "From backup files" (admin): the archives already in the import folder.
+            'backupFiles' => Auth::isAdmin() && is_dir(MigrationService::importDir()) ? MigrationService::availableBackupFiles() : [],
         ], 'whm');
     }
 

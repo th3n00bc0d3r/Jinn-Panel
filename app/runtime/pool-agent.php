@@ -185,6 +185,49 @@ try {
                 $reply(['ok' => true, 'content' => null]);
             }
             $reply(['ok' => true, 'content' => (string) file_get_contents($p)]);
+        case 'edit_read':
+            // A text file for the File Manager's editor: a regular file (not a link), 1 MB at most, UTF-8.
+            $p = $fm->entry($dir, (string) ($args['name'] ?? ''));
+            if (is_link($p) || !is_file($p)) {
+                throw new InvalidArgumentException(basename($p) . ' is not a regular file.');
+            }
+            $size = (int) filesize($p);
+            if ($size > 1048576) {
+                throw new RuntimeException(basename($p) . ' is larger than 1 MB - download it, edit it on your computer and upload it again.');
+            }
+            $content = (string) file_get_contents($p);
+            if (str_contains($content, "\0") || !mb_check_encoding($content, 'UTF-8')) {
+                throw new RuntimeException(basename($p) . ' is not a UTF-8 text file, so it can\'t be edited here.');
+            }
+            $reply(['ok' => true, 'content' => $content, 'size' => $size, 'modified' => (int) filemtime($p), 'mode' => sprintf('%03o', fileperms($p) & 0777)]);
+        case 'edit_write':
+            // Saves the editor's text: written next to the file, then renamed over it
+            // (never half-written), keeping its permissions. A new name creates the file.
+            $p = $fm->entry($dir, (string) ($args['name'] ?? ''));
+            $content = (string) ($args['content'] ?? '');
+            if (is_link($p) || (file_exists($p) && !is_file($p))) {
+                throw new InvalidArgumentException(basename($p) . ' is not a regular file.');
+            }
+            if (strlen($content) > 1048576) {
+                throw new RuntimeException('The text is larger than 1 MB.');
+            }
+            clearstatcache(true, $p);
+            if (isset($args['expect_mtime']) && file_exists($p) && (int) filemtime($p) !== (int) $args['expect_mtime']) {
+                throw new RuntimeException(basename($p) . ' was changed by something else after you opened it. Copy your text, reopen the file and apply your change again.');
+            }
+            $mode = file_exists($p) ? (fileperms($p) & 0777) : 0644;
+            $tmp = $dir . '/.' . basename($p) . '.jp-' . bin2hex(random_bytes(4));
+            if (@file_put_contents($tmp, $content) !== strlen($content)) {
+                @unlink($tmp);
+                throw new RuntimeException('Could not save - the disk or the account\'s quota may be full.');
+            }
+            @chmod($tmp, $mode);
+            if (!@rename($tmp, $p)) {
+                @unlink($tmp);
+                throw new RuntimeException('Could not replace ' . basename($p) . '.');
+            }
+            clearstatcache(true, $p);
+            $reply(['ok' => true, 'size' => strlen($content), 'modified' => (int) filemtime($p)]);
         case 'opcache_clear':
             // Compiled scripts of this site only (opcache.restrict_api lets only this folder call it).
             $n = 0;

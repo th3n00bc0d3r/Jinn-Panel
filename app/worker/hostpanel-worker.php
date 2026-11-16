@@ -287,6 +287,11 @@ function runJob(array $job, callable $log): void
         case 'backup_restore':
             backupRestoreStart((int) ($job['backup_id'] ?? 0), (array) ($job['parts'] ?? []), $log);
             break;
+        case 'usage_refresh':
+            // After a package change: these accounts' quotas and bandwidth now, not at the next hour.
+            panelClasses();
+            UsageService::refresh($log, array_map('intval', (array) ($job['users'] ?? [])));
+            break;
         default:
             throw new RuntimeException('Unknown job type: ' . $job['type']);
     }
@@ -1748,6 +1753,8 @@ function usageRefresh(): void
 {
     panelClasses();
     UsageService::refresh(fn(string $m) => writeOut('worker-usage.log', '[' . date('c') . "] $m\n", true));
+    // Emails accounts that reached 90% / went over their disk or bandwidth.
+    UsageNoticeService::run(fn(string $m) => writeOut('worker-usage.log', '[' . date('c') . "] notice: $m\n", true));
 }
 
 /** Hourly: at the configured hour, the daily backup of everything (its own unit). */
@@ -1817,6 +1824,7 @@ function startUnit(string $unit, string $description, array $args): void
 /** Things that run on their own schedule rather than as jobs. */
 function periodicTasks(): void
 {
+    statsDue();
     $stamp = OUT_DIR . '/.periodic-hourly';
     if (is_file($stamp) && filemtime($stamp) > time() - 3600) {
         return;
@@ -1832,6 +1840,64 @@ function periodicTasks(): void
     } catch (Throwable $e) {
         writeOut('worker-periodic.log', '[' . date('c') . '] backups: ' . $e->getMessage() . "\n", true);
     }
+    try {
+        alertsDue();
+    } catch (Throwable $e) {
+        writeOut('worker-periodic.log', '[' . date('c') . '] alerts: ' . $e->getMessage() . "\n", true);
+    }
+}
+
+/**
+ * Statistics (StatsCollector): the server and its services every minute,
+ * the web access log every 5 minutes (sooner while there is a backlog),
+ * old rows and yesterday's visitor salt after 03:00 each night.
+ */
+function statsDue(): void
+{
+    $log = function (string $m): void {
+        $file = OUT_DIR . '/worker-stats.log';
+        if (@filesize($file) > 1048576) {
+            @rename($file, $file . '.1');
+        }
+        writeOut('worker-stats.log', '[' . date('c') . "] $m\n", true);
+    };
+    $due = fn(string $name, int $every) => !is_file(OUT_DIR . "/.periodic-$name") || filemtime(OUT_DIR . "/.periodic-$name") <= time() - $every;
+    try {
+        if ($due('minute', 55)) {
+            touch(OUT_DIR . '/.periodic-minute');
+            panelClasses();
+            StatsCollector::sample($log);
+            AlertService::remember(); // the count on the top bar's bell
+        }
+        if ($due('5min', 295)) {
+            panelClasses();
+            if (!StatsCollector::ingest($log, 20.0)['more']) {
+                touch(OUT_DIR . '/.periodic-5min');
+            }
+        }
+        $today = date('Y-m-d');
+        if ((int) date('G') >= 3 && @file_get_contents(OUT_DIR . '/.periodic-daily') !== $today) {
+            file_put_contents(OUT_DIR . '/.periodic-daily', $today);
+            panelClasses();
+            StatsCollector::prune($log);
+        }
+    } catch (Throwable $e) {
+        $log('FAILED: ' . $e->getMessage());
+    }
+}
+
+/**
+ * Hourly: hands the health check's result (root-only /var/lib/jinnpanel)
+ * to the panel, then emails new problems (AlertService::notify).
+ */
+function alertsDue(): void
+{
+    $health = @file_get_contents('/var/lib/jinnpanel/health.txt');
+    if ($health !== false) {
+        writeOut('health.txt', mb_substr($health, 0, 20000));
+    }
+    panelClasses();
+    AlertService::notify(fn(string $m) => writeOut('worker-alerts.log', '[' . date('c') . "] $m\n", true));
 }
 
 function appDb(): PDO

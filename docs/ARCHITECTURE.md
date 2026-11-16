@@ -253,7 +253,9 @@ back to the account's Linux user.
 
 `UsageService` runs hourly (and at boot via `jinnpanel-usage-boot`):
 it measures files, databases and mail per account and the month's
-bandwidth from the access logs, stores them in `account_usage`, and:
+bandwidth from the access log (read by `StatsCollector`, below), stores
+them in `account_usage` and each day's disk use in `stat_account_daily`,
+and:
 
 - over the disk quota: the panel refuses uploads and new databases,
   mailboxes and domains;
@@ -262,6 +264,35 @@ bandwidth from the access logs, stores them in `account_usage`, and:
   on the account's Linux user (files only; databases and mail are counted
   but limited softly);
 - over bandwidth: re-renders the account's vhosts to answer 509.
+
+## Statistics
+
+`StatsCollector` runs in the root worker and fills the `stat_*` tables
+(migration 026) that the dashboards and each domain's Stats tab read:
+
+| What | When | Table | Kept |
+|---|---|---|---|
+| Load, CPU, memory, disk, network of the server | every minute | `stat_server` | 32 days |
+| Whether each service's port answers, and how fast | every minute | `stat_service_checks` | 32 days |
+| Requests, bytes, pages, visitors, status classes, page time per domain | every 5 minutes, per hour | `stat_domain_hourly` | 95 days |
+| Top pages and referring sites per domain | every 5 minutes, per day | `stat_domain_top` | 95 days (50 per day) |
+| Disk use, bytes served and requests per account | hourly / every 5 minutes, per day | `stat_account_daily` | 400 days |
+
+The access log is read in one place, `StatsCollector::ingest` with the
+parser `AccessLogStats`: from where it stopped (following a rotation into
+the rolled file, compressed or not), for at most 20 seconds a run, under a
+lock. The bytes it counts are handed to `UsageService` for the month's
+bandwidth. On a laptop the parser reads about 50,000 lines (35 MB) a second
+(`dev/stats/bench.php`), so a server serving 100 requests a second needs
+well under a second every 5 minutes.
+
+No IP address is stored. A visitor is the first 8 bytes of
+SHA-256(salt, address, browser), with a random salt per day kept only in
+root's `/var/lib/jinnpanel/stats-salt` and deleted the next night, along
+with that day's hashes (`stat_visitors`): visitors can be counted per day
+but not recognised again, and a hash can't be turned back into an address.
+Requests from bots (by their browser name) count as requests but not as
+visitors.
 
 `SuspensionService` turns an account off everywhere at once: sites answer
 503 and its PHP pools stop, mail logins are refused, SFTP logins disabled,

@@ -1,51 +1,441 @@
+/*
+ * JinnPanel design system (docs/UI.md). An instrument panel: cool neutral
+ * surface levels, one accent (Jinn violet, from the logo's gradient),
+ * IBM Plex Sans for the interface and Plex Mono for hostnames and paths,
+ * digits aligned in columns, charts as first-class content (Chart.php).
+ * Status colours only for status.
+ */
+@font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 400; font-display: swap; src: url("../fonts/ibm-plex-sans-latin-400-normal.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 500; font-display: swap; src: url("../fonts/ibm-plex-sans-latin-500-normal.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 600; font-display: swap; src: url("../fonts/ibm-plex-sans-latin-600-normal.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 400; font-display: swap; src: url("../fonts/ibm-plex-mono-latin-400-normal.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 500; font-display: swap; src: url("../fonts/ibm-plex-mono-latin-500-normal.woff2") format("woff2"); }
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* ------------------------------------------------------------------
-   Motion (light, and off for people who ask for reduced motion)
-   ------------------------------------------------------------------ */
-@keyframes jp-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
-@keyframes jp-fill { from { transform: scaleX(0); } to { transform: scaleX(1); } }
-@keyframes jp-sheen { from { background-position: 0% 50%; } to { background-position: 200% 50%; } }
-@keyframes jp-slide { from { opacity: 0; transform: translateX(18px); } to { opacity: 1; transform: none; } }
-@keyframes jp-glow { 0%, 100% { box-shadow: 0 0 0 0 rgba(56, 189, 248, 0); } 50% { box-shadow: 0 0 22px 2px rgba(56, 189, 248, .35); } }
+/* ==================================================================
+   Design tokens. Colours are "R G B" channels so Tailwind can add
+   opacity (bg-accent/20). Light is the default; dark applies when the
+   viewer picks it, or picks "system" on a dark OS (theme.js sets
+   data-theme; the media query covers pages without JavaScript).
+   Chart series are plain colours, in a fixed order validated for
+   colour-vision deficiency in both themes.
+   ================================================================== */
+@layer base {
+    :root {
+        color-scheme: light;
+        --jp-canvas: 242 243 246;
+        --jp-surface: 255 255 255;
+        --jp-surface-2: 247 248 250;
+        --jp-surface-3: 236 238 242;
+        --jp-line: 228 231 236;
+        --jp-line-strong: 205 210 219;
+        --jp-fg: 17 20 27;
+        --jp-muted: 76 83 99;
+        --jp-subtle: 102 112 133;
 
-/* Page content rises in, block by block. */
-main > div > *, main > div > div > * { animation: jp-rise .5s cubic-bezier(.2, .7, .2, 1) both; }
-main > div > *:nth-child(2), main > div > div > *:nth-child(2) { animation-delay: .05s; }
-main > div > *:nth-child(3), main > div > div > *:nth-child(3) { animation-delay: .1s; }
-main > div > *:nth-child(4), main > div > div > *:nth-child(4) { animation-delay: .15s; }
-main > div > *:nth-child(5), main > div > div > *:nth-child(5) { animation-delay: .2s; }
-main > div > *:nth-child(n+6), main > div > div > *:nth-child(n+6) { animation-delay: .25s; }
+        --jp-accent: 91 59 232;
+        --jp-accent-hover: 74 43 211;
+        --jp-accent-fg: 255 255 255;
+        --jp-accent-soft: 239 235 254;
+        --jp-accent-text: 78 47 214;
 
-/* Cards lift a little (not the big tables). */
-main .rounded-xl.shadow-sm { transition: transform .25s cubic-bezier(.2, .7, .2, 1), box-shadow .25s ease, border-color .25s ease; }
-main .rounded-xl.shadow-sm:not(:has(table)):not(:has(textarea)):hover {
-    transform: translateY(-2px);
-    box-shadow: 0 14px 32px -16px rgba(14, 116, 144, .35), 0 0 0 1px rgba(56, 189, 248, .12);
+        --jp-success: 5 150 105;
+        --jp-success-soft: 236 253 245;
+        --jp-success-text: 4 120 87;
+        --jp-warning: 217 119 6;
+        --jp-warning-soft: 255 251 235;
+        --jp-warning-text: 180 83 9;
+        --jp-danger: 220 38 38;
+        --jp-danger-soft: 254 242 242;
+        --jp-danger-text: 185 28 28;
+        --jp-info: 2 132 199;
+        --jp-info-soft: 240 249 255;
+        --jp-info-text: 3 105 161;
+
+        --jp-series-1: #5b3be8;
+        --jp-series-2: #eb6834;
+        --jp-series-3: #1baf7a;
+        --jp-series-4: #eda100;
+        --jp-series-other: #b4bac6;
+        --jp-chart-grid: #eceef2;
+        --jp-chart-axis: #cdd2db;
+        --jp-chart-wash: 0.10;
+
+        --jp-shadow-card: none;
+        --jp-shadow-pop: 0 18px 44px -14px rgb(17 20 27 / 0.28), 0 0 0 1px rgb(17 20 27 / 0.06);
+
+        /* The sign-in brand panel: deep violet ink and a light violet, the same in both themes. */
+        --jp-brand-ink: 21 17 58;
+        --jp-brand-dot: 169 150 255;
+    }
+
+    :root[data-theme="dark"] {
+        color-scheme: dark;
+        --jp-canvas: 11 13 18;
+        --jp-surface: 18 21 28;
+        --jp-surface-2: 23 27 35;
+        --jp-surface-3: 32 37 47;
+        --jp-line: 39 44 55;
+        --jp-line-strong: 54 61 75;
+        --jp-fg: 232 235 241;
+        --jp-muted: 164 171 185;
+        --jp-subtle: 135 144 160;
+
+        --jp-accent: 106 79 240;
+        --jp-accent-hover: 124 100 245;
+        --jp-accent-fg: 255 255 255;
+        --jp-accent-soft: 34 27 69;
+        --jp-accent-text: 185 168 255;
+
+        --jp-success: 16 185 129;
+        --jp-success-soft: 6 42 33;
+        --jp-success-text: 110 231 183;
+        --jp-warning: 245 158 11;
+        --jp-warning-soft: 49 33 8;
+        --jp-warning-text: 252 211 77;
+        --jp-danger: 239 68 68;
+        --jp-danger-soft: 54 16 18;
+        --jp-danger-text: 252 165 165;
+        --jp-info: 14 165 233;
+        --jp-info-soft: 8 36 54;
+        --jp-info-text: 125 211 252;
+
+        --jp-series-1: #7e62f5;
+        --jp-series-2: #d95926;
+        --jp-series-3: #199e70;
+        --jp-series-4: #c98500;
+        --jp-series-other: #4a5263;
+        --jp-chart-grid: #1f2430;
+        --jp-chart-axis: #363d4b;
+        --jp-chart-wash: 0.16;
+
+        --jp-shadow-pop: 0 22px 52px -12px rgb(0 0 0 / 0.65), 0 0 0 1px rgb(255 255 255 / 0.07);
+    }
+
+    /* No JavaScript: follow the operating system. */
+    @media (prefers-color-scheme: dark) {
+        :root:not([data-theme]) {
+            color-scheme: dark;
+            --jp-canvas: 11 13 18;
+            --jp-surface: 18 21 28;
+            --jp-surface-2: 23 27 35;
+            --jp-surface-3: 32 37 47;
+            --jp-line: 39 44 55;
+            --jp-line-strong: 54 61 75;
+            --jp-fg: 232 235 241;
+            --jp-muted: 164 171 185;
+            --jp-subtle: 135 144 160;
+            --jp-accent: 106 79 240;
+            --jp-accent-hover: 124 100 245;
+            --jp-accent-soft: 34 27 69;
+            --jp-accent-text: 185 168 255;
+            --jp-success-soft: 6 42 33;
+            --jp-success-text: 110 231 183;
+            --jp-warning-soft: 49 33 8;
+            --jp-warning-text: 252 211 77;
+            --jp-danger-soft: 54 16 18;
+            --jp-danger-text: 252 165 165;
+            --jp-info-soft: 8 36 54;
+            --jp-info-text: 125 211 252;
+            --jp-series-1: #7e62f5;
+            --jp-series-2: #d95926;
+            --jp-series-3: #199e70;
+            --jp-series-4: #c98500;
+            --jp-series-other: #4a5263;
+            --jp-chart-grid: #1f2430;
+            --jp-chart-axis: #363d4b;
+            --jp-chart-wash: 0.16;
+        }
+    }
+
+    html { -webkit-text-size-adjust: 100%; }
+    body { @apply bg-canvas font-sans text-[14px] leading-[1.5] text-fg antialiased; }
+    ::selection { background: rgb(var(--jp-accent) / 0.22); }
+    :focus-visible { outline: 2px solid rgb(var(--jp-accent)); outline-offset: 2px; }
+    input[type="checkbox"], input[type="radio"] { accent-color: rgb(var(--jp-accent)); }
+    code, kbd { font-family: theme("fontFamily.mono"); font-size: 0.92em; }
+    [hidden] { display: none !important; }
+    /* Shown without JavaScript, hidden (and toggled by a page script) with it. */
+    .js .js-hide { display: none !important; }
+    /* Columns of figures line up; big standalone figures keep proportional digits. */
+    td, th, .num { font-variant-numeric: tabular-nums; }
 }
 
-/* Progress and quota bars fill in. */
-.overflow-hidden > [style*="width"] { transform-origin: left center; animation: jp-fill 1s cubic-bezier(.2, .7, .2, 1) .15s both; }
+/* ==================================================================
+   Components. Views use these class names directly; the PHP helpers in
+   src/Support/Ui.php build the ones with more markup (fields, badges),
+   src/Support/Chart.php the charts.
+   ================================================================== */
+@layer components {
+    /* Layout */
+    .page { @apply mx-auto w-full max-w-[84rem]; }
+    .page-header { @apply mb-6 flex flex-wrap items-end justify-between gap-4; }
+    .page-title { @apply text-[1.375rem] font-semibold leading-tight tracking-[-0.01em] text-fg; }
+    .page-desc { @apply mt-1 max-w-3xl text-sm text-muted; }
+    .stack { @apply space-y-6; }
+    .grid-cards { @apply grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3; }
+    .section-title { @apply text-[13px] font-medium text-muted; }
 
-/* A slow gradient line under the top bar. */
-header.sticky { position: sticky; }
-header.sticky::after {
-    content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px;
-    background: linear-gradient(90deg, #0ea5e9, #6366f1, #10b981, #0ea5e9);
-    background-size: 200% 100%; animation: jp-sheen 8s linear infinite; opacity: .75;
+    /* Panels: one surface, hairline dividers inside. .panel and .card are the same thing. */
+    .card, .panel { @apply rounded-[12px] border border-line bg-surface; }
+    .panel-row { @apply grid divide-y divide-line sm:divide-x sm:divide-y-0; }
+    .card-header { @apply flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-4; }
+    .card-title { @apply text-[15px] font-semibold text-fg; }
+    .card-desc { @apply mt-0.5 text-[13px] text-muted; }
+    .card-body { @apply p-5; }
+    .card-footer { @apply flex flex-wrap items-center justify-end gap-2 rounded-b-[12px] border-t border-line bg-surface-2 px-5 py-3; }
+    a.card-link { @apply transition-colors hover:border-line-strong hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent; }
+
+    /* Buttons */
+    .btn {
+        @apply inline-flex h-9 items-center justify-center gap-2 whitespace-nowrap rounded-[8px] px-3.5 text-[13.5px] font-medium
+               transition-colors disabled:cursor-not-allowed disabled:opacity-50;
+    }
+    .btn > svg { @apply h-4 w-4 shrink-0; }
+    .btn-primary { @apply bg-accent text-accent-fg hover:bg-accent-hover; }
+    .btn-secondary { @apply border border-line-strong bg-surface text-fg hover:bg-surface-2; }
+    .btn-ghost { @apply text-muted hover:bg-surface-3 hover:text-fg; }
+    .btn-danger { @apply bg-danger text-white hover:bg-danger/90; }
+    .btn-danger-ghost { @apply text-danger-text hover:bg-danger-soft; }
+    .btn-sm { @apply h-8 gap-1.5 px-2.5 text-[12.5px]; }
+    .btn-sm > svg { @apply h-3.5 w-3.5; }
+    .btn-icon { @apply h-9 w-9 px-0 text-muted hover:bg-surface-3 hover:text-fg; }
+    .btn-icon.btn-danger-ghost { @apply text-muted hover:text-danger-text; }
+    .btn-block { @apply w-full; }
+
+    /* Forms */
+    .field { @apply min-w-0; }
+    .label { @apply mb-1.5 block text-[13px] font-medium text-fg; }
+    .label-optional { @apply font-normal text-subtle; }
+    .input, .select, .textarea {
+        @apply block h-10 w-full rounded-[8px] border border-line-strong bg-surface px-3 text-[14px] text-fg
+               transition-colors placeholder:text-subtle focus:border-accent focus:outline-none focus:ring-[3px] focus:ring-accent/20
+               disabled:cursor-not-allowed disabled:bg-surface-3 disabled:text-subtle;
+    }
+    .input[aria-invalid="true"], .select[aria-invalid="true"], .textarea[aria-invalid="true"] { @apply border-danger focus:ring-danger/20; }
+    .select {
+        @apply appearance-none pr-9;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='%23667085'%3E%3Cpath fill-rule='evenodd' d='M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.17l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z' clip-rule='evenodd'/%3E%3C/svg%3E");
+        background-position: right 0.6rem center;
+        background-repeat: no-repeat;
+        background-size: 1.1rem;
+    }
+    .input-sm, .select-sm { @apply h-8 px-2.5 text-[13px]; }
+    .select-sm { @apply pr-8; }
+    .textarea { @apply h-auto min-h-[6rem] py-2; }
+    .input-group { @apply flex items-stretch; }
+    .input-group > .input { @apply rounded-l-none; }
+    .input-addon { @apply flex items-center whitespace-nowrap rounded-l-[8px] border border-r-0 border-line-strong bg-surface-3 px-3 font-mono text-xs text-muted; }
+    .input-group-suffix > .input { @apply rounded-l-[8px] rounded-r-none; }
+    .input-group-suffix > .input-addon { @apply rounded-l-none rounded-r-[8px] border-l-0 border-r; }
+    .hint { @apply mt-1.5 text-[12.5px] text-muted; }
+    .field-error { @apply mt-1.5 text-[12.5px] font-medium text-danger-text; }
+    .check { @apply flex items-start gap-2.5 text-sm text-fg; }
+    .check > input { @apply mt-0.5 h-4 w-4 shrink-0; }
+    .form-actions { @apply flex flex-wrap items-center gap-3 pt-2; }
+
+    /* Segmented control: ranges and filters */
+    .segmented { @apply inline-flex max-w-full overflow-x-auto rounded-[9px] border border-line bg-surface-2 p-0.5; }
+    .segmented > a, .segmented > button { @apply whitespace-nowrap rounded-[7px] px-2.5 py-1 text-[12.5px] font-medium text-muted hover:text-fg; }
+    .segmented > [aria-current="true"], .segmented > [aria-current="page"], .segmented > [aria-pressed="true"] { @apply bg-surface text-fg shadow-[0_1px_2px_rgb(17_20_27/0.08)] ring-1 ring-line; }
+
+    /* Badges: status words, never decoration */
+    .badge { @apply inline-flex h-[22px] items-center gap-1.5 whitespace-nowrap rounded-[6px] px-2 text-[12px] font-medium; }
+    .badge-neutral { @apply bg-surface-3 text-muted; }
+    .badge-accent { @apply bg-accent-soft text-accent-text; }
+    .badge-success { @apply bg-success-soft text-success-text; }
+    .badge-warning { @apply bg-warning-soft text-warning-text; }
+    .badge-danger { @apply bg-danger-soft text-danger-text; }
+    .badge-info { @apply bg-info-soft text-info-text; }
+    .dot { @apply inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-current; }
+
+    /* Alerts (inline, on the page) */
+    .alert { @apply flex items-start gap-3 rounded-[10px] border px-4 py-3 text-sm; }
+    .alert > svg { @apply mt-0.5 h-4 w-4 shrink-0; }
+    .alert-info { @apply border-info/25 bg-info-soft text-info-text; }
+    .alert-success { @apply border-success/25 bg-success-soft text-success-text; }
+    .alert-warning { @apply border-warning/30 bg-warning-soft text-warning-text; }
+    .alert-danger { @apply border-danger/25 bg-danger-soft text-danger-text; }
+
+    /* Tables */
+    .table-wrap { @apply overflow-x-auto; }
+    .table { @apply w-full text-left text-[13.5px]; }
+    .table thead th { @apply whitespace-nowrap border-b border-line bg-surface-2 px-4 py-2.5 text-[12.5px] font-medium text-muted first:pl-5 last:pr-5; }
+    .table tbody td { @apply px-4 py-3 align-middle first:pl-5 last:pr-5; }
+    .table tbody tr { @apply border-b border-line last:border-b-0; }
+    .table tbody tr:hover { @apply bg-surface-2; }
+    .table-tight tbody td { @apply py-2; }
+    .th-sort { @apply inline-flex items-center gap-1 hover:text-fg; }
+    th[aria-sort] > .th-sort { @apply text-fg; }
+
+    /* Description lists */
+    .dl { @apply divide-y divide-line text-sm; }
+    .dl > div { @apply flex flex-col gap-1 py-2.5 first:pt-0 last:pb-0 sm:flex-row sm:gap-4; }
+    .dl dt { @apply shrink-0 text-muted sm:w-40; }
+    .dl dd { @apply min-w-0 text-fg; }
+
+    /* Meters: the track is a light step of the fill's own colour */
+    .progress { @apply h-1.5 w-full overflow-hidden rounded-full bg-accent/15; }
+    .progress-bar { @apply h-full rounded-full bg-accent; }
+    .progress-bar-success { @apply bg-success; }
+    .progress-bar-warning { @apply bg-warning; }
+    .progress-bar-danger { @apply bg-danger; }
+    .progress:has(.progress-bar-warning) { @apply bg-warning/15; }
+    .progress:has(.progress-bar-danger) { @apply bg-danger/15; }
+    .progress:has(.progress-bar-success) { @apply bg-success/15; }
+
+    /* Text bits */
+    .link { @apply font-medium text-accent-text underline-offset-2 hover:underline; }
+    .link-muted { @apply text-muted underline-offset-2 hover:text-fg hover:underline; }
+    .mono { @apply font-mono text-[0.8125rem]; }
+    .kbd { @apply inline-flex items-center rounded-[5px] border border-line bg-surface px-1.5 font-mono text-[11px] leading-5 text-subtle; }
+    .chip { @apply inline-flex items-center gap-1 rounded-[6px] bg-surface-3 px-2 py-0.5 font-mono text-xs text-fg; }
+    .log { @apply max-h-96 overflow-auto whitespace-pre-wrap break-all rounded-[10px] border border-line bg-surface-2 p-4 font-mono text-xs leading-relaxed text-muted; }
+
+    /* Empty states */
+    .empty { @apply flex flex-col items-center justify-center px-6 py-12 text-center; }
+    .empty-icon { @apply mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-surface-3 text-muted; }
+    .empty-icon > svg { @apply h-5 w-5; }
+    .empty-title { @apply text-sm font-semibold text-fg; }
+    .empty-text { @apply mt-1 max-w-sm text-sm text-muted; }
+
+    /* Figures and stats */
+    .figure { @apply text-[28px] font-semibold leading-none tracking-[-0.02em] text-fg; }
+    .figure-sm { @apply text-[20px] font-semibold leading-none tracking-[-0.01em] text-fg; }
+    .delta-up { @apply text-success-text; }
+    .delta-down { @apply text-danger-text; }
+    .stat { @apply card flex items-start gap-4 p-5; }
+    .stat-icon { @apply flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] bg-accent-soft text-accent-text; }
+    .stat-icon > svg { @apply h-5 w-5; }
+    .stat-label { @apply text-[13px] text-muted; }
+    .stat-value { @apply mt-1 text-[24px] font-semibold leading-tight tracking-[-0.015em] text-fg; }
+
+    /* Tabs */
+    .tabs { @apply -mb-px flex gap-1 overflow-x-auto border-b border-line; }
+    .tab { @apply -mb-px inline-flex items-center gap-2 whitespace-nowrap border-b-2 border-transparent px-3 py-2.5 text-[13.5px] font-medium text-muted hover:border-line-strong hover:text-fg; }
+    .tab[aria-current="page"], .tab[aria-selected="true"] { @apply border-accent text-fg; }
+
+    /* Disclosure (<details class="disclosure">) */
+    .disclosure > summary { @apply flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-medium text-fg; }
+    .disclosure > summary::-webkit-details-marker { display: none; }
+    .disclosure > summary::after {
+        content: ""; @apply h-4 w-4 shrink-0 transition-transform;
+        background: currentColor;
+        -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath d='M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.17l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z'/%3E%3C/svg%3E") center / contain no-repeat;
+                mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath d='M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.17l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z'/%3E%3C/svg%3E") center / contain no-repeat;
+    }
+    .disclosure[open] > summary::after { transform: rotate(180deg); }
+
+    /* Menus (<details class="menu" data-menu><summary>...</summary><div class="menu-panel">) */
+    .menu { @apply relative; }
+    .menu > summary { @apply list-none; }
+    .menu > summary::-webkit-details-marker { display: none; }
+    .menu-panel { @apply absolute right-0 z-50 mt-2 min-w-[14rem] rounded-[12px] border border-line bg-surface p-1.5 shadow-pop; }
+    .menu-item { @apply flex w-full items-center gap-2.5 rounded-[8px] px-2.5 py-2 text-left text-sm text-fg hover:bg-surface-3; }
+    .menu-item > svg { @apply h-4 w-4 shrink-0 text-muted; }
+    .menu-sep { @apply my-1.5 border-t border-line; }
+
+    /* App shell */
+    .skip-link { @apply sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:rounded-lg focus:bg-surface focus:px-4 focus:py-2 focus:shadow-pop; }
+    .nav-section { @apply px-3 pb-1 pt-5 text-[12px] font-medium text-subtle; }
+    .nav-link { @apply flex h-9 items-center gap-3 rounded-[8px] px-3 text-[13.5px] font-medium text-muted transition-colors hover:bg-surface-3 hover:text-fg; }
+    .nav-link > svg { @apply h-[18px] w-[18px] shrink-0; }
+    .nav-link[aria-current="page"] { @apply bg-surface text-fg shadow-[0_1px_2px_rgb(17_20_27/0.06)] ring-1 ring-line; }
+    .nav-link[aria-current="page"] > svg { @apply text-accent; }
+
+    /* Toasts */
+    .toast { @apply pointer-events-auto flex w-full max-w-sm items-start gap-3 rounded-[12px] border border-line bg-surface p-4 text-sm text-fg shadow-pop; }
+    .toast > svg { @apply mt-0.5 h-5 w-5 shrink-0; }
+
+    /* Dialogs (<dialog class="dialog">) */
+    .dialog { @apply m-auto w-[calc(100%-2rem)] max-w-md rounded-[14px] border border-line bg-surface p-0 text-fg shadow-pop; }
+    .dialog::backdrop { background: rgb(9 11 17 / 0.55); backdrop-filter: blur(2px); }
+    .dialog-body { @apply p-6; }
+    .dialog-title { @apply text-base font-semibold text-fg; }
+    .dialog-text { @apply mt-2 whitespace-pre-line text-sm text-muted; }
+    .dialog-footer { @apply flex flex-wrap justify-end gap-2 rounded-b-[14px] border-t border-line bg-surface-2 px-6 py-3.5; }
+
+    /* Sign-in and error pages (layouts/auth.php, layouts/blank.php) */
+    .auth-brand { @apply text-white; background-color: rgb(var(--jp-brand-ink)); container-type: inline-size; }
+    /* The server name fills the panel on one line when it can (--host-chars is its length; a
+       Plex Mono character is 0.6em wide), then breaks after a dot. Older browsers use the vw size. */
+    .auth-host {
+        @apply font-mono text-[clamp(2.2rem,4.4vw,3.6rem)] font-medium leading-[1.05] tracking-[-0.03em];
+        font-size: clamp(1.75rem, calc(100cqi / (var(--host-chars, 18) * 0.6)), 3.6rem);
+        overflow-wrap: anywhere;
+    }
+    .auth-dot { color: rgb(var(--jp-brand-dot)); }
+    .auth-title { @apply text-[1.625rem] font-semibold leading-tight tracking-[-0.015em] text-fg; }
+    .auth-desc { @apply mt-1.5 text-[14px] text-muted; }
+    .auth-icon { @apply mb-6 flex h-11 w-11 items-center justify-center rounded-[10px]; }
+    .auth-icon > svg { @apply h-5 w-5; }
+    .auth-submit { @apply btn btn-primary btn-block h-10 text-[14px]; }
+    .error-code { @apply font-mono text-[clamp(3.5rem,14vw,5.5rem)] font-medium leading-none tracking-[-0.04em] text-accent-text; }
+
+    /* Password fields (Ui::password, pages/auth.js): show/hide, caps lock, strength */
+    .pw-reveal { @apply absolute right-1 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-[6px] text-subtle hover:bg-surface-3 hover:text-fg; }
+    .pw-reveal svg { @apply h-4 w-4; }
+    .pw-meter { @apply mt-2 flex items-center gap-3; }
+    .pw-meter-bars { @apply grid flex-1 grid-cols-4 gap-1; }
+    .pw-meter-bars > span { @apply h-1 rounded-full bg-line-strong/60 transition-colors; }
+    .pw-meter-label { @apply w-16 shrink-0 text-right text-[12.5px] font-medium text-muted; }
+    .pw-meter[data-level="1"] .pw-meter-bars > span:nth-child(-n+1) { @apply bg-danger; }
+    .pw-meter[data-level="1"] .pw-meter-label { @apply text-danger-text; }
+    .pw-meter[data-level="2"] .pw-meter-bars > span:nth-child(-n+2) { @apply bg-warning; }
+    .pw-meter[data-level="3"] .pw-meter-bars > span:nth-child(-n+3) { @apply bg-success; }
+    .pw-meter[data-level="4"] .pw-meter-bars > span { @apply bg-success; }
+
+    /* A one-time code as six boxes (pages/two-factor.js builds them over the real input) */
+    .otp { @apply flex items-center gap-2; }
+    .otp-box {
+        @apply h-12 w-full min-w-0 max-w-[3rem] flex-1 rounded-[8px] border border-line-strong bg-surface p-0 text-center font-mono text-[20px] font-medium text-fg caret-accent
+               transition-colors focus:border-accent focus:outline-none focus:ring-[3px] focus:ring-accent/20;
+    }
+    .otp-box:nth-child(4) { @apply ml-2; }
+    .otp-box[aria-invalid="true"] { @apply border-danger focus:ring-danger/20; }
+
+    /* Charts (src/Support/Chart.php, assets/js/pages/charts.js) */
+    .chart { @apply relative; }
+    .chart-plot { @apply absolute; }
+    .chart-grid { @apply pointer-events-none absolute inset-x-0 border-t; border-color: var(--jp-chart-grid); }
+    .chart-ref { @apply pointer-events-none absolute inset-x-0 border-t border-dashed border-danger/70; }
+    .chart-ref > span { @apply absolute bottom-0.5 left-1 rounded-[4px] bg-surface/90 px-1 text-[11.5px] font-medium text-danger-text; }
+    .chart-base { @apply pointer-events-none absolute inset-x-0 border-t; border-color: var(--jp-chart-axis); }
+    .chart-ytick { @apply pointer-events-none absolute -translate-y-1/2 whitespace-nowrap pr-2 text-right text-[11.5px] text-subtle; font-variant-numeric: tabular-nums; }
+    .chart-xtick { @apply pointer-events-none absolute -translate-x-1/2 whitespace-nowrap pt-2 text-[11.5px] text-subtle; font-variant-numeric: tabular-nums; }
+    .chart-cross { @apply pointer-events-none absolute inset-y-0 w-px bg-fg/25; }
+    .chart-tip { @apply pointer-events-none absolute z-20 min-w-[9rem] rounded-[10px] border border-line bg-surface px-3 py-2 text-[12.5px] shadow-pop; }
+    .chart-tip-row { @apply flex items-center justify-between gap-4; }
+    .chart-key { @apply inline-block h-0.5 w-3 shrink-0 rounded-full; }
+    .chart-swatch { @apply inline-block h-2.5 w-2.5 shrink-0 rounded-[3px]; }
+    .chart-col { @apply flex h-full flex-1 flex-col-reverse items-center outline-none; }
+    .chart-col > span { @apply block w-full max-w-[24px]; }
+    .chart-col > span + span { margin-bottom: 2px; }
+    .chart-col > span:last-child { @apply rounded-t-[4px]; }
+    .chart-col:hover > span, .chart-col[data-active] > span { filter: brightness(1.12); }
 }
 
-/* Glow: the active menu item, the logo, primary buttons. */
-#sidebar nav a[class*="-600"] { box-shadow: 0 8px 22px -10px rgba(56, 189, 248, .7), inset 0 0 0 1px rgba(255, 255, 255, .06); }
-#sidebar .bg-gradient-to-br { animation: jp-glow 5s ease-in-out infinite; }
-button[class*="bg-sky-600"], button[class*="bg-indigo-600"], a[class*="bg-indigo-600"] { transition: box-shadow .2s ease, transform .1s ease, background-color .2s ease; }
-button[class*="bg-sky-600"]:hover, button[class*="bg-indigo-600"]:hover, a[class*="bg-indigo-600"]:hover { box-shadow: 0 8px 20px -8px rgba(14, 165, 233, .7); }
-button:active { transform: scale(.98); }
+/* Series colours sit outside @layer: they come from data (s1..s4, so),
+   and Tailwind drops layered classes it can't find in a template. */
+.s1 { background: var(--jp-series-1); }
+.s2 { background: var(--jp-series-2); }
+.s3 { background: var(--jp-series-3); }
+.s4 { background: var(--jp-series-4); }
+.so { background: var(--jp-series-other); }
 
-/* Messages slide in. */
-[data-flash] { animation: jp-slide .45s cubic-bezier(.2, .7, .2, 1) both; }
+/* ==================================================================
+   Motion: only on state changes, and none for people who ask.
+   ================================================================== */
+@keyframes jp-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes jp-pop { from { opacity: 0; transform: scale(.97); } to { opacity: 1; transform: none; } }
+.toast { animation: jp-in .25s cubic-bezier(.2, .7, .2, 1) both; }
+.chart-tip { animation: jp-in .12s ease-out both; }
+.dialog[open] { animation: jp-pop .16s ease-out both; }
+.menu[open] > .menu-panel { animation: jp-pop .12s ease-out both; }
+#sidebar { transition: transform .2s ease; }
 
 @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation: none !important; transition: none !important; }

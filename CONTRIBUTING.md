@@ -16,9 +16,38 @@ gate-keep.
 
 ## Development setup
 
-There's no local dev environment shortcut yet - the whole app is built
-against a real running stack (FrankenPHP, MariaDB, Stalwart, SFTPGo, Knot).
-The practical way to work on it:
+**Working on the interface** needs only PHP 8.2+ (and Node for the
+Tailwind CLI, or the standalone `tailwindcss` binary): the preview renders
+every page with sample data, no server stack.
+
+```bash
+dev/preview/serve.sh                     # builds the CSS and serves http://127.0.0.1:8787/__preview
+php dev/preview/render-all.php           # every view renders, controls are labelled (CI runs it)
+```
+
+Read [docs/UI.md](docs/UI.md) before changing a view: design tokens,
+component classes, the `Ui::` helpers, and how a view hands actions,
+breadcrumbs and scripts to the layout. A new view needs a fixture in
+`dev/preview/fixtures/` (CI fails without one).
+
+**The real panel on your machine** (sign-in, WHM, accounts, packages,
+features; no mail/DNS/SFTP/PHP pools) runs against a local MySQL 5.7+ or
+MariaDB - MAMP's by default:
+
+```bash
+dev/local/setup.sh      # creates jinnpanel_local, applies the schema, writes a local Config.php, seeds demo logins
+dev/local/serve.sh      # http://127.0.0.1:8088 (Chrome or Firefox)
+```
+
+Pages that talk to an account's PHP pool (File Manager, Cache) wait about
+15 seconds per domain for pools that don't exist locally, then show an
+error; mail, DNS and SFTP actions fail with an error. Mail the panel
+sends (welcome, reset, suspension, quota) is written to
+`dev/local/outbox.log` instead of being delivered. `FORCE=1
+dev/local/setup.sh` starts over.
+
+**Everything else** (provisioning, the worker, mail, DNS) is built against
+a real running stack (FrankenPHP, MariaDB, Stalwart, SFTPGo, Knot):
 
 1. Spin up an AlmaLinux 10 VM (VirtualBox, a cheap cloud instance,
    whatever).
@@ -28,20 +57,22 @@ The practical way to work on it:
    filesystem - whatever workflow you're comfortable with) and test against
    the real thing.
 4. Run the tests before pushing (CI runs them too, plus `php -l` on every
-   PHP file - `.github/workflows/ci.yml`):
+   PHP file, the preview render check and `node --check` on the JavaScript -
+   `.github/workflows/ci.yml`):
    ```bash
    php tests/UnitTest.php                 # no dependencies
+   php dev/preview/render-all.php         # no dependencies
    php tests/HtaccessTranslatorTest.php   # needs the frankenphp binary
    ```
-5. Changes to `app/worker/` or `installer/` only take effect after
-   re-running the installer on the VM (it re-deploys the worker to
-   `/usr/local/bin`).
+5. Changes to `app/worker/`, `app/runtime/` or `installer/` only take effect
+   after re-running the installer on the VM (it re-deploys the worker to
+   `/usr/local/bin` and the pool agent to `/usr/local/lib/jinnpanel/pool`).
 
 `CONTEXT.md` at the repo root is the short orientation (layout, request
 flow, privilege model, conventions) - read it before your first change.
 
-If you're changing anything that touches Tailwind classes, rebuild the CSS
-before testing:
+If you change Tailwind classes, rebuild the CSS before testing on the VM
+(`dev/build-css.sh` locally; on the server):
 ```bash
 cd /var/www/hostpanel
 tailwindcss -i public/assets/css/input.css -o public/assets/css/app.css --minify
@@ -58,12 +89,18 @@ tailwindcss -i public/assets/css/input.css -o public/assets/css/app.css --minify
 - Views are plain PHP templates (`<?php ... ?>` / `<?= e($x) ?>`), not a
   templating engine. Always escape output with `e()` unless you have a
   specific reason not to (and comment why).
-- Tailwind utility classes only - no custom CSS files beyond
-  `public/assets/css/input.css`'s three `@tailwind` directives. If you
-  introduce a *dynamically built* class name (e.g. `"bg-{$var}-600"`), add
-  it to `tailwind.config.js`'s `safelist` - Tailwind's compiler can't
-  discover those by scanning source files, and it'll silently produce no
-  CSS for them otherwise (a mistake that's bitten this project before).
+- Styling: the design tokens and component classes in
+  `public/assets/css/input.css` (`card`, `btn btn-primary`, `bg-surface`,
+  `text-muted`...) plus Tailwind utilities - never raw palette colours like
+  `bg-slate-100`, so both themes keep working. Class names must be written
+  out in full: Tailwind finds them by scanning `views/`, `public/` and
+  `src/Support/Ui.php`, and can't see one built as `"bg-{$var}-600"`.
+- No inline `<script>`, `onclick=` or `onchange=`: page code goes in
+  `public/assets/js/pages/<name>.js` (`View::script()`), behaviour in
+  `data-` attributes handled by `app.js`. The Content-Security-Policy
+  doesn't allow inline scripts.
+- Every control has a label, every icon-only button a name (`Ui::field`,
+  `Ui::iconButton` do it for you).
 
 ## Security-sensitive changes
 

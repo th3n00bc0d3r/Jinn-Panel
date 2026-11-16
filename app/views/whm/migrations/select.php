@@ -1,207 +1,199 @@
 <?php
+/** @var array<string,mixed> $m the draft migration */
+/** @var list<array<string,mixed>> $items */
+/** @var array<int,list<string>> $conflicts item id => problems */
+/** @var list<array<string,mixed>> $packages */
+/** @var list<array<string,mixed>> $resellers */
+/** @var array<string,mixed> $opt */
+/** @var array<string,mixed> $me */
 include __DIR__ . '/_helpers.php';
-$input = 'w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500';
-$check = 'rounded border-slate-300 text-indigo-600 focus:ring-indigo-500';
+$id = (int) $m['id'];
+View::breadcrumbs([['cPanel Migration', '/whm/migrations'], ['Choose accounts']]);
+View::slot('desc', e('Pick the accounts to bring over and what to bring with them. Nothing is copied until you start.'));
+View::slot('actions', '<form method="post" action="/whm/migrations/' . $id . '/delete" data-confirm="Discard this migration? Nothing has been copied yet." data-confirm-action="Discard" data-confirm-danger>'
+    . Csrf::field() . '<button type="submit" class="btn btn-ghost">' . icon('trash') . 'Discard</button></form>');
+View::script('migration-select');
+
+$file = $m['transfer_mode'] === 'file';
+$whm = $m['source_type'] !== 'cpanel';
+$showOwnerPlan = $whm && !$file;
 $selectable = count($items) - count($conflicts);
 $hasResellers = (bool) array_filter($items, fn($i) => (int) $i['is_reseller'] === 1);
+$cols = 2 + ($showOwnerPlan ? 2 : 0) + ($whm ? 1 : 0);
+
+$packageOptions = ['' => 'Choose a package'];
+foreach ($packages as $p) {
+    $packageOptions[(int) $p['id']] = $p['name'] . ' · ' . Quota::fmtMb($p['disk_quota_mb']) . ' · ' . (Quota::unlimited($p['max_domains']) ? 'unlimited domains' : Ui::plural((int) $p['max_domains'], 'domain'));
+}
+$owners = [];
+if ($m['source_type'] === 'root') {
+    $owners['recreate'] = 'Keep the cPanel reseller structure';
+}
+$owners['none'] = 'Owned by the administrator';
+foreach ($resellers as $r) {
+    $owners['reseller:' . (int) $r['id']] = 'Owned by reseller ' . $r['username'];
+}
+$ownerSelected = $m['source_type'] === 'root' && ($opt['owner'] === 'recreate' || ($opt['owner'] === 'none' && $hasResellers)) ? 'recreate' : (string) $opt['owner'];
 ?>
-<form method="post" action="/whm/migrations/<?= (int) $m['id'] ?>/start" class="space-y-4" id="migration-select">
+<?= migration_steps(2) ?>
+
+<form method="post" action="/whm/migrations/<?= $id ?>/start" class="stack" id="migration-select">
     <?= Csrf::field() ?>
 
-    <div class="bg-white rounded-xl border border-slate-200 shadow-sm px-5 py-4 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
-        <?php if ($m['transfer_mode'] === 'file'): ?>
-        <div><span class="text-slate-400">Source</span> <span class="font-medium text-slate-800">cPanel backup files in <span class="font-mono"><?= e(MigrationService::importDir()) ?></span></span></div>
-        <div class="text-slate-500">Disk = size of the backup archive.</div>
+    <div class="card flex flex-wrap items-center gap-x-8 gap-y-3 px-5 py-4 text-sm">
+        <?php if ($file): ?>
+        <div class="min-w-0">
+            <p class="text-xs text-muted">Source</p>
+            <p class="mt-0.5 font-medium text-fg">cPanel backup files</p>
+        </div>
+        <div class="min-w-0">
+            <p class="text-xs text-muted">Folder</p>
+            <p class="mt-0.5"><?= Ui::copyable(MigrationService::importDir()) ?></p>
+        </div>
         <?php else: ?>
-        <div><span class="text-slate-400">Source</span> <span class="font-medium text-slate-800"><?= e($m['source_user']) ?>@<?= e($m['source_host']) ?>:<?= (int) $m['source_port'] ?></span></div>
-        <div><span class="text-slate-400">Type</span> <span class="font-medium text-slate-800"><?= e(migration_source_label($m['source_type'])) ?></span></div>
-        <div><span class="text-slate-400">Transfer</span> <span class="font-medium text-slate-800"><?= $m['transfer_mode'] === 'push' ? 'Push (source uploads over SFTP)' : 'Pull (this server downloads)' ?></span></div>
+        <div class="min-w-0">
+            <p class="text-xs text-muted">Source</p>
+            <p class="mt-0.5 break-all font-medium text-fg"><?= e($m['source_user']) ?>@<?= e($m['source_host']) ?>:<?= (int) $m['source_port'] ?></p>
+        </div>
+        <div>
+            <p class="text-xs text-muted">Login</p>
+            <p class="mt-0.5 text-fg"><?= e(migration_source_label((string) $m['source_type'])) ?></p>
+        </div>
+        <div>
+            <p class="text-xs text-muted">Transfer</p>
+            <p class="mt-0.5 text-fg"><?= $m['transfer_mode'] === 'push' ? 'Push - the source uploads over SFTP' : 'Pull - this server downloads' ?></p>
+        </div>
         <?php endif; ?>
+        <a href="/whm/migrations/create" class="link sm:ml-auto"><?= $file ? 'Choose another source' : 'Connect to a different server' ?></a>
     </div>
 
-    <!-- Accounts -->
-    <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-        <div class="flex items-center justify-between px-5 py-3 border-b border-slate-100">
-            <h2 class="text-sm font-semibold text-slate-800">Accounts <span class="text-slate-400 font-normal">(<?= count($items) ?> found)</span></h2>
-            <p class="text-sm text-slate-500"><span data-selected-count>0</span> selected<span data-selected-size></span></p>
-        </div>
-        <div class="overflow-x-auto max-h-[28rem] overflow-y-auto">
-        <table class="w-full text-sm">
-            <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide sticky top-0">
-                <tr>
-                    <th class="px-5 py-3 w-10"><input type="checkbox" data-select-all class="<?= $check ?>" title="Select all" <?= $selectable ? '' : 'disabled' ?>></th>
-                    <th class="text-left font-medium px-3 py-3">Username</th>
-                    <th class="text-left font-medium px-3 py-3">Main domain</th>
-                    <?php if ($m['source_type'] !== 'cpanel'): ?>
-                    <th class="text-left font-medium px-3 py-3">Owner</th>
-                    <th class="text-left font-medium px-3 py-3">Plan</th>
-                    <th class="text-right font-medium px-3 py-3">Disk</th>
-                    <?php endif; ?>
-                    <th class="text-left font-medium px-5 py-3">Notes</th>
-                </tr>
-            </thead>
-            <tbody class="divide-y divide-slate-100">
-                <?php foreach ($items as $it): ?>
-                <?php
-                    $src = (json_decode((string) $it['report'], true) ?: [])['source'] ?? [];
-                    $problems = $conflicts[(int) $it['id']] ?? [];
-                ?>
-                <tr class="<?= $problems ? 'bg-slate-50/60' : 'hover:bg-slate-50/70' ?>">
-                    <td class="px-5 py-2.5">
-                        <input type="checkbox" name="accounts[]" value="<?= e($it['source_username']) ?>" data-account data-mb="<?= (int) ($src['disk_used_mb'] ?? 0) ?>"
-                               class="<?= $check ?>" <?= $problems ? 'disabled' : (count($items) === 1 ? 'checked' : '') ?>>
-                    </td>
-                    <td class="px-3 py-2.5">
-                        <span class="font-medium <?= $problems ? 'text-slate-400' : 'text-slate-800' ?>"><?= e($it['source_username']) ?></span>
-                        <?php if ((int) $it['is_reseller'] === 1): ?><span class="ml-1 inline-flex text-xs font-medium rounded-full px-2 py-0.5 bg-violet-50 text-violet-700">reseller</span><?php endif; ?>
-                        <?php if (!empty($src['suspended'])): ?><span class="ml-1 inline-flex text-xs font-medium rounded-full px-2 py-0.5 bg-amber-50 text-amber-700">suspended</span><?php endif; ?>
-                    </td>
-                    <td class="px-3 py-2.5 text-slate-600"><?= e($it['source_domain'] ?? '') ?></td>
-                    <?php if ($m['source_type'] !== 'cpanel'): ?>
-                    <td class="px-3 py-2.5 text-slate-500"><?= e($it['source_owner'] ?? '') ?></td>
-                    <td class="px-3 py-2.5 text-slate-500"><?= e($it['source_plan'] ?? '') ?></td>
-                    <td class="px-3 py-2.5 text-right text-slate-500 whitespace-nowrap"><?= isset($src['disk_used_mb']) ? e(fmt_bytes((int) $src['disk_used_mb'] * 1048576)) : '' ?></td>
-                    <?php endif; ?>
-                    <td class="px-5 py-2.5 text-xs <?= $problems ? 'text-red-600' : 'text-slate-400' ?>"><?= e(implode('; ', $problems)) ?></td>
-                </tr>
-                <?php endforeach; ?>
-            </tbody>
-        </table>
-        </div>
-    </div>
-
-    <!-- Options -->
-    <div class="grid gap-4 lg:grid-cols-2">
-        <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-5 space-y-3">
-            <h2 class="text-sm font-semibold text-slate-800">What to migrate</h2>
-            <label class="flex items-start gap-2 text-sm text-slate-700"><input type="checkbox" name="files" value="1" class="mt-0.5 <?= $check ?>" <?= $opt['files'] ? 'checked' : '' ?>>
-                <span>Domains and website files <span class="block text-xs text-slate-400">Main, addon and subdomains, each with its document root.</span></span></label>
-            <label class="flex items-start gap-2 text-sm text-slate-700"><input type="checkbox" name="databases" value="1" class="mt-0.5 <?= $check ?>" <?= $opt['databases'] ? 'checked' : '' ?>>
-                <span>MySQL databases and users <span class="block text-xs text-slate-400">Same names, so site config files keep working; passwords kept where MariaDB can use them.</span></span></label>
-            <label class="flex items-start gap-2 text-sm text-slate-700"><input type="checkbox" name="email_accounts" value="1" data-email-accounts class="mt-0.5 <?= $check ?>" <?= $opt['email_accounts'] ? 'checked' : '' ?>>
-                <span>Email accounts</span></label>
-            <label class="flex items-start gap-2 text-sm text-slate-700 pl-6"><input type="checkbox" name="email_data" value="1" data-email-data class="mt-0.5 <?= $check ?>" <?= $opt['email_data'] ? 'checked' : '' ?>>
-                <span>Stored email <span class="block text-xs text-slate-400">Every folder and message, with read/flagged state.</span></span></label>
-            <div class="pt-2">
-                <label class="block text-xs font-medium text-slate-600 mb-1.5">Email passwords</label>
-                <select name="mail_passwords" class="<?= $input ?>">
-                    <option value="preserve" <?= $opt['mail_passwords'] === 'preserve' ? 'selected' : '' ?>>Keep the existing passwords</option>
-                    <option value="generate" <?= $opt['mail_passwords'] === 'generate' ? 'selected' : '' ?>>Generate new passwords (shown in the report)</option>
-                </select>
+    <section class="card" aria-labelledby="accounts-title">
+        <div class="card-header">
+            <div class="flex min-w-0 flex-wrap items-center gap-2">
+                <h2 id="accounts-title" class="card-title"><?= e(Ui::plural(count($items), 'account')) ?> found</h2>
+                <?php if ($conflicts): ?><?= Ui::badge(count($conflicts) . ' can\'t be migrated', 'warning') ?><?php endif; ?>
             </div>
-            <div class="pt-2">
-                <label class="block text-xs font-medium text-slate-600 mb-1.5">Default addresses (catch-all)</label>
-                <select name="catch_all" class="<?= $input ?>">
-                    <option value="reject" <?= ($opt['catch_all'] ?? 'reject') !== 'keep' ? 'selected' : '' ?>>Reject mail to unknown addresses (recommended)</option>
-                    <option value="keep" <?= ($opt['catch_all'] ?? '') === 'keep' ? 'selected' : '' ?>>Keep them as on cPanel</option>
-                </select>
-            </div>
+            <?php if (count($items) > 8): ?>
+            <input type="search" class="input input-sm w-full sm:w-56" placeholder="Filter accounts…" aria-label="Filter accounts" data-filter="#accounts-table">
+            <?php endif; ?>
         </div>
-
-        <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-5 space-y-4">
-            <h2 class="text-sm font-semibold text-slate-800">Accounts on this server</h2>
-            <div>
-                <label class="flex items-center gap-2 text-sm text-slate-700 mb-2"><input type="checkbox" name="match_packages" value="1" class="<?= $check ?>" <?= $opt['match_packages'] ? 'checked' : '' ?>>
-                    Use the package with the same name as the cPanel plan, when there is one</label>
-                <label class="block text-xs font-medium text-slate-600 mb-1.5">Otherwise assign package</label>
-                <select name="package_id" required class="<?= $input ?>">
-                    <option value="">Choose a package</option>
-                    <?php foreach ($packages as $p): ?>
-                    <option value="<?= (int) $p['id'] ?>" <?= (int) ($opt['package_id'] ?? 0) === (int) $p['id'] ? 'selected' : '' ?>><?= e($p['name']) ?> &middot; <?= (int) $p['disk_quota_mb'] ?>MB / <?= (int) $p['max_domains'] ?> domains</option>
+        <div class="table-wrap max-h-[32rem] overflow-y-auto">
+            <table class="table table-tight" id="accounts-table">
+                <thead>
+                    <tr>
+                        <th scope="col" class="sticky top-0 z-[1] w-10 !pr-0">
+                            <input type="checkbox" class="h-4 w-4 align-middle" data-select-all aria-label="Select all accounts" title="Select all" <?= $selectable ? '' : 'disabled' ?>>
+                        </th>
+                        <th scope="col" class="sticky top-0 z-[1]">Account</th>
+                        <?php if ($showOwnerPlan): ?>
+                        <th scope="col" class="sticky top-0 z-[1] hidden md:table-cell">Owner</th>
+                        <th scope="col" class="sticky top-0 z-[1] hidden md:table-cell">Plan</th>
+                        <?php endif; ?>
+                        <?php if ($whm): ?><th scope="col" class="sticky top-0 z-[1] text-right"><?= $file ? 'Archive' : 'Disk' ?></th><?php endif; ?>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($items as $it):
+                        $src = (json_decode((string) $it['report'], true) ?: [])['source'] ?? [];
+                        $problems = $conflicts[(int) $it['id']] ?? [];
+                        $cb = 'acct-' . (int) $it['id'];
+                        $sub = $file ? (string) ($src['file'] ?? '') : (string) ($it['source_domain'] ?? '');
+                    ?>
+                    <tr>
+                        <td class="w-10 !pr-0">
+                            <input type="checkbox" name="accounts[]" value="<?= e($it['source_username']) ?>" id="<?= $cb ?>" class="h-4 w-4 align-middle" data-account data-mb="<?= (int) ($src['disk_used_mb'] ?? 0) ?>"
+                                <?= $problems ? 'disabled' : (count($items) === 1 ? 'checked' : '') ?>>
+                        </td>
+                        <td class="max-w-[24rem]">
+                            <div class="flex flex-wrap items-center gap-1.5">
+                                <label for="<?= $cb ?>" class="font-medium <?= $problems ? 'text-subtle' : 'cursor-pointer text-fg' ?>"><?= e($it['source_username']) ?></label>
+                                <?php if ((int) $it['is_reseller'] === 1): ?><?= Ui::badge('Reseller', 'accent') ?><?php endif; ?>
+                                <?php if (!empty($src['suspended'])): ?><?= Ui::badge('Suspended', 'warning') ?><?php endif; ?>
+                            </div>
+                            <?php if ($sub !== ''): ?><p class="mt-0.5 truncate text-xs text-muted <?= $file ? 'font-mono' : '' ?>"><?= e($sub) ?></p><?php endif; ?>
+                            <?php if ($problems): ?>
+                            <p class="mt-1 flex items-start gap-1.5 text-xs text-danger-text"><?= icon('alert', 'mt-px h-3.5 w-3.5 shrink-0') ?><span><?= e(ucfirst(implode('; ', $problems))) ?>.</span></p>
+                            <?php endif; ?>
+                        </td>
+                        <?php if ($showOwnerPlan): ?>
+                        <td class="hidden text-muted md:table-cell"><?= e($it['source_owner'] ?? '') ?></td>
+                        <td class="hidden text-muted md:table-cell"><?= e($it['source_plan'] ?? '') ?></td>
+                        <?php endif; ?>
+                        <?php if ($whm): ?>
+                        <td class="whitespace-nowrap text-right tabular-nums text-muted"><?= isset($src['disk_used_mb']) ? e(fmt_bytes((int) $src['disk_used_mb'] * 1048576)) : '' ?></td>
+                        <?php endif; ?>
+                    </tr>
                     <?php endforeach; ?>
-                </select>
-                <p class="mt-1 text-xs text-slate-400">Every hosting account needs a package: it sets the account's limits (disk, bandwidth, domains, databases, mailboxes).</p>
-            </div>
-            <?php if ($me['role'] === 'admin'): ?>
-            <div>
-                <label class="block text-xs font-medium text-slate-600 mb-1.5">Owner</label>
-                <select name="owner" class="<?= $input ?>">
-                    <?php if ($m['source_type'] === 'root'): ?>
-                    <option value="recreate" <?= ($opt['owner'] === 'recreate' || ($opt['owner'] === 'none' && $hasResellers)) ? 'selected' : '' ?>>Keep the cPanel reseller structure</option>
+                    <?php if (!$items): ?>
+                    <?= Ui::emptyRow($cols, 'No accounts', 'This source offered no accounts to migrate. Connect with a different login.', 'users') ?>
+                    <?php elseif (count($items) > 8): ?>
+                    <tr data-filter-none data-filter-skip hidden><td colspan="<?= $cols ?>" class="py-8 text-center text-sm text-muted">No account matches that filter.</td></tr>
                     <?php endif; ?>
-                    <option value="none" <?= $opt['owner'] === 'none' && !($m['source_type'] === 'root' && $hasResellers) ? 'selected' : '' ?>>Owned by the administrator</option>
-                    <?php foreach ($resellers as $r): ?>
-                    <option value="reseller:<?= (int) $r['id'] ?>">Owned by reseller <?= e($r['username']) ?></option>
-                    <?php endforeach; ?>
-                </select>
-                <?php if ($m['source_type'] === 'root'): ?>
-                <p class="mt-1 text-xs text-slate-400">Keeping the structure turns each selected cPanel reseller into a JinnPanel reseller (WHM login <span class="font-mono">&lt;name&gt;_whm</span>, same password) that owns its customers. Select the reseller accounts too.</p>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <div class="grid grid-cols-1 items-start gap-6 lg:grid-cols-2">
+        <section class="card" aria-labelledby="what-title">
+            <div class="card-header"><h2 id="what-title" class="card-title">What to migrate</h2></div>
+            <div class="card-body space-y-4">
+                <?= Ui::checkbox('files', 'Domains and website files', (bool) $opt['files'], ['hint' => 'Main, addon and subdomains, each with its document root.']) ?>
+                <?= Ui::checkbox('databases', 'MySQL databases and users', (bool) $opt['databases'], ['hint' => 'Same names, so site config files keep working; passwords kept where MariaDB can use them.']) ?>
+                <?= Ui::checkbox('email_accounts', 'Email accounts', (bool) $opt['email_accounts'], ['attrs' => ['data-email-accounts' => true]]) ?>
+                <?= Ui::checkbox('email_data', 'Stored email', (bool) $opt['email_data'], ['wrap' => 'pl-6', 'hint' => 'Every folder and message, with read/flagged state.', 'attrs' => ['data-email-data' => true]]) ?>
+                <div class="space-y-4 border-t border-line pt-4">
+                    <?= Ui::select('mail_passwords', 'Email passwords', [
+                        'preserve' => 'Keep the existing passwords',
+                        'generate' => 'Generate new ones (shown in the report)',
+                    ], $opt['mail_passwords'] === 'generate' ? 'generate' : 'preserve') ?>
+                    <?= Ui::select('catch_all', 'Default addresses (catch-all)', [
+                        'reject' => 'Reject mail to unknown addresses (recommended)',
+                        'keep' => 'Keep them as on cPanel',
+                    ], ($opt['catch_all'] ?? 'reject') === 'keep' ? 'keep' : 'reject') ?>
+                </div>
+            </div>
+        </section>
+
+        <section class="card" aria-labelledby="here-title">
+            <div class="card-header"><h2 id="here-title" class="card-title">Accounts on this server</h2></div>
+            <div class="card-body space-y-4">
+                <?= Ui::checkbox('match_packages', 'Use the package named like the cPanel plan, when there is one', (bool) $opt['match_packages']) ?>
+                <?= Ui::select('package_id', 'Otherwise, use package', $packageOptions, $opt['package_id'] !== null ? (string) (int) $opt['package_id'] : '', [
+                    'required' => true,
+                    'hint' => 'Every hosting account needs a package: it sets its limits (disk, bandwidth, domains, databases, mailboxes).',
+                ]) ?>
+                <?php if ($me['role'] === 'admin'): ?>
+                <?= Ui::select('owner', 'Owner', $owners, $ownerSelected, $m['source_type'] === 'root' ? [
+                    'hint' => 'Keeping the structure turns each selected cPanel reseller into a JinnPanel reseller (WHM login <name>_whm, same password) that owns its customers. Select the reseller accounts too.',
+                ] : []) ?>
+                <?php else: ?>
+                <p class="text-sm text-muted">Migrated accounts will be owned by you.</p>
                 <?php endif; ?>
+                <?= Ui::select('ssl_mode', 'HTTPS certificates', [
+                    'auto' => 'Automatic - Let\'s Encrypt once each domain points here',
+                    'letsencrypt' => 'Let\'s Encrypt for all (DNS already points here)',
+                    'self_signed' => 'Self-signed only',
+                ], in_array($opt['ssl_mode'], ['letsencrypt', 'self_signed'], true) ? (string) $opt['ssl_mode'] : 'auto') ?>
             </div>
-            <?php else: ?>
-            <p class="text-xs text-slate-500">Migrated accounts will be owned by you.</p>
-            <?php endif; ?>
-            <div>
-                <label class="block text-xs font-medium text-slate-600 mb-1.5">HTTPS certificates for migrated domains</label>
-                <select name="ssl_mode" class="<?= $input ?>">
-                    <option value="auto" <?= !in_array($opt['ssl_mode'], ['letsencrypt', 'self_signed'], true) ? 'selected' : '' ?>>Automatic - Let's Encrypt for domains that point here, the rest once their DNS moves</option>
-                    <option value="letsencrypt" <?= $opt['ssl_mode'] === 'letsencrypt' ? 'selected' : '' ?>>Let's Encrypt for all (DNS already points here)</option>
-                    <option value="self_signed" <?= $opt['ssl_mode'] === 'self_signed' ? 'selected' : '' ?>>Self-signed only</option>
-                </select>
-            </div>
-        </div>
+        </section>
     </div>
 
-    <details class="bg-white rounded-xl border border-slate-200 shadow-sm px-5 py-4" <?= $m['transfer_mode'] === 'push' ? 'open' : '' ?>>
-        <summary class="cursor-pointer text-sm font-semibold text-slate-800">Transfer settings</summary>
-        <div class="mt-4 grid gap-4 sm:grid-cols-2">
+    <details class="card disclosure" <?= $m['transfer_mode'] === 'push' ? 'open' : '' ?>>
+        <summary class="px-5 py-4">Transfer settings</summary>
+        <div class="grid grid-cols-1 gap-4 border-t border-line px-5 py-5 sm:grid-cols-2">
             <?php if ($m['transfer_mode'] === 'push'): ?>
-            <div>
-                <label class="block text-xs font-medium text-slate-600 mb-1.5">This server's address as the source sees it</label>
-                <input type="text" name="public_host" value="<?= e((string) $opt['public_host']) ?>" class="<?= $input ?>">
-            </div>
-            <div>
-                <label class="block text-xs font-medium text-slate-600 mb-1.5">SFTP port</label>
-                <input type="number" name="public_port" min="1" max="65535" value="<?= (int) $opt['public_port'] ?>" class="<?= $input ?>">
-            </div>
-            <div>
-                <label class="block text-xs font-medium text-slate-600 mb-1.5">Give up if no backup arrives within (minutes)</label>
-                <input type="number" name="first_byte_minutes" min="10" max="720" value="<?= (int) $opt['first_byte_minutes'] ?>" class="<?= $input ?>">
-            </div>
+            <?= Ui::field('public_host', 'This server\'s address as the source sees it', ['value' => (string) $opt['public_host'], 'mono' => true, 'attrs' => ['autocapitalize' => 'off', 'spellcheck' => 'false']]) ?>
+            <?= Ui::field('public_port', 'SFTP port', ['type' => 'number', 'value' => (string) (int) $opt['public_port'], 'attrs' => ['min' => 1, 'max' => 65535]]) ?>
+            <?= Ui::field('first_byte_minutes', 'Give up if no backup arrives within', ['type' => 'number', 'value' => (string) (int) $opt['first_byte_minutes'], 'hint' => 'Minutes, 10 to 720.', 'attrs' => ['min' => 10, 'max' => 720]]) ?>
             <?php endif; ?>
-            <div>
-                <label class="block text-xs font-medium text-slate-600 mb-1.5">Maximum time per account (hours)</label>
-                <input type="number" name="timeout_hours" min="1" max="72" value="<?= (int) $opt['timeout_hours'] ?>" class="<?= $input ?>">
-            </div>
+            <?= Ui::field('timeout_hours', 'Maximum time per account', ['type' => 'number', 'value' => (string) (int) $opt['timeout_hours'], 'hint' => 'Hours, 1 to 72.', 'attrs' => ['min' => 1, 'max' => 72]]) ?>
         </div>
     </details>
 
-    <div class="flex flex-wrap items-center gap-3">
-        <button type="submit" data-start class="inline-flex items-center gap-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium px-5 py-2.5 transition-colors" disabled>
-            <?= icon('play', 'h-4 w-4') ?> Start migration
-        </button>
-        <a href="/whm/migrations/create" class="rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium px-5 py-2.5 transition-colors">Connect to a different server</a>
-        <p class="text-xs text-slate-400">Accounts are migrated one after another in the background. The source server is only read from, never changed (a backup file is left in each account's home directory in pull mode).</p>
+    <div class="sticky bottom-4 z-10 flex flex-wrap items-center gap-x-4 gap-y-3 rounded-xl border border-line bg-surface px-5 py-3 shadow-pop">
+        <p class="text-sm text-muted" aria-live="polite"><span class="font-semibold tabular-nums text-fg" data-selected-count>0</span> selected<span class="tabular-nums" data-selected-size></span></p>
+        <p class="hidden flex-1 text-xs text-subtle md:block">Accounts are migrated one after another in the background. The source is only read from<?= $file ? '' : ' (in pull mode a backup file is left in each account\'s home directory)' ?>.</p>
+        <button type="submit" class="btn btn-primary ml-auto" data-start disabled><?= icon('play') ?>Start migration</button>
     </div>
 </form>
-
-<form method="post" action="/whm/migrations/<?= (int) $m['id'] ?>/delete" class="mt-2" data-confirm="Discard this migration? Nothing has been copied yet.">
-    <?= Csrf::field() ?>
-    <button class="text-xs text-slate-400 hover:text-red-600">Discard this migration</button>
-</form>
-
-<script>
-(function () {
-    var form = document.getElementById('migration-select');
-    var boxes = Array.prototype.slice.call(form.querySelectorAll('[data-account]:not(:disabled)'));
-    var all = form.querySelector('[data-select-all]');
-    var countEl = form.querySelector('[data-selected-count]');
-    var sizeEl = form.querySelector('[data-selected-size]');
-    var start = form.querySelector('[data-start]');
-    var mailAcc = form.querySelector('[data-email-accounts]');
-    var mailData = form.querySelector('[data-email-data]');
-    function fmt(mb) { return mb >= 1024 ? (mb / 1024).toFixed(1) + ' GB' : mb + ' MB'; }
-    function sync() {
-        var n = 0, mb = 0;
-        boxes.forEach(function (b) { if (b.checked) { n++; mb += parseInt(b.dataset.mb || '0', 10); } });
-        countEl.textContent = n;
-        sizeEl.textContent = mb > 0 ? ' \u00b7 ' + fmt(mb) : '';
-        start.disabled = n === 0;
-        if (all) { all.checked = n > 0 && n === boxes.length; all.indeterminate = n > 0 && n < boxes.length; }
-        mailData.disabled = !mailAcc.checked;
-    }
-    if (all) all.addEventListener('change', function () { boxes.forEach(function (b) { b.checked = all.checked; }); sync(); });
-    form.addEventListener('change', sync);
-    sync();
-})();
-</script>
