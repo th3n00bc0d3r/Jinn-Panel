@@ -64,8 +64,8 @@ $impersonator = $_SESSION['impersonator'] ?? null;
 <meta name="color-scheme" content="light dark">
 <title><?= e($title ?? '') ?> · <?= e(Config::APP_NAME) ?></title>
 <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/assets/css/app.css">
-<script src="/assets/js/theme.js"></script>
+<link rel="stylesheet" href="<?= asset('/assets/css/app.css') ?>">
+<script src="<?= asset('/assets/js/theme.js') ?>"></script>
 </head>
 <body class="min-h-screen">
 <a href="#main" class="skip-link">Skip to content</a>
@@ -215,9 +215,9 @@ $impersonator = $_SESSION['impersonator'] ?? null;
 </dialog>
 
 <script type="application/json" id="jp-palette-data"><?= json_encode($palette, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?></script>
-<script src="/assets/js/app.js" defer></script>
+<script src="<?= asset('/assets/js/app.js') ?>" defer></script>
 <?php foreach (View::scripts() as $s): ?>
-<script src="/assets/js/pages/<?= e($s) ?>.js" defer></script>
+<script src="<?= asset('/assets/js/pages/' . $s . '.js') ?>" defer></script>
 <?php endforeach; ?>
 </body>
 </html>

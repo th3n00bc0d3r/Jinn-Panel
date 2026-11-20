@@ -26,8 +26,8 @@ $note = View::slotGet('brand_note') !== '' ? View::slotGet('brand_note') : e('Tr
 <meta name="color-scheme" content="light dark">
 <title><?= e($pageTitle) ?> · <?= e(Config::APP_NAME) ?></title>
 <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/assets/css/app.css">
-<script src="/assets/js/theme.js"></script>
+<link rel="stylesheet" href="<?= asset('/assets/css/app.css') ?>">
+<script src="<?= asset('/assets/js/theme.js') ?>"></script>
 </head>
 <body class="min-h-screen bg-surface">
 <div class="grid min-h-screen <?= $wide ? 'lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]' : 'lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]' ?>">
@@ -59,9 +59,9 @@ $note = View::slotGet('brand_note') !== '' ? View::slotGet('brand_note') : e('Tr
     </main>
 </div>
 <div id="toasts" class="pointer-events-none fixed inset-x-4 bottom-4 z-50 flex flex-col items-end gap-2 sm:left-auto sm:right-6 sm:w-96"></div>
-<script src="/assets/js/app.js" defer></script>
+<script src="<?= asset('/assets/js/app.js') ?>" defer></script>
 <?php foreach (View::scripts() as $s): ?>
-<script src="/assets/js/pages/<?= e($s) ?>.js" defer></script>
+<script src="<?= asset('/assets/js/pages/' . $s . '.js') ?>" defer></script>
 <?php endforeach; ?>
 </body>
 </html>
