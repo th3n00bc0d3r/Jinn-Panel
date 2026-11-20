@@ -29,7 +29,7 @@ final class EmailController
             'domains' => $domainRows = $domainsStmt->fetchAll(),
             'forwarders' => $fwd->fetchAll(),
             'autoresponders' => array_column($auto->fetchAll(), null, 'email_account_id'),
-            'mailHost' => strtolower(Config::SERVER_HOSTNAME),
+            'mailHosts' => self::mailHosts($domainRows),
             'webmail' => self::webmailHosts($accounts, $domainRows),
             'usage' => Quota::usage($me['id']),
             'pkg' => Quota::package($me['id']),
@@ -218,15 +218,29 @@ final class EmailController
         self::back();
     }
 
-    /** mail.<domain> of the customer's domains with mailboxes, where webmail is served (it resolves here). */
+    /**
+     * mail.<domain> of the customer's domains with mailboxes, where webmail is
+     * served (MailDnsService serves it there and Caddy holds its certificate;
+     * no DNS lookups while the page loads).
+     */
     private static function webmailHosts(array $accounts, array $domains): array
     {
         $out = [];
         $hosted = array_column($domains, 'domain_name');
         foreach (array_unique(array_column($accounts, 'domain_name')) as $d) {
-            if (!in_array("mail.$d", $hosted, true) && SslService::resolvesHere("mail.$d")) {
+            if (!in_array("mail.$d", $hosted, true) && MailDnsService::hasWebmail((string) $d)) {
                 $out["mail.$d"] = true;
             }
+        }
+        return $out;
+    }
+
+    /** @return array<string,string> domain => the server name mail apps use for it */
+    private static function mailHosts(array $domains): array
+    {
+        $out = [];
+        foreach ($domains as $d) {
+            $out[(string) $d['domain_name']] = MailDnsService::mailHost((string) $d['domain_name']);
         }
         return $out;
     }

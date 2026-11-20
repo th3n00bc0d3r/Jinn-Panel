@@ -97,6 +97,17 @@ function e(?string $value): string
     return htmlspecialchars($value ?? '', ENT_QUOTES, 'UTF-8');
 }
 
+/**
+ * URL of a file under public/ with its modification time appended, so a
+ * deploy that rebuilds app.css or changes a script makes browsers fetch the
+ * new copy instead of reusing a cached one. Returns an escaped attribute value.
+ */
+function asset(string $path): string
+{
+    $file = dirname(__DIR__) . '/public' . $path;
+    return e(is_file($file) ? $path . '?v=' . filemtime($file) : $path);
+}
+
 function old(string $key, string $default = ''): string
 {
     return e(Ui::old($key) ?? $default);

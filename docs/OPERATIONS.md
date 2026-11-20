@@ -156,9 +156,10 @@ resolve here stays on its self-signed certificate. Customers can force a
 re-check with **cPanel > Domains > *domain* > Run AutoSSL**. Failures are in
 `journalctl -u frankenphp | grep -i acme`.
 
-Stalwart's mail certificate is copied from Caddy's by the daily
-`jinnpanel-mail-dns.timer` (it also re-syncs mail DNS records and the
-autoconfig/MTA-STS site). Run it now with
+Stalwart's mail certificates (the server hostname's, and each
+mail.<domain>'s for mail apps that connect by that name) are copied from
+Caddy's by the hourly `jinnpanel-mail-dns.timer` (it also re-syncs mail DNS
+records and the autoconfig/MTA-STS site). Run it now with
 `systemctl start jinnpanel-mail-dns.service`.
 
 ## Mail deliverability

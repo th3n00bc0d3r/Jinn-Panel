@@ -899,6 +899,7 @@ final class MigrationRunner
             }
             try {
                 $rep = CpanelZoneImporter::import((int) $zone['id'], (string) file_get_contents($file), $all);
+                DnsService::ensureMailHostRecord((int) $zone['id']);
                 DnsService::publish((int) $zone['id']);
                 foreach ($this->report['domains'] as &$entry) {
                     if ($entry['name'] === $domain) {

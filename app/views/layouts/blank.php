@@ -15,8 +15,8 @@ $pageTitle = $title ?? View::slotGet('title');
 <meta name="color-scheme" content="light dark">
 <title><?= $pageTitle !== '' ? e($pageTitle) . ' · ' : '' ?><?= e(Config::APP_NAME) ?></title>
 <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/assets/css/app.css">
-<script src="/assets/js/theme.js"></script>
+<link rel="stylesheet" href="<?= asset('/assets/css/app.css') ?>">
+<script src="<?= asset('/assets/js/theme.js') ?>"></script>
 </head>
 <body class="flex min-h-screen flex-col bg-surface">
 <header class="flex items-center gap-2.5 px-6 py-8 sm:px-10">
