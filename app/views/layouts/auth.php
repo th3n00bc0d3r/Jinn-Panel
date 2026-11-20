@@ -1,18 +1,35 @@
 <?php
 /**
  * Signed-out pages: sign in, two-factor, forgot and reset password, first-run
- * setup. On wide screens a brand panel with the server's name sits beside the
- * form; on phones only the form, under a small header.
+ * setup. On wide screens a brand panel sits beside the form; on phones only
+ * the form, under a small header. The panel names the customer's domain when
+ * they came in on <domain>:2083, never the server hostname (first-run setup
+ * still shows it, to the administrator).
  * Views hand it (View::slot):
  *   title       tab title (plain text) when the controller passes none
  *   wide        any value: a wider form column (setup)
- *   brand_lead  the line above the server name (default "You are signing in to")
+ *   brand_lead  the line above the domain name (default "You are signing in to")
  *   brand_note  the line at the foot of the panel, and under the form on phones
  * brand_lead and brand_note are raw HTML: escape what goes in them.
  */
-$host = Config::SERVER_HOSTNAME;
+// The hosted domain this page was opened on (example.com:2083, www./mail.
+// variants included), or null on the panel hostname / IP.
+$host = null;
+$reqHost = strtolower(preg_replace('/:\d+$/', '', (string) ($_SERVER['HTTP_HOST'] ?? '')));
+if (!Auth::onPanelHost() && preg_match('/^[a-z0-9.-]+$/', $reqHost)) {
+    try {
+        $stmt = Database::app()->prepare('SELECT domain_name FROM domains WHERE domain_name IN (?, ?) ORDER BY LENGTH(domain_name) DESC LIMIT 1');
+        $stmt->execute([$reqHost, (string) preg_replace('/^(www|mail|cpanel|webmail)\./', '', $reqHost)]);
+        $host = ($d = $stmt->fetchColumn()) !== false ? (string) $d : null;
+    } catch (Throwable) {
+        $host = null;
+    }
+}
+if (View::slotGet('brand_lead') !== '' && $host === null) {
+    $host = Config::SERVER_HOSTNAME; // first-run setup: the administrator sees which server
+}
 // The name breaks after a dot when it has to, with the dots in the light violet.
-$hostHtml = implode('<span class="auth-dot">.</span><wbr>', array_map(fn(string $part): string => e($part), explode('.', $host)));
+$hostHtml = $host === null ? '' : implode('<span class="auth-dot">.</span><wbr>', array_map(fn(string $part): string => e($part), explode('.', $host)));
 $wide = View::slotGet('wide') !== '';
 $pageTitle = $title ?? (View::slotGet('title') !== '' ? View::slotGet('title') : 'Sign in');
 $lead = View::slotGet('brand_lead') !== '' ? View::slotGet('brand_lead') : e('You are signing in to');
@@ -37,9 +54,14 @@ $note = View::slotGet('brand_note') !== '' ? View::slotGet('brand_note') : e('Tr
             <span class="text-[15px] font-semibold"><?= e(Config::APP_NAME) ?></span>
         </div>
         <div>
+            <?php if ($host !== null): ?>
             <p class="text-[13px] text-white/60"><?= $lead ?></p>
             <p class="auth-host mt-3" style="--host-chars: <?= max(8, strlen($host)) ?>"><?= $hostHtml ?></p>
-            <p class="mt-6 max-w-md text-[15px] leading-relaxed text-white/70">The control panel for the websites, mailboxes and databases hosted on this server.</p>
+            <p class="mt-6 max-w-md text-[15px] leading-relaxed text-white/70">The control panel for your website, mailboxes and databases.</p>
+            <?php else: ?>
+            <p class="text-4xl font-semibold leading-tight tracking-tight">Your hosting<br>control panel</p>
+            <p class="mt-6 max-w-md text-[15px] leading-relaxed text-white/70">Manage your websites, mailboxes and databases.</p>
+            <?php endif; ?>
         </div>
         <p class="text-[13px] text-white/50"><?= $note ?></p>
     </aside>
@@ -47,7 +69,11 @@ $note = View::slotGet('brand_note') !== '' ? View::slotGet('brand_note') : e('Tr
     <main id="main" class="flex min-w-0 flex-col px-6 py-8 sm:px-10">
         <div class="flex items-center gap-2.5 lg:hidden">
             <svg class="h-7 w-7 shrink-0" viewBox="0 0 140 140" aria-hidden="true"><defs><linearGradient id="jp-mark" x1="0" y1="0" x2="140" y2="140" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#6366f1"/><stop offset="1" stop-color="#7c3aed"/></linearGradient></defs><rect width="140" height="140" rx="32" fill="url(#jp-mark)"/><path d="M86 35v57c0 17.5-11 28.5-29.5 28.5-12 0-20.8-5-26.3-14.2l12-11c3.3 5.5 7.7 8.8 13.7 8.8 8.2 0 12.6-4.9 12.6-16.4V35H86Z" fill="#fff"/><rect x="96" y="31" width="13" height="13" rx="3" fill="#fff" fill-opacity=".55"/></svg>
+            <?php if ($host !== null): ?>
             <span class="min-w-0 truncate font-mono text-[13px] text-muted"><span class="sr-only"><?= e(Config::APP_NAME) ?> on </span><?= e($host) ?></span>
+            <?php else: ?>
+            <span class="min-w-0 truncate text-[15px] font-semibold text-fg"><?= e(Config::APP_NAME) ?></span>
+            <?php endif; ?>
         </div>
         <div class="my-auto w-full self-center py-10 <?= $wide ? 'max-w-xl' : 'max-w-[22rem]' ?>">
             <?php foreach (Flash::pull() as $f): ?>

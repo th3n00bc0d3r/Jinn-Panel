@@ -13,6 +13,14 @@ $router->get('/', function () {
 $router->get('/setup', ['SetupController', 'index']);
 $router->post('/setup', ['SetupController', 'store']);
 
+// Mail client autoconfig / Outlook autodiscover (reached via autoconfig./autodiscover.<domain>, no login).
+$router->get('/mail/config-v1.1.xml', ['AutoconfigController', 'thunderbird']);
+$router->get('/.well-known/autoconfig/mail/config-v1.1.xml', ['AutoconfigController', 'thunderbird']);
+foreach (['/autodiscover/autodiscover.xml', '/Autodiscover/Autodiscover.xml'] as $autodiscoverPath) {
+    $router->post($autodiscoverPath, ['AutoconfigController', 'outlook']);
+    $router->get($autodiscoverPath, ['AutoconfigController', 'outlook']);
+}
+
 $router->get('/login', ['AuthController', 'showLogin']);
 $router->get('/login/handoff', ['AuthController', 'handoff']);
 $router->post('/login', ['AuthController', 'login']);

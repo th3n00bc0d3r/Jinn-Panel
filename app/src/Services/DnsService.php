@@ -180,6 +180,7 @@ final class DnsService
             self::seedMissing($zoneId, [
                 ['@', 'A', Config::SERVER_IP, null],
                 ['www', 'A', Config::SERVER_IP, null],
+                ['mail', 'A', Config::SERVER_IP, null], // webmail and mail apps (mail.<domain>)
                 ['@', 'MX', $domain . '.', 10],
             ]);
         } else {
@@ -763,6 +764,46 @@ final class DnsService
     }
 
     /** @param list<array{0:string,1:string,2:string,3:?int}> $records [name, type, content, priority] */
+    /**
+     * Gives mail.<domain> an A record to this server: added when the zone has
+     * no "mail" name at all, and replacing the "mail CNAME <apex>" cPanel
+     * zones carry when the apex is this server (same answer, but webmail,
+     * certificates and mail apps expect a plain A record). Anything else a
+     * customer put at "mail" is left alone. Does not publish.
+     *
+     * @return bool whether the zone changed
+     */
+    public static function ensureMailHostRecord(int $zoneId): bool
+    {
+        $zone = self::findZone($zoneId);
+        if ($zone === null) {
+            return false;
+        }
+        $pdo = Database::app();
+        $stmt = $pdo->prepare("SELECT id, type, content, managed FROM dns_records WHERE zone_id = ? AND name = 'mail'");
+        $stmt->execute([$zoneId]);
+        $rows = $stmt->fetchAll();
+        if ($rows === []) {
+            $pdo->prepare('INSERT INTO dns_records (zone_id, name, type, ttl, priority, content) VALUES (?, ?, ?, ?, NULL, ?)')
+                ->execute([$zoneId, 'mail', 'A', self::DEFAULT_TTL, Config::SERVER_IP]);
+            return true;
+        }
+        if (count($rows) !== 1 || $rows[0]['type'] !== 'CNAME' || $rows[0]['managed'] !== null) {
+            return false;
+        }
+        $target = rtrim(strtolower((string) $rows[0]['content']), '.');
+        if ($target !== '@' && $target !== strtolower((string) $zone['zone_name'])) {
+            return false;
+        }
+        $apex = $pdo->prepare("SELECT content FROM dns_records WHERE zone_id = ? AND name = '@' AND type = 'A'");
+        $apex->execute([$zoneId]);
+        if ($apex->fetchAll(PDO::FETCH_COLUMN) !== [Config::SERVER_IP]) {
+            return false;
+        }
+        $pdo->prepare("UPDATE dns_records SET type = 'A', content = ? WHERE id = ?")->execute([Config::SERVER_IP, (int) $rows[0]['id']]);
+        return true;
+    }
+
     private static function seedMissing(int $zoneId, array $records): void
     {
         $pdo = Database::app();

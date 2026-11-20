@@ -92,7 +92,7 @@ grep -q "$SERVER_IP $HOSTNAME_FQDN" /etc/hosts || echo "$SERVER_IP $HOSTNAME_FQD
 # hand-edited /etc/resolv.conf which won't survive a reconnect.
 PRIMARY_CONN=$(nmcli -t -f NAME,DEVICE connection show --active | awk -F: 'NR==1{print $1; exit}')
 if [ -n "$PRIMARY_CONN" ]; then
-    ROUTER_DNS=$(ip route | awk '/default/ {print $3; exit}')
+    ROUTER_DNS=$(ip route | awk '/default/ && !d {print $3; d=1}')  # reads all input: an early exit can SIGPIPE ip under pipefail
     nmcli connection modify "$PRIMARY_CONN" ipv4.dns "1.1.1.1 ${ROUTER_DNS:-8.8.8.8}" ipv4.ignore-auto-dns no || true
     nmcli connection up "$PRIMARY_CONN" || true
 fi
@@ -1389,12 +1389,14 @@ ExecStart=/usr/bin/php-zts $APP_ROOT/worker/ssl-sync.php
 UNIT
 cat > /etc/systemd/system/jinnpanel-mail-dns.timer <<'UNIT'
 [Unit]
-Description=Daily JinnPanel mail DNS / certificate sync
+Description=Hourly JinnPanel mail DNS / certificate sync
 
 [Timer]
+# Hourly so a new domain's mail.<domain> certificate reaches the mail server
+# (and its mail settings switch to that name) soon after Caddy gets it.
 OnBootSec=10min
-OnUnitActiveSec=1d
-RandomizedDelaySec=30min
+OnUnitActiveSec=1h
+RandomizedDelaySec=5min
 
 [Install]
 WantedBy=timers.target
@@ -1402,7 +1404,7 @@ UNIT
 systemctl daemon-reload
 systemctl enable jinnpanel-mail-dns.timer >/dev/null 2>&1
 systemctl start jinnpanel-mail-dns.timer
-MAIL_SYNC_OUT=$(runuser -u frankenphp -- /usr/bin/php-zts "$APP_ROOT/worker/mail-dns-sync.php" 2>&1) || warn "Mail DNS sync reported problems (below); the daily timer retries."
+MAIL_SYNC_OUT=$(runuser -u frankenphp -- /usr/bin/php-zts "$APP_ROOT/worker/mail-dns-sync.php" 2>&1) || warn "Mail DNS sync reported problems (below); the hourly timer retries."
 echo "$MAIL_SYNC_OUT" | grep -v '^Deprecated' | sed 's/^/    /'
 # Stalwart binds new listeners (587) only at startup.
 if grep -q 'submission on 587: added' <<< "$MAIL_SYNC_OUT"; then

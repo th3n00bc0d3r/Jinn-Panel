@@ -330,11 +330,12 @@ final class MailService
     }
 
     /**
-     * Makes $pem/$key Stalwart's certificate for $host (and its default for
-     * clients without SNI), unless it already has that exact one. Older
-     * certificates for the same name are removed.
+     * Makes $pem/$key Stalwart's certificate for $host, unless it already has
+     * that exact one; Stalwart picks it by SNI. $default: also the one for
+     * clients without SNI (the server hostname's). Older certificates for the
+     * same name are removed.
      */
-    public static function installCertificate(string $host, string $pem, string $key, int $validTo): string
+    public static function installCertificate(string $host, string $pem, string $key, int $validTo, bool $default = true): string
     {
         $list = self::call([['x:Certificate/get', ['accountId' => self::accountId(), 'ids' => null,
             'properties' => ['subjectAlternativeNames', 'notValidAfter']], '0']])[0][1]['list'] ?? [];
@@ -356,11 +357,13 @@ final class MailService
         if ($id === null) {
             throw new RuntimeException('Mail server refused the certificate: ' . self::reason($created['notCreated']['c1'] ?? $created));
         }
-        self::call([
-            ['x:SystemSettings/set', ['accountId' => self::accountId(), 'update' => ['singleton' => ['defaultCertificateId' => $id]]], '0'],
-            ['x:Certificate/set', ['accountId' => self::accountId(), 'destroy' => $old], '1'],
-            ['x:Action/set', ['accountId' => self::accountId(), 'create' => ['r' => ['@type' => 'ReloadTlsCertificates']]], '2'],
-        ]);
+        $calls = [];
+        if ($default) {
+            $calls[] = ['x:SystemSettings/set', ['accountId' => self::accountId(), 'update' => ['singleton' => ['defaultCertificateId' => $id]]], 'd'];
+        }
+        $calls[] = ['x:Certificate/set', ['accountId' => self::accountId(), 'destroy' => $old], 'x'];
+        $calls[] = ['x:Action/set', ['accountId' => self::accountId(), 'create' => ['r' => ['@type' => 'ReloadTlsCertificates']]], 'r'];
+        self::call($calls);
         return 'installed (valid until ' . gmdate('Y-m-d', $validTo) . ')';
     }
 

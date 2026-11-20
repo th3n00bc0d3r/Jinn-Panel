@@ -231,10 +231,13 @@ Stalwart holds the mailboxes; the panel drives it over JMAP on loopback
   no mailbox) or the mailbox's single panel-managed Sieve script, which also
   holds the autoresponder (Stalwart runs one active script per mailbox).
 - Each mail domain gets DKIM keys (RSA + Ed25519) and its DNS records
-  (`managed = 'mail'`). The daily `jinnpanel-mail-dns.timer` re-syncs them,
+  (`managed = 'mail'`). The hourly `jinnpanel-mail-dns.timer` re-syncs them,
   serves autoconfig/autodiscover/MTA-STS through Caddy
-  (`zz-mail-services.caddyfile`, proxied to Stalwart on loopback), copies
-  Caddy's certificate to Stalwart, and keeps the 587 listener.
+  (`zz-mail-services.caddyfile`: MTA-STS proxied to Stalwart on loopback,
+  autoconfig/autodiscover answered by the panel's `AutoconfigController`
+  with mail.<domain>), copies Caddy's certificates to Stalwart (the
+  hostname's as the default, each mail.<domain>'s picked by SNI), and keeps
+  the 587 listener.
 - Suspension removes the `authenticate` permission from the account's
   mailboxes.
 

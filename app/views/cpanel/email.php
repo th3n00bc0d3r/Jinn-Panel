@@ -3,10 +3,13 @@
 /** @var list<array<string,mixed>> $domains */
 /** @var list<array<string,mixed>> $forwarders with domain_name */
 /** @var array<int,array<string,mixed>> $autoresponders keyed by email_account_id */
-/** @var string $mailHost */
+/** @var array<string,string> $mailHosts domain => server name for mail apps */
 /** @var array<string,bool> $webmail mail.<domain> hosts that serve webmail */
 View::slot('desc', e('Mailboxes, forwarders and the default address of your domains.'));
-View::slot('actions', '<a href="#mail-client-settings" class="btn btn-secondary">' . icon('settings') . 'Mail app settings</a>'
+$webmailButton = count($webmail) === 1
+    ? '<a href="https://' . e((string) array_key_first($webmail)) . '/" target="_blank" rel="noopener" class="btn btn-secondary">' . icon('external') . 'Open webmail</a>'
+    : ($webmail ? '<a href="#mail-client-settings" class="btn btn-secondary">' . icon('mail') . 'Webmail</a>' : '');
+View::slot('actions', $webmailButton . '<a href="#mail-client-settings" class="btn btn-secondary">' . icon('settings') . 'Mail app settings</a>'
     . ($domains ? '<a href="#add-mailbox" class="btn btn-primary">' . icon('plus') . 'Create mailbox</a>' : ''));
 View::script('email');
 
@@ -120,7 +123,7 @@ $mailFull = $pkg && !Quota::unlimited($pkg['max_email_accounts']) && (int) $usag
                                 <td>
                                     <div class="flex items-center justify-end gap-1">
                                         <?php if (isset($webmail['mail.' . $a['domain_name']])): ?>
-                                        <span class="hidden sm:inline-flex"><?= Ui::iconLink('https://mail.' . $a['domain_name'] . '/', 'external', 'Open webmail for ' . $addr, true) ?></span>
+                                        <a href="https://mail.<?= e($a['domain_name']) ?>/" target="_blank" rel="noopener" class="btn btn-secondary btn-sm" aria-label="Open webmail for <?= e($addr) ?>"><?= icon('external', 'h-4 w-4') ?><span class="hidden sm:inline">Webmail</span></a>
                                         <?php endif; ?>
                                         <button type="button" class="btn btn-secondary btn-sm" data-dialog-open="mailbox-<?= $id ?>" aria-haspopup="dialog" aria-label="Manage <?= e($addr) ?>">Manage</button>
                                         <?= Ui::deleteForm("/cpanel/email/$id/delete", 'Delete the mailbox ' . $addr . ' and all its mail? This can\'t be undone.', 'Delete mailbox') ?>
@@ -337,7 +340,18 @@ $mailFull = $pkg && !Quota::unlimited($pkg['max_email_accounts']) && (int) $usag
                     <dl class="space-y-3">
                         <div>
                             <dt class="text-xs font-medium text-muted">Server, incoming and outgoing</dt>
-                            <dd class="mt-1 text-fg"><?= Ui::copyable($mailHost) ?></dd>
+                            <?php $distinctHosts = array_values(array_unique($mailHosts)); ?>
+                            <?php if (count($distinctHosts) <= 1): ?>
+                            <dd class="mt-1 text-fg"><?= Ui::copyable((string) ($distinctHosts[0] ?? strtolower(Config::SERVER_HOSTNAME))) ?></dd>
+                            <?php else: ?>
+                            <dd class="mt-1">
+                                <ul class="space-y-1.5">
+                                    <?php foreach ($mailHosts as $mhDomain => $mh): ?>
+                                    <li class="text-fg"><span class="block text-xs text-muted">@<?= e($mhDomain) ?></span><?= Ui::copyable($mh) ?></li>
+                                    <?php endforeach; ?>
+                                </ul>
+                            </dd>
+                            <?php endif; ?>
                         </div>
                         <div>
                             <dt class="text-xs font-medium text-muted">Username</dt>

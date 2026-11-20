@@ -202,8 +202,9 @@ the `db_user` index change) and also ship an upgrade file in
 ## Moving parts added on 2026-10-01 (TODO.md has the why)
 
 - **Timers/units** (installer): `hostpanel-worker.timer` (root jobs, 5 s),
-  `jinnpanel-mail-dns.timer` (daily: `mail-dns-sync.php` - mail DNS records,
-  autoconfig/MTA-STS site, Stalwart's TLS cert from Caddy's, 587 listener,
+  `jinnpanel-mail-dns.timer` (hourly: `mail-dns-sync.php` - mail DNS records,
+  autoconfig/MTA-STS site, Stalwart's TLS certs from Caddy's (hostname +
+  each mail.<domain>, by SNI; storage/mail-tls.json), 587 listener,
   pending mail-domain deletes - and `ssl-sync.php`, Let's Encrypt up/down),
   `jinnpanel-cron.timer` (customer cron jobs, every minute, `KillMode=process`),
   `jinnpanel-webmail.service` (Cypht, own FrankenPHP as user `webmail` on
@@ -338,6 +339,12 @@ replaces a tag's set, and a customer record with the same name wins.
   AccountService::setStatus) and `quota()`, sent by `UsageNoticeService`
   after the worker's hourly usage run (account_usage.disk_notice /
   bw_notice, migration 025).
+- Mail host per domain: `MailDnsService::mailHost()` is mail.<domain> once
+  Stalwart has its certificate (else the server hostname); the Email page,
+  SRV records and `AutoconfigController` (Thunderbird autoconfig, Outlook
+  autodiscover, routed from zz-mail-services.caddyfile) all use it. Zones
+  get `mail A <server>` (`DnsService::ensureMailHostRecord()`). The sign-in
+  page names the customer's domain on <domain>:2083, never the hostname.
 - File editor: pool agent ops `edit_read` / `edit_write` (UTF-8 text up to
   1 MB, atomic rename, keeps permissions, refuses if the file changed since
   it was opened). SFTP logins take SSH public keys (`ftp_accounts.public_keys`
