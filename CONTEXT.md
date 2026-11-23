@@ -3,7 +3,7 @@
 Read this first. It's the orientation for anyone (human or AI assistant)
 working on the codebase: what JinnPanel is, how it's put together, the
 conventions to follow, and where it stands. Deeper detail lives in `docs/`
-(ARCHITECTURE, FEATURES, INSTALL, OPERATIONS, MIGRATION, TROUBLESHOOTING,
+(ARCHITECTURE, FEATURES, API, INSTALL, OPERATIONS, MIGRATION, TROUBLESHOOTING,
 COMPARISON, ICONS, UI).
 
 Last reviewed: 2026-11-14.
@@ -130,6 +130,7 @@ ssl_mode, `mail_domain_id`), `db_instances` (db_name unique, db_user not
 unique), `db_user_accounts` (extra MySQL users an account owns),
 `email_accounts` (`mail_account_id` = Stalwart id), `ftp_accounts`,
 `php_versions`, `migrations` + `migration_items` (cPanel migration),
+`api_tokens` (provisioning API, `ApiController`/`ApiTokenService`, docs/API.md),
 `activity_log` (audit trail: `Audit::log()`, and every flashed POST outcome
 automatically - see `Flash::set`), `login_attempts`, `account_usage`
 (UsageService, hourly), `backups`, `panel_settings`.

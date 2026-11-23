@@ -5,6 +5,26 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project doesn't yet follow semantic versioning releases (no tags/releases
 have been cut) - entries are grouped by development milestone instead.
 
+## Unreleased - provisioning API (2026-11)
+
+Upgrade by re-running the installer: it applies `app/migrations/027_api_tokens.sql`.
+
+### Added
+- **Provisioning API** (`docs/API.md`): a WHM API 1 compatible subset at
+  `https://<panel host>/json-api/<function>` - `version`, `applist`,
+  `listpkgs`, `listaccts`, `accountsummary`, `createacct` (account + first
+  domain, all or nothing), `suspendacct`, `unsuspendacct`, `removeacct`.
+  Order forms and billing modules written for WHM's `createacct` work
+  unchanged.
+- **WHM > API Tokens**: tokens for admins and resellers, acting with their
+  owner's rights, shown once and stored hashed, optionally limited to client
+  addresses; failed attempts throttled per address; API actions in the
+  Activity Log.
+
+### Changed
+- Adding a domain (cPanel > Domains) moved into `DomainService::add`, shared
+  with the API.
+
 ## Unreleased - redesign and account basics (2026-11)
 
 Upgrade by re-running the installer: it applies

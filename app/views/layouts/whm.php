@@ -9,6 +9,7 @@ $nav = [
         ['href' => '/whm/packages', 'label' => 'Packages', 'icon' => 'box'],
         ['href' => '/whm/migrations', 'label' => 'cPanel Migration', 'icon' => 'transfer'],
         ['href' => '/whm/activity', 'label' => 'Activity Log', 'icon' => 'activity'],
+        ['href' => '/whm/api-tokens', 'label' => 'API Tokens', 'icon' => 'key'],
     ]],
 ];
 if (Auth::isAdmin()) {
