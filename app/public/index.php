@@ -47,6 +47,13 @@ foreach (['/whm/security', '/cpanel/security'] as $sec) {
 // Ctrl-K: accounts and domains by name (any signed-in user, scoped to what they may open)
 $router->get('/search', ['SearchController', 'index']);
 
+// Provisioning API (WHM API 1 compatible subset) and its tokens - docs/API.md.
+$router->get('/json-api/{fn}', ['ApiController', 'handle']);
+$router->post('/json-api/{fn}', ['ApiController', 'handle']);
+$router->get('/whm/api-tokens', ['ApiController', 'tokens']);
+$router->post('/whm/api-tokens', ['ApiController', 'tokenCreate']);
+$router->post('/whm/api-tokens/{id}/delete', ['ApiController', 'tokenDelete']);
+
 // WHM (admin + reseller)
 $router->get('/whm', ['WhmDashboardController', 'index']);
 $router->get('/whm/analytics', ['WhmDashboardController', 'analytics']);

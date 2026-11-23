@@ -57,7 +57,8 @@ SFTPGo, Valkey). One script installs everything on a fresh server.
 | S3-compatible backups | ✅ | ✅ | ⚠️ extension | ⚠️ | ⚠️ | ✅ |
 | 2FA | ✅ | ✅ | ? | ✅ | ✅ | ✅ |
 | DNS clustering | ❌ | ✅ | ⚠️ | ✅ | ? | ✅ |
-| App installer / billing API | ❌ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ |
+| Provisioning API (WHM-compatible) | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ |
+| App installer | ❌ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ |
 | Paid support | ❌ | ✅ | ✅ | ✅ | ⚠️ | ❌ |
 
 ✅ yes · ⚠️ partly, paid or with conditions · ❌ no · ? not confirmed.
@@ -82,6 +83,8 @@ are in [`docs/COMPARISON.md`](docs/COMPARISON.md).
   server's CPU and RAM.
 - Backups (daily, per account and server, S3-compatible copies,
   per-part restore), an activity log of every action, live service logs.
+- A provisioning API compatible with WHM's `createacct`/`suspendacct`/
+  `removeacct`, with per-admin and per-reseller tokens.
 
 **cPanel** (customers, at `panel.<server>` or `<their domain>/jpanel`)
 - Domains, aliases, subdomains, document root, PHP version and php.ini
@@ -128,6 +131,7 @@ secrets).
 | [`docs/FEATURES.md`](docs/FEATURES.md) | Every screen of WHM and cPanel, limits and how they're enforced |
 | [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | Day-to-day running: paths, health checks, logs, backups, quotas, DNS, certificates, mail deliverability, incidents |
 | [`docs/MIGRATION.md`](docs/MIGRATION.md) | Moving accounts from cPanel & WHM |
+| [`docs/API.md`](docs/API.md) | The provisioning API: tokens, functions, examples |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | How it's built: the root worker, customer isolation, network exposure, DNS, mail, backups, security posture |
 | [`docs/COMPARISON.md`](docs/COMPARISON.md) | Full comparison with cPanel, Plesk, DirectAdmin, CyberPanel, HestiaCP, ISPConfig, CloudPanel, aaPanel |
 | [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | SELinux, systemd, Knot and Stalwart gotchas already handled by the installer |
@@ -143,7 +147,9 @@ secrets).
 - **No per-account CPU/RAM limits** (no cgroups/LVE); PHP pools are capped
   by process count and `memory_limit` only.
 - **AlmaLinux 10 only**, and it expects the server to itself.
-- **No billing integration (WHMCS etc.), external API or app installer.**
+- **No app installer and no ready-made billing module** (WHMCS etc.); order
+  forms and billing systems can use the WHM-compatible provisioning API
+  ([`docs/API.md`](docs/API.md)).
 - No SSH access for customers, no visitor statistics (AWStats-style).
 - No DNSSEC, custom (uploaded) certificates or per-mailbox quotas.
 - Hard disk quotas cover files only; databases and mail are measured and

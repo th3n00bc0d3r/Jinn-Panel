@@ -341,6 +341,15 @@ detail, account affected and source IP. Searchable by action, user, detail
 or exact IP, 100 per page. The admin sees everything; a reseller sees
 entries by or about itself and its accounts.
 
+### API Tokens
+
+Tokens for the provisioning API (`/json-api/*`, WHM API 1 compatible:
+`createacct`, `suspendacct`, `unsuspendacct`, `removeacct`, `listaccts`,
+`listpkgs`, ...), so a billing system or order form can create accounts.
+A token acts with its owner's rights (a reseller's only reaches its own
+accounts), is shown once, can be limited to IP addresses, and everything done
+with it is in the Activity Log. Details: [API.md](API.md).
+
 ### Alerts (admin)
 
 Everything that needs attention right now, most serious first: problems

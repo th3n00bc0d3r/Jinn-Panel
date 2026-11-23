@@ -33,46 +33,14 @@ final class DomainController
         $phpVersion = self::validPhpVersion((string) ($_POST['php_version'] ?? 'default'));
         $sslRequested = (string) ($_POST['ssl_mode'] ?? 'auto');
 
-        if (!Quota::withinLimit($me['id'], 'domains')) {
-            Flash::error('You have reached your package\'s domain limit.');
+        $r = DomainService::add((int) $me['id'], $domain, $phpVersion, $sslRequested);
+        if ($r['error'] !== null) {
+            Flash::error($r['error']);
             header('Location: /cpanel/domains');
             exit;
         }
-        if (($problem = DomainPolicy::problem($domain, (int) $me['id'])) !== null) {
-            Flash::error($problem);
-            header('Location: /cpanel/domains');
-            exit;
-        }
-
-        $pdo = Database::app();
-        $sslMode = SslService::resolveMode($sslRequested, $domain);
-        $dnsOk = true;
-        try {
-            DnsService::createZone($domain);
-        } catch (Throwable $e) {
-            error_log($e->getMessage());
-            $dnsOk = false;
-        }
-
-        // The row first: the vhost names the owning account's PHP pool.
-        $stmt = $pdo->prepare('INSERT INTO domains (user_id, domain_name, docroot, dns_provisioned, php_version, php_port, ssl_mode, ssl_pinned) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)');
-        $stmt->execute([$me['id'], $domain, VhostService::docroot($domain), $dnsOk ? 1 : 0, $phpVersion, $sslMode, SslService::pinned($sslRequested) ? 1 : 0]);
-        try {
-            VhostService::create($domain, $phpVersion, $sslMode);
-        } catch (Throwable $e) {
-            error_log($e->getMessage());
-            $pdo->prepare('DELETE FROM domains WHERE domain_name = ?')->execute([$domain]);
-            Flash::error('Could not create the web vhost: ' . $e->getMessage());
-            header('Location: /cpanel/domains');
-            exit;
-        }
-        // Its folder (owned by the account, with a placeholder page) and PHP pool.
-        AccountRuntime::sync((int) $me['id']);
-        try {
-            SftpService::syncAccountFolders((int) $me['id']);
-        } catch (Throwable $e) {
-            error_log('sftp folders: ' . $e->getMessage());
-        }
+        $sslMode = $r['ssl_mode'];
+        $dnsOk = $r['dns'];
 
         $sslNote = $sslMode === 'letsencrypt'
             ? ' A Let\'s Encrypt certificate is being issued.'
