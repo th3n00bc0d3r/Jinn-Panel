@@ -1,5 +1,5 @@
 <?php
-$fns = ['version', 'applist', 'listpkgs', 'listaccts', 'accountsummary', 'createacct', 'suspendacct', 'unsuspendacct', 'removeacct'];
+$fns = ['version', 'applist', 'listpkgs', 'listaccts', 'accountsummary', 'createacct', 'changepackage', 'suspendacct', 'unsuspendacct', 'removeacct'];
 return [
     'layout' => 'whm', 'role' => 'admin', 'path' => '/whm/api-tokens',
     'data' => [

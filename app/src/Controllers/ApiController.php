@@ -24,7 +24,7 @@ final class ApiController
 
     private const FUNCTIONS = [
         'version', 'applist', 'listpkgs', 'listaccts', 'accountsummary',
-        'createacct', 'suspendacct', 'unsuspendacct', 'removeacct',
+        'createacct', 'changepackage', 'suspendacct', 'unsuspendacct', 'removeacct',
     ];
 
     public static function handle(array $params): void
@@ -63,6 +63,7 @@ final class ApiController
                 'listaccts' => self::listaccts($me, $in),
                 'accountsummary' => self::accountsummary($me, $in),
                 'createacct' => self::createacct($me, $in),
+                'changepackage' => self::changepackage($me, $in),
                 'suspendacct' => self::setStatus($me, $in, 'suspended', $fn),
                 'unsuspendacct' => self::setStatus($me, $in, 'active', $fn),
                 'removeacct' => self::removeacct($me, $in),
@@ -128,13 +129,7 @@ final class ApiController
         if ($username === '' || $domain === '' || $plan === '' || $email === '' || $password === '') {
             self::reply($fn, false, 'username, domain, plan, contactemail and password are all required.', [], 400);
         }
-        $package = null;
-        foreach (AccountService::availablePackages($me) as $p) {
-            if (strcasecmp((string) $p['name'], $plan) === 0 || (ctype_digit($plan) && (int) $p['id'] === (int) $plan)) {
-                $package = $p;
-                break;
-            }
-        }
+        $package = self::package($me, $plan);
         if ($package === null) {
             self::reply($fn, false, "No package named \"$plan\" - listpkgs shows the ones this token can use.", [], 400);
         }
@@ -182,6 +177,36 @@ final class ApiController
             'nameservers' => [DnsService::nameservers()['ns1_host'], DnsService::nameservers()['ns2_host']],
             'server_ip' => Config::SERVER_IP,
         ]);
+    }
+
+    private static function changepackage(array $me, array $in): never
+    {
+        $target = self::target($me, $in, 'changepackage');
+        $package = self::package($me, trim((string) ($in['pkg'] ?? $in['plan'] ?? '')));
+        if ($package === null) {
+            self::reply('changepackage', false, 'Name a package with pkg=<name> - listpkgs shows the ones this token can use.', [], 400);
+        }
+        if (($problem = AccountService::changePackage($target, (int) $package['id'], $me)) !== null) {
+            self::reply('changepackage', false, $problem, [], 400);
+        }
+        Audit::log('api.changepackage', "Moved {$target['username']} to package {$package['name']} through the API", (int) $target['id'], (int) $me['id']);
+        $target['package_name'] = $package['name'];
+        $target['package_id'] = $package['id'];
+        self::reply('changepackage', true, "Account {$target['username']} is now on package {$package['name']}.", ['acct' => [self::acct($target)]]);
+    }
+
+    /** A package $me may hand out, by name (case-insensitive) or id. */
+    private static function package(array $me, string $nameOrId): ?array
+    {
+        if ($nameOrId === '') {
+            return null;
+        }
+        foreach (AccountService::availablePackages($me) as $p) {
+            if (strcasecmp((string) $p['name'], $nameOrId) === 0 || (ctype_digit($nameOrId) && (int) $p['id'] === (int) $nameOrId)) {
+                return $p;
+            }
+        }
+        return null;
     }
 
     private static function setStatus(array $me, array $in, string $status, string $fn): never
