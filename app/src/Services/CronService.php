@@ -182,7 +182,9 @@ final class CronService
         } else {
             // Re-check: the script must still be inside that domain's folder.
             $script = self::scriptPath((string) $job['domain_name'], substr((string) $job['target'], strlen(VhostService::siteDir((string) $job['domain_name'])) + 1));
-            $cmd = array_merge(['runuser', '-u', Usernames::linuxUser((string) $job['username']), '--', 'timeout', (string) self::TIMEOUT],
+            // Full path: the job's environment has PATH=/usr/local/bin:/usr/bin:/bin,
+            // and runuser lives in /usr/sbin, so a bare 'runuser' fails (exit 127).
+            $cmd = array_merge(['/usr/sbin/runuser', '-u', Usernames::linuxUser((string) $job['username']), '--', 'timeout', (string) self::TIMEOUT],
                 self::phpCommand($job), ['-f', $script, '--'], $job['args'] !== '' ? preg_split('/\s+/', (string) $job['args']) : []);
             $home = AccountRuntime::HOME . '/' . $job['username'];
             $env = ['PATH' => '/usr/local/bin:/usr/bin:/bin', 'HOME' => $home, 'TMPDIR' => "$home/tmp",
