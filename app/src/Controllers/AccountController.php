@@ -264,7 +264,7 @@ final class AccountController
         $row = $s->fetch();
         $note = '';
         if (!empty($_POST['send_welcome'])) {
-            $note = NotificationService::welcome($row)
+            $note = NotificationService::welcome($row, (string) ($_POST['password'] ?? ''))
                 ? " A welcome email went to {$row['email']}."
                 : ' The welcome email could not be sent - check WHM > Notifications.';
         }

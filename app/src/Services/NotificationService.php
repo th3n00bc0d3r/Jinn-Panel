@@ -64,20 +64,44 @@ final class NotificationService
      *
      * @param array<string,mixed> $user
      */
-    public static function welcome(array $user): bool
+    /**
+     * The welcome email. A hosting account signs in at its own domain
+     * (https://<domain>/jpanel), never the server's address; only an account
+     * without a domain yet (and resellers/admins) gets the panel address.
+     * $password is the one just set (create form); without it the email has
+     * a one-time link to choose one instead.
+     */
+    public static function welcome(array $user, ?string $password = null): bool
     {
-        $link = PasswordResetService::url(PasswordResetService::create((int) $user['id'], 'welcome'));
-        $login = 'https://' . Auth::panelHost() . '/login';
         $role = (string) $user['role'];
+        $domain = $role === 'user' ? self::primaryDomain((int) $user['id']) : null;
+        $login = $domain !== null ? "https://$domain/jpanel" : 'https://' . Auth::panelHost() . '/login';
         $what = $role === 'user'
             ? 'Your hosting account is ready. From the control panel you can add domains, mailboxes, databases and SFTP logins, and manage files, DNS and backups.'
             : 'Your ' . ($role === 'reseller' ? 'reseller' : 'administrator') . ' login for the hosting server is ready.';
         $text = "Hello" . (!empty($user['full_name']) ? ' ' . $user['full_name'] : '') . ",\n\n"
             . "$what\n\n"
-            . "Sign in at: $login\nUsername: {$user['username']}\n\n"
-            . "Use the password you were given, or choose your own with this link (valid for 3 days, works once):\n$link\n\n"
-            . "Once signed in, you can turn on two-factor sign-in under Login security.";
+            . "Control panel: $login\nUsername: {$user['username']}\n";
+        if ($password !== null && $password !== '') {
+            $text .= "Password: $password\n\n"
+                . "Please change this password after you first sign in (Account > Password), and keep it private.\n\n";
+        } else {
+            $token = PasswordResetService::create((int) $user['id'], 'welcome');
+            // On the account's own panel (<domain>:2083, where /jpanel leads), not the server's.
+            $link = $domain !== null ? "https://$domain:2083/login/reset?token=$token" : PasswordResetService::url($token);
+            $text .= "\nUse the password you were given, or choose your own with this link (valid for 3 days, works once):\n$link\n\n";
+        }
+        $text .= "Once signed in, you can turn on two-factor sign-in under Login security.";
         return Mailer::send((string) $user['email'], 'Your ' . Config::APP_NAME . ' account', $text);
+    }
+
+    /** The account's first domain (the one it was created with), or null. */
+    private static function primaryDomain(int $userId): ?string
+    {
+        $s = Database::app()->prepare("SELECT domain_name FROM domains WHERE user_id = ? AND status = 'active' ORDER BY id LIMIT 1");
+        $s->execute([$userId]);
+        $d = $s->fetchColumn();
+        return is_string($d) && $d !== '' ? $d : null;
     }
 
     /** @param array<string,mixed> $user */
