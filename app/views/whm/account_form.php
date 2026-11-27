@@ -27,7 +27,8 @@ $curRole = Ui::old('role') ?? ($edit ? (string) $account['role'] : 'user');
         <?php if (!$edit && count($roles) > 1): ?>
         <fieldset class="card-body border-b border-line">
             <legend class="label float-left w-full">Account type</legend>
-            <div class="grid gap-3 sm:grid-cols-3">
+            <?php /* clear-both: the grid is a new formatting context, so without it the grid squeezes into a zero-width strip beside the floated legend. */ ?>
+            <div class="clear-both grid gap-3 sm:grid-cols-3">
                 <?php foreach ($roles as $r): ?>
                 <label class="flex cursor-pointer gap-3 rounded-lg border border-line p-3 text-sm transition-colors hover:bg-surface-2 has-[:checked]:border-accent has-[:checked]:bg-accent-soft">
                     <input type="radio" name="role" value="<?= e($r) ?>" class="mt-0.5" <?= $curRole === $r ? 'checked' : '' ?>>

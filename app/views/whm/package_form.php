@@ -48,7 +48,7 @@ $limit = function (string $col, string $label, int $default, int $min, array $o 
 
             <fieldset>
                 <legend class="section-title float-left mb-1 w-full">Features</legend>
-                <p class="mb-4 text-sm text-muted">What accounts on this package may use. Each account can be switched differently on its own page in Accounts.</p>
+                <p class="clear-both mb-4 text-sm text-muted">What accounts on this package may use. Each account can be switched differently on its own page in Accounts.</p>
                 <?php $pf = Features::forPackage($pkg); ?>
                 <div class="grid gap-x-6 gap-y-4 sm:grid-cols-2">
                     <?php foreach (Features::LIST as $key => [$label, $what]): ?>
