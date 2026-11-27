@@ -144,4 +144,133 @@ final class SslService
         }
         return $log ?: ['SSL: nothing to change'];
     }
+
+    /** A certificate with fewer days left than this needs attention: Caddy renews ~30 days ahead. */
+    public const EXPIRING_DAYS = 14;
+
+    /**
+     * The certificate Caddy holds for $name: its Let's Encrypt one, else one
+     * from its local CA (self-signed sites). Null when it has none.
+     *
+     * @return array{ca:string, issuer:string, valid_from:int, valid_to:int}|null
+     */
+    public static function certInfo(string $name): ?array
+    {
+        if (!preg_match('/^[a-z0-9.-]+$/', $name)) {
+            return null;
+        }
+        foreach (['letsencrypt' => self::CADDY_CERTS . "/acme*/$name/$name.crt", 'local' => self::CADDY_CERTS . "/local/$name/$name.crt"] as $ca => $pattern) {
+            foreach (glob($pattern) ?: [] as $file) {
+                $x = @openssl_x509_parse((string) @file_get_contents($file));
+                if (is_array($x)) {
+                    return [
+                        'ca' => $ca,
+                        'issuer' => trim(($x['issuer']['O'] ?? '') . ' ' . ($x['issuer']['CN'] ?? '')),
+                        'valid_from' => (int) $x['validFrom_time_t'],
+                        'valid_to' => (int) $x['validTo_time_t'],
+                    ];
+                }
+            }
+        }
+        return null;
+    }
+
+    /** valid | expiring | expired | missing for one certificate (null = none). */
+    public static function certState(?array $cert, ?int $now = null): string
+    {
+        $now ??= time();
+        if ($cert === null) {
+            return 'missing';
+        }
+        if ($cert['valid_to'] <= $now) {
+            return 'expired';
+        }
+        return $cert['valid_to'] - $now < self::EXPIRING_DAYS * 86400 ? 'expiring' : 'valid';
+    }
+
+    /**
+     * WHM > SSL/TLS: every hosted domain with each name it serves (the
+     * domain, www., its aliases), the certificate behind each name and
+     * whether its DNS points here.
+     *
+     * state: ok | expiring | problem (a Let's Encrypt name without a valid
+     * certificate) | self_signed | pinned
+     *
+     * @return list<array<string,mixed>>
+     */
+    public static function overview(): array
+    {
+        $rows = [];
+        $sql = 'SELECT d.*, u.username FROM domains d JOIN users u ON u.id = d.user_id ORDER BY d.domain_name';
+        foreach (Database::app()->query($sql)->fetchAll() as $d) {
+            $domain = (string) $d['domain_name'];
+            $le = $d['ssl_mode'] === 'letsencrypt';
+            $names = [];
+            foreach (array_merge([$domain], DomainAliasService::forDomain($domain)) as $base) {
+                foreach ([$base, "www.$base"] as $name) {
+                    $cert = self::certInfo($name);
+                    // A self-signed site's names are fine without a Let's Encrypt cert.
+                    $state = $le ? ($cert !== null && $cert['ca'] === 'letsencrypt' ? self::certState($cert) : 'missing') : 'self_signed';
+                    // Only names with a problem are looked up (keeps the page quick).
+                    $where = $state === 'valid' || $state === 'self_signed' ? null : self::addresses($name);
+                    $names[] = ['name' => $name, 'cert' => $cert, 'state' => $state, 'addresses' => $where,
+                        'points_here' => $where === null ? null : ($where !== [] && array_diff($where, array_filter([Config::SERVER_IP, DnsService::serverIpv6()])) === [])];
+                }
+            }
+            $addrs = self::addresses($domain);
+            $here = $addrs !== [] && array_diff($addrs, array_filter([Config::SERVER_IP, DnsService::serverIpv6()])) === [];
+            $states = array_column($names, 'state');
+            $state = match (true) {
+                !$le => (int) $d['ssl_pinned'] === 1 ? 'pinned' : 'self_signed',
+                in_array('missing', $states, true) || in_array('expired', $states, true) => 'problem',
+                in_array('expiring', $states, true) => 'expiring',
+                default => 'ok',
+            };
+            $apex = $names[0]['cert'];
+            $rows[] = $d + [
+                'names' => $names,
+                'addresses' => $addrs,
+                'points_here' => $here,
+                'state' => $state,
+                'expires' => $apex !== null && $le ? $apex['valid_to'] : null,
+            ];
+        }
+        return $rows;
+    }
+
+    /**
+     * WHM > SSL/TLS > Run AutoSSL: the daily switch (upgradeAll), then every
+     * Let's Encrypt site that points here but has a name without a valid
+     * certificate (or one close to expiry) gets its config rewritten and
+     * Caddy reloaded, which makes Caddy try to issue or renew right away.
+     *
+     * @return list<string> log lines
+     */
+    public static function autoSslAll(): array
+    {
+        $log = array_values(array_filter(self::upgradeAll(), static fn (string $l): bool => $l !== 'SSL: nothing to change'));
+        $nudged = false;
+        foreach (self::overview() as $row) {
+            if ($row['ssl_mode'] !== 'letsencrypt' || !in_array($row['state'], ['problem', 'expiring'], true)) {
+                continue;
+            }
+            $domain = (string) $row['domain_name'];
+            if (!$row['points_here']) {
+                $log[] = "$domain: its DNS doesn't point here, so Let's Encrypt can't issue - point it here or switch it to self-signed";
+                continue;
+            }
+            $bad = array_map(static fn (array $n): string => $n['name'], array_filter($row['names'], static fn (array $n): bool => $n['state'] !== 'valid'));
+            try {
+                VhostService::create($domain, (string) ($row['php_version'] ?: 'default'), 'letsencrypt', false, false);
+                $nudged = true;
+                $log[] = "$domain: asked for a new certificate (" . implode(', ', $bad) . ')';
+            } catch (Throwable $e) {
+                $log[] = "$domain: FAILED to rewrite its config - " . $e->getMessage();
+            }
+        }
+        if ($nudged) {
+            VhostService::reload();
+        }
+        return $log;
+    }
 }

@@ -17,6 +17,7 @@ if (Auth::isAdmin()) {
         ['href' => '/whm/alerts', 'label' => 'Alerts', 'icon' => 'bell'],
         ['href' => '/whm/backups', 'label' => 'Backups', 'icon' => 'archive'],
         ['href' => '/whm/dns', 'label' => 'DNS Zones', 'icon' => 'globe'],
+        ['href' => '/whm/ssl', 'label' => 'SSL/TLS', 'icon' => 'shield'],
         ['href' => '/whm/notifications', 'label' => 'Notifications', 'icon' => 'mail'],
     ]];
     $nav[] = ['label' => 'Configuration', 'items' => [
