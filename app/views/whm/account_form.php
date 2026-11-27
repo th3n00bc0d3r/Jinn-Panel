@@ -71,6 +71,17 @@ $curRole = Ui::old('role') ?? ($edit ? (string) $account['role'] : 'user');
                 'hint' => $edit ? 'Leave empty to keep the current one. Setting one signs the account out everywhere.' : 'At least ' . Passwords::MIN_LENGTH . ' characters, not a common password.',
                 'attrs' => ['minlength' => Passwords::MIN_LENGTH, 'autocomplete' => 'new-password'],
             ]) ?>
+            <?php if (!$edit && in_array('user', $roles, true)): ?>
+            <div class="sm:col-span-2">
+                <?= Ui::field('domain', 'Domain', [
+                    'optional' => true,
+                    'mono' => true,
+                    'placeholder' => 'example.com',
+                    'hint' => 'Hosting accounts: the website to set up now (folder, DNS zone and SSL). More can be added later. Leave empty for resellers and administrators.',
+                    'attrs' => ['autocapitalize' => 'off', 'spellcheck' => 'false', 'inputmode' => 'url', 'autocomplete' => 'off'],
+                ]) ?>
+            </div>
+            <?php endif; ?>
             <?php if (!$edit || $account['role'] !== 'admin'): ?>
             <div class="sm:col-span-2">
                 <?= Ui::select('package_id', 'Package', $pkgOptions, $edit ? (string) ($account['package_id'] ?? '') : null, [
