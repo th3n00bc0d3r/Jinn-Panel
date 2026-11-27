@@ -67,6 +67,7 @@ Always JSON, always this envelope:
 | `listaccts` | `search` (optional; username, email or domain contains) | `data.acct[]`: hosting accounts this token may manage. |
 | `accountsummary` | `user` | `data.acct[0]`: one account. |
 | `createacct` | `username`, `domain`, `plan`, `contactemail`, `password`, `contactname` (optional) | Creates the hosting account **and** its first domain (vhost, DNS zone, folder, PHP pool, certificate), all or nothing. |
+| `changepackage` | `user`, `pkg` (package name or id) | Moves the account to another package; its limits change at once. |
 | `suspendacct` | `user`, `reason` (optional; included in the email to the customer) | Suspends: sites answer 503, mail/SFTP/MySQL logins and cron are switched off. |
 | `unsuspendacct` | `user` | Turns everything back on. |
 | `removeacct` | `user` | Deletes the account and everything it owns. **Cannot be undone.** |

@@ -17,6 +17,13 @@ final class VhostService
 {
     public const ADMIN_SOCKET = 'unix//run/frankenphp/admin.sock';
 
+    /**
+     * CEL for a fingerprinted static file: 8+ hex characters before the
+     * extension (app.3f9c2a1b7d4e.css, chunk-a1b2c3d4.js), but not all digits
+     * (photo-20240101.jpg is a date, and may be replaced in place).
+     */
+    private const FP_CEL = "{path}.matches('(?i)[.-][0-9a-f]{8,}\\\\.(css|js|mjs|png|jpe?g|gif|webp|avif|svg|ico|woff2?|ttf|otf|eot)$') && !{path}.matches('[.-][0-9]{8,}\\\\.[A-Za-z0-9]+$')";
+
     public static function docroot(string $domain): string
     {
         return Config::VHOSTS_DOCROOT_BASE . '/' . $domain . '/public';
@@ -112,11 +119,15 @@ final class VhostService
             . "\tredir /jpanel/* https://{host}:2083/ 302\n"
             // Browser caching for static files ('?' = only when the site
             // didn't set its own). CSS/JS short: they're often edited in
-            // place without a version in the file name.
-            . "\t@jp_media path_regexp jp_media (?i)\\.(png|jpe?g|gif|webp|avif|svg|ico|woff2?|ttf|otf|eot|mp4|webm|mp3|pdf)$\n"
-            . "\t@jp_assets path_regexp jp_assets (?i)\\.(css|js|mjs)$\n"
+            // place without a version in the file name. Fingerprinted names
+            // (app.3f9c2a1b7d4e.css, chunk-a1b2c3d4.js: 8+ hex characters with
+            // at least one letter, so dates like -20240101 don't count) change
+            // whenever the file does, so they're cached for a year, immutable.
+            . "\t@jp_fp expression `" . self::FP_CEL . "`\n"
+            . "\t@jp_media expression `{path}.matches('(?i)\\\\.(png|jpe?g|gif|webp|avif|svg|ico|woff2?|ttf|otf|eot|mp4|webm|mp3|pdf)$') && !(" . self::FP_CEL . ")`\n"
+            . "\t@jp_assets expression `{path}.matches('(?i)\\\\.(css|js|mjs)$') && !(" . self::FP_CEL . ")`\n"
             . ($cache['browser']
-                ? "\theader @jp_media ?Cache-Control \"public, max-age=2592000\"\n\theader @jp_assets ?Cache-Control \"public, max-age=86400\"\n"
+                ? "\theader @jp_fp ?Cache-Control \"public, max-age=31536000, immutable\"\n\theader @jp_media ?Cache-Control \"public, max-age=2592000\"\n\theader @jp_assets ?Cache-Control \"public, max-age=86400\"\n"
                 // Browser cache off (cPanel > Cache): browsers check back every time.
                 : "\theader @jp_media ?Cache-Control \"no-cache\"\n\theader @jp_assets ?Cache-Control \"no-cache\"\n");
 
@@ -140,9 +151,15 @@ final class VhostService
             . "{$addrs('https://', ':2083')} {\n{$tlsLine}\timport jinnpanel_app\n}\n";
         if ($sslMode !== 'letsencrypt') {
             // Caddy's local CA isn't trusted by browsers, so keep plain HTTP
-            // usable. With Let's Encrypt there is no http:// block: Caddy then
-            // redirects HTTP to HTTPS on its own (and still answers ACME).
+            // usable.
             $conf .= "\n{$addrs('http://', '')} {\n{$body}}\n";
+        } else {
+            // Plain HTTP goes to HTTPS. Caddy would add this itself, but the
+            // catch-all `http:// { respond 404 }` in /etc/frankenphp/Caddyfile
+            // switches its automatic redirects off, so every LE site answered
+            // http:// with a 404. ACME HTTP-01 challenges are still served
+            // first by Caddy's own challenge handler.
+            $conf .= "\n{$addrs('http://', '')} {\n\tredir https://{host}{uri} 308\n}\n";
         }
 
         file_put_contents($confPath, $conf);

@@ -203,11 +203,41 @@ final class AccountController
         ], 'whm');
     }
 
+    /** A typed or pasted domain: lower case, no scheme, path or trailing dot. */
+    private static function domainInput(string $raw): string
+    {
+        $d = strtolower(trim($raw));
+        $d = (string) preg_replace('#^[a-z][a-z0-9+.-]*://#', '', $d);
+        $d = (string) preg_replace('#[/?\#].*$#', '', $d);
+
+        return rtrim($d, '.');
+    }
+
     public static function store(): void
     {
         Auth::requireRole(['admin', 'reseller']);
         Csrf::requireValid();
         $me = Auth::user();
+
+        // Optional main domain (hosting accounts only), like WHM's Create a
+        // New Account. Checked before anything is created, so a refused
+        // domain leaves nothing behind (same rules as the API's createacct).
+        $domain = self::domainInput((string) ($_POST['domain'] ?? ''));
+        if ($domain !== '') {
+            $problem = ($_POST['role'] ?? 'user') !== 'user'
+                ? 'Only hosting accounts get a domain here - leave it empty for resellers and administrators.'
+                : DomainPolicy::problem($domain, 0);
+            if ($problem === null) {
+                $taken = Database::app()->prepare('SELECT 1 FROM domains WHERE domain_name = ?');
+                $taken->execute([$domain]);
+                $problem = $taken->fetchColumn() ? "$domain is already hosted on this server." : null;
+            }
+            if ($problem !== null) {
+                Flash::error("Domain: $problem");
+                header('Location: /whm/accounts/create');
+                exit;
+            }
+        }
 
         $result = AccountService::create($_POST, $me);
         if ($result['errors']) {
@@ -217,6 +247,18 @@ final class AccountController
         }
         $id = (int) $result['id'];
         Audit::target($id);
+        if ($domain !== '') {
+            $d = DomainService::add($id, $domain);
+            if ($d['error'] !== null) {
+                // All or nothing: remove the half-made account again.
+                if ($half = AccountService::findScoped($id, $me)) {
+                    AccountService::delete($half);
+                }
+                Flash::error("Domain: {$d['error']} The account was not created.");
+                header('Location: /whm/accounts/create');
+                exit;
+            }
+        }
         $s = Database::app()->prepare('SELECT * FROM users WHERE id = ?');
         $s->execute([$id]);
         $row = $s->fetch();
@@ -226,7 +268,8 @@ final class AccountController
                 ? " A welcome email went to {$row['email']}."
                 : ' The welcome email could not be sent - check WHM > Notifications.';
         }
-        Flash::ok("Account \"{$row['username']}\" created as {$row['role']}.$note");
+        $withDomain = $domain !== '' ? " with $domain" : '';
+        Flash::ok("Account \"{$row['username']}\" created as {$row['role']}{$withDomain}.$note");
         header("Location: /whm/accounts/$id");
         exit;
     }

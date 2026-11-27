@@ -27,7 +27,8 @@ $curRole = Ui::old('role') ?? ($edit ? (string) $account['role'] : 'user');
         <?php if (!$edit && count($roles) > 1): ?>
         <fieldset class="card-body border-b border-line">
             <legend class="label float-left w-full">Account type</legend>
-            <div class="grid gap-3 sm:grid-cols-3">
+            <?php /* clear-both: the grid is a new formatting context, so without it the grid squeezes into a zero-width strip beside the floated legend. */ ?>
+            <div class="clear-both grid gap-3 sm:grid-cols-3">
                 <?php foreach ($roles as $r): ?>
                 <label class="flex cursor-pointer gap-3 rounded-lg border border-line p-3 text-sm transition-colors hover:bg-surface-2 has-[:checked]:border-accent has-[:checked]:bg-accent-soft">
                     <input type="radio" name="role" value="<?= e($r) ?>" class="mt-0.5" <?= $curRole === $r ? 'checked' : '' ?>>
@@ -70,6 +71,17 @@ $curRole = Ui::old('role') ?? ($edit ? (string) $account['role'] : 'user');
                 'hint' => $edit ? 'Leave empty to keep the current one. Setting one signs the account out everywhere.' : 'At least ' . Passwords::MIN_LENGTH . ' characters, not a common password.',
                 'attrs' => ['minlength' => Passwords::MIN_LENGTH, 'autocomplete' => 'new-password'],
             ]) ?>
+            <?php if (!$edit && in_array('user', $roles, true)): ?>
+            <div class="sm:col-span-2">
+                <?= Ui::field('domain', 'Domain', [
+                    'optional' => true,
+                    'mono' => true,
+                    'placeholder' => 'example.com',
+                    'hint' => 'Hosting accounts: the website to set up now (folder, DNS zone and SSL). More can be added later. Leave empty for resellers and administrators.',
+                    'attrs' => ['autocapitalize' => 'off', 'spellcheck' => 'false', 'inputmode' => 'url', 'autocomplete' => 'off'],
+                ]) ?>
+            </div>
+            <?php endif; ?>
             <?php if (!$edit || $account['role'] !== 'admin'): ?>
             <div class="sm:col-span-2">
                 <?= Ui::select('package_id', 'Package', $pkgOptions, $edit ? (string) ($account['package_id'] ?? '') : null, [

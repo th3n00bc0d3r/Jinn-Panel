@@ -74,6 +74,9 @@ $router->post('/whm/accounts/{id}/reset-2fa', ['SecurityController', 'resetTwoFa
 $router->post('/whm/accounts/{id}/php-exec', ['AccountController', 'phpExec']);
 $router->get('/whm/activity', ['ActivityController', 'index']);
 $router->get('/whm/alerts', ['AlertController', 'index']);
+$router->get('/whm/ssl', ['SslController', 'index']);
+$router->post('/whm/ssl/autossl', ['SslController', 'autossl']);
+$router->post('/whm/ssl/{id}', ['SslController', 'update']);
 $router->get('/whm/notifications', ['NotificationController', 'index']);
 $router->post('/whm/notifications', ['NotificationController', 'save']);
 $router->post('/whm/notifications/test', ['NotificationController', 'test']);

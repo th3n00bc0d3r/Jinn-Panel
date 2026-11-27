@@ -13,7 +13,7 @@ Upgrade by re-running the installer: it applies `app/migrations/027_api_tokens.s
 - **Provisioning API** (`docs/API.md`): a WHM API 1 compatible subset at
   `https://<panel host>/json-api/<function>` - `version`, `applist`,
   `listpkgs`, `listaccts`, `accountsummary`, `createacct` (account + first
-  domain, all or nothing), `suspendacct`, `unsuspendacct`, `removeacct`.
+  domain, all or nothing), `changepackage`, `suspendacct`, `unsuspendacct`, `removeacct`.
   Order forms and billing modules written for WHM's `createacct` work
   unchanged.
 - **WHM > API Tokens**: tokens for admins and resellers, acting with their
