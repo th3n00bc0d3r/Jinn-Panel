@@ -56,7 +56,12 @@ final class Mailer
             . quoted_printable_encode(self::html($subject, $text)) . "\r\n"
             . "--$boundary--\r\n";
         try {
-            $ok = mail($to, mb_encode_mimeheader($subject, 'UTF-8', 'Q'), $body, $headers, '-f' . $from);
+            // No -f here: sendmail_path already runs msmtp with
+            // --read-envelope-from (the envelope sender is taken from the
+            // From header, i.e. $from), and msmtp refuses both at once
+            // ("cannot use both --from and --read-envelope-from", exit 64):
+            // every panel mail failed while -f was passed.
+            $ok = mail($to, mb_encode_mimeheader($subject, 'UTF-8', 'Q'), $body, $headers);
         } catch (Throwable $e) {
             error_log('mailer: ' . $e->getMessage());
             return false;
